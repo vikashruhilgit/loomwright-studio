@@ -100,22 +100,32 @@ function problemOf(err: unknown): string {
 }
 
 /**
- * The repos the playbook `playbook` works on: its linked poll trigger's spec
- * (`triggers.playbook` = its slug, owned by its agent, the first by id, as
- * `linkedTriggerOf` reads it). `[]` when it has no poll trigger or the spec
- * names none (or cannot be read): the caller refuses `no_repos`.
+ * The repos the playbook `playbook` works on: the repos its linked poll
+ * trigger's spec names (`triggers.playbook` = its slug, owned by its agent, the
+ * first by id, as `linkedTriggerOf` reads it; a `jira.issues` or `clickup.tasks`
+ * poll names none), then its own `target_repo` (migration 25) when it is not
+ * already among them, compared case-insensitively. `[]` when it has neither (or
+ * the spec cannot be read): the caller refuses `no_repos`.
  */
 export function playbookRepos(store: Store, playbook: number): readonly string[] {
-  const spec = store
-    .prepare<[number], { kind: string; spec_json: string }>(
-      `SELECT t.kind AS kind, t.spec_json AS spec_json
-         FROM playbooks p JOIN triggers t ON t.playbook = p.slug AND t.owning_agent = p.owning_agent
+  const row = store
+    .prepare<[number], { kind: string | null; spec_json: string | null; target_repo: string | null }>(
+      `SELECT t.kind AS kind, t.spec_json AS spec_json, p.target_repo AS target_repo
+         FROM playbooks p LEFT JOIN triggers t ON t.playbook = p.slug AND t.owning_agent = p.owning_agent
         WHERE p.id = ? ORDER BY t.id LIMIT 1`,
     )
     .get(playbook);
-  if (spec === undefined || spec.kind !== "poll") return [];
+  if (row === undefined) return [];
+  const repos = polledRepoNames(row.kind, row.spec_json);
+  if (row.target_repo !== null && REPO_SHAPE.test(row.target_repo) && !repos.some((r) => r.toLowerCase() === row.target_repo?.toLowerCase())) repos.push(row.target_repo);
+  return repos;
+}
+
+/** The `owner/name` repos a poll trigger's stored spec names, deduplicated; none for another kind of trigger or a spec that cannot be read. */
+function polledRepoNames(kind: string | null, specJson: string | null): string[] {
+  if (kind !== "poll" || specJson === null) return [];
   try {
-    const repos = (JSON.parse(spec.spec_json) as { repos?: unknown }).repos;
+    const repos = (JSON.parse(specJson) as { repos?: unknown }).repos;
     if (!Array.isArray(repos)) return [];
     return [...new Set(repos.filter((r): r is string => typeof r === "string" && REPO_SHAPE.test(r)))];
   } catch {

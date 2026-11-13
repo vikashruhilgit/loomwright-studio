@@ -25,6 +25,8 @@
 // The jobs a playbook names (`jobs`, migration 23's `jobs_json`) are a change
 // field like `name` and `intent`, never a policy field: no `*_set_by`, and the
 // owner's `set` does not take them (the owner changes them by asking Wright).
+// So is the repository its work goes to (`target_repo`, migration 25): one
+// `owner/name`, checked by `./target-repo.ts`, `none` on an update clears it.
 //
 // The `studio` CLI loads this module (through `./drafts.ts`): it imports only
 // `../loop/internal.js`, the CLI-safe job vocabulary (`../features/catalogue.js`),
@@ -37,6 +39,7 @@ import type { EventRef } from "../loop/internal.js";
 import type { Store } from "../store/store.js";
 import { TRIGGER_KINDS, TriggerError, listTriggers, registerTrigger, updateTriggerSpec } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
+import { checkTargetRepo } from "./target-repo.js";
 import { DEDUPE_KEY_FIELDS, MERGE_REQUIREMENT_KINDS, PLAYBOOK_MODES, PLAYBOOK_PRIORITIES } from "./types.js";
 import type { MergeRequirementKind, PlaybookPriority, PolicySetter } from "./types.js";
 
@@ -53,9 +56,9 @@ export type PlaybookPolicyField = (typeof PLAYBOOK_POLICY_FIELDS)[number];
 
 /**
  * Every field `updatePlaybook` takes, in the order a `playbook_updated` event
- * lists them. `jobs` is a change field, not a policy field (no `*_set_by`).
+ * lists them. `jobs` and `target_repo` are change fields, not policy fields (no `*_set_by`).
  */
-export const PLAYBOOK_CHANGE_FIELDS = ["name", "intent", "jobs", "trigger", ...PLAYBOOK_POLICY_FIELDS] as const;
+export const PLAYBOOK_CHANGE_FIELDS = ["name", "intent", "jobs", "target_repo", "trigger", ...PLAYBOOK_POLICY_FIELDS] as const;
 export type PlaybookChangeField = (typeof PLAYBOOK_CHANGE_FIELDS)[number];
 
 export const MAX_PLAYBOOK_NAME = 200;
@@ -122,6 +125,8 @@ export interface PlaybookRow {
   readonly merge_requirement_set_by: string | null;
   /** A JSON array of job ids from `TOOL_JOBS` (migration 23), in `TOOL_JOBS` order; null: the playbook names no jobs. */
   readonly jobs_json: string | null;
+  /** The `owner/name` repository its pull requests go to (migration 25); null: it names none. */
+  readonly target_repo: string | null;
 }
 
 /** A playbook as listed: its row, its linked trigger's id and next fire (null when it has none). */
@@ -321,6 +326,16 @@ export function parseOwnerPolicyValue(field: string, raw: string): { readonly fi
   return { field, value };
 }
 
+/**
+ * A given `target_repo` as its column stores it: `undefined` when not given, `null`
+ * for the clear word `none`, else `checkTargetRepo`'s `owner/name` (`invalid_input`
+ * naming `target_repo` otherwise).
+ */
+function targetRepoGiven(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  return value === CLEAR_VALUE ? null : checkTargetRepo(value);
+}
+
 /** The policy values given among `values`, each checked, as column values (absent ⇒ not given). */
 function checkGivenPolicy(values: Partial<Record<PlaybookPolicyField, unknown>>): Map<PlaybookPolicyField, ColumnValue> {
   const given = new Map<PlaybookPolicyField, ColumnValue>();
@@ -515,6 +530,8 @@ export interface CreatePlaybookParams {
   readonly merge_requirement?: string | undefined;
   /** The jobs it names (`checkJobs`): Wright's proposal from the owner's words. Absent: none named. */
   readonly jobs?: readonly string[] | undefined;
+  /** The repository its work goes to (`checkTargetRepo`: `owner/name`; `none` is no repository). Absent: none named. */
+  readonly target_repo?: string | undefined;
   /** The session that asked, for the audit rows. */
   readonly sessionId?: number | null;
 }
@@ -534,6 +551,7 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
   const intent = checkIntent(params.intent);
   const trigger = checkTriggerInput(params.trigger);
   const jobs = params.jobs === undefined ? null : checkJobs(params.jobs);
+  const targetRepo = targetRepoGiven(params.target_repo) ?? null;
   const policy = checkGivenPolicy(params);
   const at = now.toISOString();
   const sessionId = params.sessionId ?? null;
@@ -547,8 +565,8 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
         .prepare(
           `INSERT INTO playbooks (slug, name, owning_agent, intent, status, version,
              dedupe_key_spec, dedupe_key_set_by, priority, priority_set_by, model, model_set_by, token_limit_per_day, token_limit_set_by,
-             mode, mode_set_by, merge_requirement, merge_requirement_set_by, jobs_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             mode, mode_set_by, merge_requirement, merge_requirement_set_by, jobs_json, target_repo, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'draft', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           slug,
@@ -568,6 +586,7 @@ export function createPlaybook(store: Store, params: CreatePlaybookParams, now: 
           policy.get("merge_requirement") ?? null,
           proposed("merge_requirement"),
           jobs,
+          targetRepo,
           at,
           at,
         ).lastInsertRowid,
@@ -613,6 +632,8 @@ export interface PlaybookChanges {
   readonly name?: string | undefined;
   readonly intent?: string | undefined;
   readonly jobs?: readonly string[] | undefined;
+  /** `owner/name`, or `none` to clear it. */
+  readonly target_repo?: string | undefined;
   readonly trigger?: PlaybookTriggerInput | undefined;
   readonly dedupe_key?: readonly string[] | undefined;
   readonly priority?: string | undefined;
@@ -640,7 +661,7 @@ function sameTrigger(linked: TriggerView, trigger: PlaybookTriggerInput): boolea
 /**
  * An agent's change to its own playbook: each given value that differs is
  * written as the next version (policy values proposed: `*_set_by =
- * 'wright'`; `jobs` has no setter, like `name` and `intent`), a trigger
+ * 'wright'`; `jobs` and `target_repo` have no setter, like `name` and `intent`), a trigger
  * change re-schedules the SAME linked trigger
  * (`updateTriggerSpec`), all in one transaction. Throws `PlaybookError`:
  * `invalid_input` (empty `changes`; a refused value, naming the field; a
@@ -653,6 +674,7 @@ export function updatePlaybook(store: Store, params: UpdatePlaybookParams, now: 
   const name = changes.name === undefined ? undefined : checkName(changes.name);
   const intent = changes.intent === undefined ? undefined : checkIntent(changes.intent);
   const jobs = changes.jobs === undefined ? undefined : checkJobs(changes.jobs);
+  const targetRepo = targetRepoGiven(changes.target_repo);
   const trigger = changes.trigger === undefined ? undefined : checkTriggerInput(changes.trigger);
   const policy = checkGivenPolicy(changes);
   const at = now.toISOString();
@@ -679,6 +701,10 @@ export function updatePlaybook(store: Store, params: UpdatePlaybookParams, now: 
     if (jobs !== undefined && jobs !== row.jobs_json) {
       sets.set("jobs_json", jobs);
       fields.push("jobs");
+    }
+    if (targetRepo !== undefined && targetRepo !== row.target_repo) {
+      sets.set("target_repo", targetRepo);
+      fields.push("target_repo");
     }
     if (trigger !== undefined) {
       const linked = linkedTriggerOf(store, row);

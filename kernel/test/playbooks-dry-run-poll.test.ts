@@ -838,7 +838,9 @@ describe("a ticket poll's dry run: its own connection, no GitHub, the tracker na
     expect(poll.items).toEqual([]);
     expect(h.client?.calls).toEqual([]);
     expect(result.summary).toContain("Poll preview incomplete (connector_missing)");
-    // Still enable-able: the enable is held for the owner, not refused for want of a dry run.
+    // Still enable-able: the enable is held for the owner, not refused for want of a dry run. A ticket playbook
+    // also needs its target repository (phase 8 item 20h), set raw so the version and its dry run stay.
+    h.store.prepare("UPDATE playbooks SET target_repo = 'o/r' WHERE id = ?").run(id);
     expect((await h.enable(id)).permissionDecisionReason).toMatch(/^approval_required: held as approval 1/);
   });
 

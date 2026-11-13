@@ -24,6 +24,7 @@ import { PROTECTED_FOLDER_WHY, PROTECTED_LOCATIONS, protectedFolderRefusal, prot
 import { PROTECTED_DATA_FILES, classifyToolCall } from "../src/sessions/policy.js";
 import { migrations } from "../src/store/migrations/index.js";
 import { savedWorkspaces } from "../src/store/migrations/024_saved_workspaces.js";
+import { playbookTargetRepo } from "../src/store/migrations/025_playbook_target_repo.js";
 import { DB_FILENAME, Store } from "../src/store/store.js";
 import { stubProvider, unexpectedAbandon } from "./session-fakes.js";
 
@@ -101,10 +102,11 @@ const sha256 = (file: string): string => createHash("sha256").update(readFileSyn
 describe("migration 24: saved_workspaces", () => {
   const cols = (s: Store): unknown[] => s.prepare("SELECT name, type, \"notnull\", pk FROM pragma_table_info('saved_workspaces')").all();
 
-  it("is version 24, named saved_workspaces, the last migration; creates the table with exactly its columns, path UNIQUE, and no SQL trigger", () => {
-    expect(migrations.at(-1)).toBe(savedWorkspaces);
+  it("is version 24, named saved_workspaces, directly below 25 (playbook_target_repo, the last migration); creates the table with exactly its columns, path UNIQUE, and no SQL trigger", () => {
+    expect(migrations.at(-2)).toBe(savedWorkspaces);
+    expect(migrations.at(-1)).toBe(playbookTargetRepo);
     expect([savedWorkspaces.version, savedWorkspaces.name]).toEqual([24, "saved_workspaces"]);
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
     expect(cols(store)).toEqual([
       { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
       { name: "path", type: "TEXT", notnull: 1, pk: 0 },
@@ -118,15 +120,16 @@ describe("migration 24: saved_workspaces", () => {
     expect(store.prepare("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'saved_workspaces'").pluck().get()).toBe(0);
   });
 
-  it("is safe to re-run: with its record deleted, migration 24 runs again as a no-op and every row stays", () => {
+  it("is safe to re-run: with its record deleted (and 25's, which sits above it), migration 24 runs again as a no-op and every row stays", () => {
     store.prepare("INSERT INTO saved_workspaces (path, repo, added_at, last_used_at) VALUES ('/a', 'o/r', ?, ?)").run(T1.toISOString(), T2.toISOString());
     const before = tableRows();
     store.close();
     const db = new Database(join(dataDir, DB_FILENAME));
-    db.exec("DELETE FROM schema_migrations WHERE version = 24");
+    // Deleting 24 alone would leave 25 above a gap: 24 and 25 re-run together.
+    db.exec("DELETE FROM schema_migrations WHERE version >= 24");
     db.close();
     store = new Store({ dataDir });
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([24, "saved_workspaces"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
     expect(tableRows()).toEqual(before);
   });
 });
