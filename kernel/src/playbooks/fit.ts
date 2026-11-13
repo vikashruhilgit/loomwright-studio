@@ -39,7 +39,7 @@ import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
 import { getAgent } from "../agents/registry.js";
 import { agentSettingsPath, readAgentSettings } from "../agents/settings.js";
 import type { AgentSettings } from "../agents/settings.js";
-import { CONNECTOR_LABELS, TOOL_JOBS, connectorAccessText, connectorNeeds, holdsConnector, isToolJob, jobGranted, jobLackingTools } from "../features/catalogue.js";
+import { CONNECTOR_LABELS, TOOL_JOBS, andList, connectorAccessText, connectorNeeds, holdsConnector, isToolJob, jobGranted, jobLackingTools } from "../features/catalogue.js";
 import type { CatalogueTool, ToolCatalogue, ToolJob } from "../features/catalogue.js";
 import { jobNeedsGaps, resolveJobNeeds } from "../features/job-needs.js";
 import type { NeedsGap, NeedsGapKind } from "../features/job-needs.js";
@@ -178,11 +178,6 @@ function grantNeeds(store: Store, row: PlaybookRow, tools: readonly CatalogueToo
     if (kind !== undefined && !needs.some((n) => n.kind === kind)) needs.push({ kind, write: false, why: `watching ${CONNECTOR_LABELS[kind]}` });
   }
   return needs;
-}
-
-/** `a`, `a and b`, `a, b and c`. */
-function andList(items: readonly string[]): string {
-  return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
 /** The owner-facing end of a refused-call line: who can close it, or that no charter should. */

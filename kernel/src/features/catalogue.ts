@@ -362,9 +362,9 @@ function connectorNote(t: CatalogueTool): string {
   return t.requiresConnectorLevel === "write" ? ` [needs the ${t.requiresConnector} connector's write grant]` : ` [needs the ${t.requiresConnector} connector grant]`;
 }
 
-/** The labels of `list` as one phrase: `a`, `a and b`, `a, b and c`. */
-function phrase(list: readonly string[]): string {
-  return list.length <= 1 ? (list[0] ?? "") : `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+/** `a`, `a and b`, `a, b and c` (the one list joiner of the catalogue, the fit and the charter readiness). */
+export function andList(items: readonly string[]): string {
+  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1) as string}`;
 }
 
 /**
@@ -391,7 +391,7 @@ function needsLines(job: CatalogueJob, table: LoomwrightCommandNeedsTable | unde
     else if (row.launch === "kernel") {
       lines.push(`  reaches ${invocation}: the kernel starts it under its own fixed policy (D44), so it adds no Claude tool or shell command to a charter; never draft one for it`);
     } else {
-      const asks = phrase([...row.claudeTools, ...row.bashPrefixes].map((n) => n.label));
+      const asks = andList([...row.claudeTools, ...row.bashPrefixes].map((n) => n.label));
       lines.push(
         `  reaches ${invocation}: the crew session runs it itself and it needs ${asks}, which no charter should hold (D44: the kernel does not launch this route yet); propose no grant for it, the owner can enable the playbook anyway`,
       );

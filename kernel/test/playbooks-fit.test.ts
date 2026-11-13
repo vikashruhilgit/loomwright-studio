@@ -97,6 +97,8 @@ let home: string;
 /** A folder the fixture member lists as its workspace (item 20c: a code job's declared need, so a charter with none is a gap). Only its presence is read here. */
 let repo: string;
 let store: Store;
+/** Extra folders a case made outside `tmp`, removed after it. */
+const cleanups: string[] = [];
 const now = (): Date => new Date(WED_10Z);
 
 beforeEach(() => {
@@ -112,6 +114,7 @@ beforeEach(() => {
 afterEach(() => {
   if (store.isOpen) store.close();
   rmSync(tmp, { recursive: true, force: true });
+  for (const dir of cleanups.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 // ---- Fixtures ------------------------------------------------------------------
@@ -408,11 +411,17 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
   });
 
   it("a member with 30+ kernel tools: the fit's proposed_update (every current tool plus the missing ones) is held for the owner, its job lines in their label-only form, and applies", async () => {
+    // A short, real checkout (a GitHub remote) as the workspace, so the readiness workspace line is the short `ready:` form
+    // and the display length does not depend on how long this machine's temp dir is.
+    const short = mkdtempSync(join("/tmp", "pbf-"));
+    mkdirSync(join(short, ".git"));
+    writeFileSync(join(short, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/o/r.git\n');
+    cleanups.push(short);
     const merge = CATALOGUE.tools.filter((t) => t.job === "ask_for_merge").map((t) => `${K}${t.name}`);
     // Every other kernel tool of the catalogue: before the fix, the job lines alone put this update over the cut.
     const rest = CATALOGUE.tools.map((t) => `${K}${t.name}`).filter((t) => !merge.includes(t));
     expect(rest.length).toBeGreaterThanOrEqual(30);
-    addMember(rest);
+    addMember(rest, "mason", [short]);
     const { fit } = await draft("Merge when ready", ["ask_for_merge"]);
     expect(fit?.status).toBe("gap");
     const proposed = fit?.proposed_update;
@@ -433,7 +442,8 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
     expect(lines.some((l) => l.startsWith("  - "))).toBe(false);
     expect(lines.at(-1)).toBe(`enforced: never: none; tools: ${["Read", ...rest, ...merge].join(", ")}; bash prefixes: "gh pr"`);
     expect(lines).toHaveLength(jobs.length + 3);
-    expect(updateHeld.display?.length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    // With a margin (about 90 characters today), so a line of readiness wording can't push it over unseen.
+    expect(updateHeld.display?.length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY - 50);
     expect(applier(AGENT_UPDATE, input, approvalNow(97, null), store, now())).toMatchObject({ applied: expect.stringContaining("mason") });
     expect(allowedToolsOf()).toEqual(["Read", ...rest, ...merge]);
   });

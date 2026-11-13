@@ -4,15 +4,15 @@ In the phase 8 exit live run (2026-11-12) a charter passed every check and its r
 
 ## Validation 1: the static suites
 
-Run in the subtask 3 worktree (the branch with subtask 1's job needs merged in), 2026-11-13.
+Run on the integrated branch (all three subtasks merged, review iteration 1 applied), 2026-11-13.
 
 ```bash
 cd kernel && npm test
 ```
 
 ```text
- Test Files  134 passed | 2 skipped (136)
-      Tests  4537 passed | 16 skipped (4553)
+ Test Files  135 passed | 2 skipped (137)
+      Tests  4548 passed | 16 skipped (4564)
 ```
 
 ```bash

@@ -27,7 +27,7 @@
 // `kernel.ts`.
 import { homedir } from "node:os";
 import { readWorkspaceRepos } from "../automate/checkout.js";
-import { KERNEL_TOOL_PREFIX, TOOL_JOBS, connectorAccessText, connectorNeeds, holdsConnector, jobGranted, jobLackingTools, jobNeedsWorkspace } from "../features/catalogue.js";
+import { KERNEL_TOOL_PREFIX, TOOL_JOBS, andList, connectorAccessText, connectorNeeds, holdsConnector, jobGranted, jobLackingTools, jobNeedsWorkspace } from "../features/catalogue.js";
 import type { ConnectorNeed, ToolCatalogue, ToolJob } from "../features/catalogue.js";
 import { jobNeedsGaps, resolveJobNeeds } from "../features/job-needs.js";
 import type { NeedsGap } from "../features/job-needs.js";
@@ -150,11 +150,6 @@ export interface ReadinessInput {
 }
 
 // ---- The plain words ------------------------------------------------------------------
-
-/** `a, b and c`. */
-function andList(items: readonly string[]): string {
-  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1) as string}`;
-}
 
 /** `text` on one line: every run of whitespace as one space (every value here is already one line; defence in depth). */
 function oneLine(text: string): string {

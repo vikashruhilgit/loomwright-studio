@@ -1166,6 +1166,28 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect(shown.replace(jobLines.join("\n"), fullBlock).length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
   });
 
+  it("a member holding both crew-run command jobs (the permission lines no charter can clear): an update asking for little is held within the display bound, and one widening it past the bound is asked for less", async () => {
+    const h = await bootKernel();
+    const catalogue = buildToolCatalogue(SHIPPED_TOOLS);
+    const crewTools = catalogue.tools.filter((t) => CREW_RUN_JOBS.includes(t.job)).map((t) => `${K}${t.name}`);
+    expect(crewTools.length).toBeGreaterThan(0);
+    expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: crewTools, allowedBashPrefixes: [], never: [] } }), { by: "owner" }, clock.at).ok).toBe(true);
+    const w = await h.session("wright", WRIGHT_POLICY);
+    const sha256 = async () =>
+      (JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] }).agents.find((a) => a.id === "mason")?.sha256 as string;
+    // The fixed lines are there for both jobs, as a flag no charter change clears.
+    const small = await w.gate(UPDATE, { id: "mason", changes: { display_name: "Mason II" }, expected_sha256: await sha256(), idempotency_key: "u1" });
+    expect(small.permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
+    const shown = heldDisplay(h.store);
+    for (const label of CREW_RUN_JOBS.map((j) => catalogue.jobs.find((x) => x.id === j)?.label as string)) expect(shown).toContain(`for ${label}: no charter should grant it`);
+    expect(shown.length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+    // Too long for the bound with those lines in: refused with the usual ask-for-less, never held over the bound.
+    const workspaces = Array.from({ length: 16 }, (_, i) => join(tmp, "work", `${"w".repeat(200)}-${String(i).padStart(2, "0")}`));
+    const wide = await w.gate(UPDATE, { id: "mason", changes: { workspaces }, expected_sha256: await sha256(), idempotency_key: "u2" });
+    expect(wide.permissionDecision).toBe("deny");
+    expect(wide.permissionDecisionReason).toContain("ask for less at once");
+  });
+
   it("the floor counts the kept tools' job lines in their label-only form: a member granted every kernel tool asking for 16 long workspaces is asked for less (never given the owner's remedy), and two of them are held", async () => {
     const h = await bootKernel();
     const catalogue = buildToolCatalogue(SHIPPED_TOOLS);
