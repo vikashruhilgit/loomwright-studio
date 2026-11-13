@@ -522,8 +522,8 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   expect(policyRow(store)).toMatchObject({ policy_kind: "solo", set_by: "owner" });
 
   /** A playbook of the crew member, enabled and live: what the owner's `set mode live` leaves after the dry run and the held enable. */
-  function playbook(name: string, intent: string, trigger: { kind: string; spec: string }, model: string, dedupe: readonly string[] | undefined): number {
-    const change = createPlaybook(store, { agent: CREW, name, intent, trigger, model, ...(dedupe === undefined ? {} : { dedupe_key: dedupe }) }, clock.now());
+  function playbook(name: string, intent: string, trigger: { kind: string; spec: string }, model: string, dedupe: readonly string[] | undefined, targetRepo?: string): number {
+    const change = createPlaybook(store, { agent: CREW, name, intent, trigger, model, ...(dedupe === undefined ? {} : { dedupe_key: dedupe }), ...(targetRepo === undefined ? {} : { target_repo: targetRepo }) }, clock.now());
     store.prepare("UPDATE playbooks SET status = 'enabled', mode = 'live', mode_set_by = 'owner' WHERE id = ?").run(change.playbook.id);
     return change.playbook.id;
   }
@@ -571,17 +571,17 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   await expect.poll(() => runRows(store, issues).map((r) => r.status), WAIT).toEqual(["done", "skipped_duplicate"]);
 
   // ---- 1b. (a) A ClickUp task becomes PR B: a second playbook polls the connected tracker ----
-  // Honest limit: a live playbook whose agent holds `github: write` needs a GitHub token for the repos of its linked POLL spec
-  // (`playbookRepos`), and a `clickup.tasks` spec names none, so the shipped kernel refuses such a session `github_token_unavailable: no_repos`
-  // (found by this walk's first run; a new phase 8 item, nothing patched here). So this playbook's linked poll names the repo (a label
-  // no issue carries, so it finds nothing), and the ClickUp task is read by the kernel's own poll fetch over the fake server and queued
-  // as the playbook's item, exactly as a due `clickup.tasks` fire queues it.
+  // A live playbook whose agent holds `github: write` needs a GitHub token for the repos of the playbook (`playbookRepos`), and a
+  // `clickup.tasks` spec names none, so the playbook carries `target_repo`: its session's token is minted for that repository. The
+  // ClickUp task is read by the kernel's own poll fetch over the fake server and queued as the playbook's item, exactly as a due
+  // `clickup.tasks` fire queues it.
   const tasks = playbook(
     "Tickets: ClickUp tasks",
     "Hand each ClickUp task to /automate and follow its pull request.",
-    { kind: "poll", spec: JSON.stringify({ source: "github.issues", repos: [REPO], filters: { labels: ["clickup"] }, interval_seconds: POLL_SECONDS }) },
+    { kind: "poll", spec: JSON.stringify({ source: "clickup.tasks", filters: { list: "901" }, interval_seconds: POLL_SECONDS }) },
     TICKETS_MODEL,
     ITEM_KEY,
+    REPO,
   );
   s.ready("clickup cu-1 to /automate", TICKETS_MODEL, ticketDriver(seen, CLICKUP_TICKET), new RegExp(CLICKUP_REF));
   s.ready("kernel-started /automate run: clickup cu-1", TICKETS_MODEL, automateRunDriver(seen, checkout, CLICKUP_TICKET, { id: RUN_B, ...SHA_B }), RUN_PROMPT);
@@ -736,8 +736,8 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     "Merge when ready",
     "For each parked PR whose repo policy is met, ask for the merge and let Loomwright's gate merge it.",
     // Run from Run now. Its linked trigger is a poll that names the repo (and finds nothing: no issue carries the label), because a live
-  // write-granted session gets its GitHub token for the repos of its playbook's linked poll spec (see the ClickUp playbook above).
-  { kind: "poll", spec: JSON.stringify({ source: "github.issues", repos: [REPO], filters: { labels: ["merge-when-ready"] }, interval_seconds: POLL_SECONDS }) },
+    // write-granted session gets its GitHub token for the repos of its playbook's linked poll spec (a GitHub poll names them).
+    { kind: "poll", spec: JSON.stringify({ source: "github.issues", repos: [REPO], filters: { labels: ["merge-when-ready"] }, interval_seconds: POLL_SECONDS }) },
     MERGE_MODEL,
     undefined,
   );
