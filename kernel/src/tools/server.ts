@@ -34,6 +34,8 @@ import { CATALOGUE_UNAVAILABLE_TEXT, buildToolCatalogue, catalogueText } from ".
 import type { ToolCatalogue } from "../features/catalogue.js";
 import { InvalidContributionError, PHASE1_TOOL_NAMES } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
+import { LOOMWRIGHT_COMMAND_NEEDS } from "../features/job-needs.js";
+import type { LoomwrightCommandNeedsTable } from "../features/job-needs.js";
 import type { GitHubClient } from "../integrations/types.js";
 import { appendEvent, clip, errorMessage, normalizeInstant } from "../loop/internal.js";
 import type { EventRef } from "../loop/internal.js";
@@ -404,10 +406,16 @@ export function kernelToolHandlers(ctx: KernelToolContext): Record<KernelToolNam
  * raw names with a plain note. `contributed` is the composition's merged tools
  * (`startKernel` passes them unfiltered, so a session whose own grants narrow
  * its tools still sees every tool a crew member can be granted).
+ * `commandNeeds` is the needs of the Loomwright commands the jobs reach (item
+ * 20c: `loadCommandNeeds` of the active install's contract, which `startKernel`
+ * reads once); the default is the pinned table.
  */
-export function kernelToolCatalogue(contributed: readonly ContributedTool[]): ToolCatalogue | null {
+export function kernelToolCatalogue(
+  contributed: readonly ContributedTool[],
+  commandNeeds: LoomwrightCommandNeedsTable = LOOMWRIGHT_COMMAND_NEEDS,
+): ToolCatalogue | null {
   try {
-    return buildToolCatalogue(contributed);
+    return buildToolCatalogue(contributed, commandNeeds);
   } catch {
     return null;
   }
@@ -450,13 +458,18 @@ function contributedToolContext(contributed: ContributedTool, ctx: KernelToolCon
  * handler gets, `contextOf(sessionId)` (built at call time, so a composition
  * can pass its session manager before it exists). Any other tool: `undefined`
  * (held as before). A throw propagates: the gate denies `kernel_gate_error`.
- * The context carries the catalogue of `contributed` (`kernelToolCatalogue`,
- * built once here), so a charter's held display groups its kernel tools by job.
+ * The context carries `catalogue` (default: `kernelToolCatalogue(contributed)`,
+ * built once here; the composition passes the one it built with the active
+ * install's command needs), so a charter's held display groups its kernel tools
+ * by job and its readiness reads the same needs.
  */
-export function heldToolCheckOf(contributed: readonly ContributedTool[], contextOf: (sessionId: number) => KernelToolContext): HeldToolCheck {
+export function heldToolCheckOf(
+  contributed: readonly ContributedTool[],
+  contextOf: (sessionId: number) => KernelToolContext,
+  catalogue: ToolCatalogue | null = kernelToolCatalogue(contributed),
+): HeldToolCheck {
   const checked = new Map<string, ContributedTool>();
   for (const t of contributed) if (t.beforeHold !== undefined) checked.set(`mcp__${KERNEL_MCP_SERVER_NAME}__${t.name}`, t);
-  const catalogue = kernelToolCatalogue(contributed);
   return (toolName, input, sessionId) => {
     const t = checked.get(toolName);
     if (t?.beforeHold === undefined) return undefined;
@@ -481,12 +494,13 @@ export function heldToolCheckOf(contributed: readonly ContributedTool[], context
  * `undefined` for a tool with no applier; else it parses the held input with the tool's own zod shape (a
  * failure is `{refused: "invalid_input"}`, nothing run) and calls
  * `applyOnApproval` with the store, the decision's instant, the approval and
- * the catalogue of `contributed` (`kernelToolCatalogue`, built once here; none when it can't be built).
+ * `catalogue` (default: the catalogue of `contributed`, `kernelToolCatalogue`; none when it can't be built).
  * A throw propagates: the decision records it as `apply_error`.
  */
 export function approvalApplierOf(
   contributed: readonly ContributedTool[],
   sets: { readonly applied: readonly string[]; readonly held: readonly string[] } = { applied: KERNEL_APPLIED_ACTIONS, held: ALWAYS_HELD_TOOLS },
+  catalogue: ToolCatalogue | null = kernelToolCatalogue(contributed),
 ): ApprovalApplier {
   for (const action of sets.applied) {
     if (!sets.held.includes(action)) {
@@ -503,7 +517,6 @@ export function approvalApplierOf(
     appliers.set(full, t);
   }
   // The catalogue of the same tools (`heldToolCheckOf`'s), so an apply re-runs a pre-hold check that reads it.
-  const catalogue = kernelToolCatalogue(contributed);
   return (tool, input, approval, store, now) => {
     const t = appliers.get(tool);
     if (t?.applyOnApproval === undefined) return undefined;

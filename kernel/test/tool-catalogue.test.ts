@@ -32,6 +32,7 @@ import {
   purposeOf,
 } from "../src/features/catalogue.js";
 import type { ToolCatalogue } from "../src/features/catalogue.js";
+import { LOOMWRIGHT_COMMAND_NEEDS, commandNeedsTable } from "../src/features/job-needs.js";
 import { InvalidContributionError, PHASE1_RESERVED, PHASE1_TOOL_NAMES, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
 import { toolsForConnectors } from "../src/integrations/tool-filter.js";
@@ -43,7 +44,7 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 /** The registered tools: the phase 1 six's names, then every shipped contributed tool (merged as the daemon merges them). */
 const SHIPPED_TOOLS: readonly ContributedTool[] = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
 const REGISTERED = [...PHASE1_TOOL_NAMES, ...SHIPPED_TOOLS.map((t) => t.name)];
-const CATALOGUE: ToolCatalogue = buildToolCatalogue(SHIPPED_TOOLS);
+const CATALOGUE: ToolCatalogue = buildToolCatalogue(SHIPPED_TOOLS, LOOMWRIGHT_COMMAND_NEEDS);
 
 /** The four jobs of the phase 8 walk, with the approved mockup's labels (`docs/design/mockups/chat-threads.html`, `const JOBS`). */
 const WALK_JOBS = {
@@ -327,6 +328,60 @@ describe("the job-grouped display lines (AC3's grouping, AC9's fallback)", () =>
   });
 });
 
+describe("the catalogue text lists each job's declared needs (item 20c, AC5)", () => {
+  const lines = catalogueText(CATALOGUE).split("\n");
+  const after = (id: string): string[] => {
+    const at = lines.indexOf(`Job ${id} "${TOOL_JOBS[id as keyof typeof TOOL_JOBS]}":`);
+    const rest = lines.slice(at + 1);
+    const end = rest.findIndex((l) => l.startsWith("Job "));
+    return end < 0 ? rest : rest.slice(0, end);
+  };
+
+  it("every job's tool lines come first, then its `needs:` line, then any `reaches` lines", () => {
+    for (const j of CATALOGUE.jobs) {
+      const block = after(j.id);
+      const kinds = block.map((l) => (l.startsWith("- ") ? "tool" : l.startsWith("  needs: ") ? "needs" : l.startsWith("  reaches ") ? "reaches" : "other"));
+      expect(kinds.filter((k) => k === "other"), j.id).toEqual([]);
+      expect(kinds.filter((k) => k === "needs"), j.id).toHaveLength(1);
+      expect(kinds.indexOf("needs"), j.id).toBe(j.tools.length);
+    }
+  });
+
+  it("the ticket job names GitHub write and a workspace as the owner's and the kernel-started /automate with no Skill; the crew routes name the Skill no charter should hold", () => {
+    const tickets = after("automate_tickets").join("\n");
+    expect(tickets).toContain("GitHub write access (only the owner can grant it)");
+    expect(tickets).toContain("a copy of a repo to work in (only the owner can grant it)");
+    expect(tickets).toContain("reaches /loomwright:automate: the kernel starts it under its own fixed policy (D44)");
+    expect(tickets).not.toContain("run skills");
+    for (const [id, command] of [["triage_pr_comments", "/loomwright:review-pr"], ["ask_for_merge", "/loomwright:automate --merge-parked"]] as const) {
+      const block = after(id).join("\n");
+      expect(block, id).toContain(`reaches ${command}: the crew session runs it itself and it needs run skills`);
+      expect(block, id).toContain("no charter should hold");
+    }
+  });
+
+  it("the composition's catalogue carries the command needs it was built with: the pinned table by default, the active install's where the contract declares them", () => {
+    expect(kernelToolCatalogue(SHIPPED_TOOLS)?.commandNeeds).toBe(LOOMWRIGHT_COMMAND_NEEDS);
+    const table = commandNeedsTable([{ name: "review-pr", description: null, needs: { claude_tools: ["Read"], bash_prefixes: [], connectors: [], workspace: true } }]);
+    const built = kernelToolCatalogue(SHIPPED_TOOLS, table) as ToolCatalogue;
+    expect(built.commandNeeds).toBe(table);
+    const text = catalogueText(built);
+    expect(text).toContain("reaches /loomwright:review-pr: the crew session runs it itself and it needs read files, which no charter should hold");
+    expect(text).not.toMatch(/reaches \/loomwright:review-pr[^\n]*run skills/);
+    // The drafting tools publish the same text.
+    expect(published(kernelToolDefinitions(LISTING_CTX, SHIPPED_TOOLS, built), "kernel_agent_update")).toContain(text);
+  });
+
+  it("the header says which needs only the owner can grant, and a job with no extra need says so", () => {
+    expect(lines.slice(5, 6)[0]).toMatch(/Only the owner can grant GitHub write, a connector, live mode and a workspace/);
+    expect(after("manage_crew").filter((l) => l.startsWith("  needs: "))).toEqual(["  needs: its kernel tools above"]);
+  });
+
+  it("no needs line names a raw Claude tool or a tool prefix (plain words only)", () => {
+    for (const l of lines.filter((x) => x.startsWith("  needs: ") || x.startsWith("  reaches "))) expect(l).not.toMatch(/\bSkill\b|mcp__kernel__|\bBash\b/);
+  });
+});
+
 describe("the catalogue's modules are CLI-safe leaves", () => {
   it("catalogue.ts and phase1-descriptions.ts never import the tool server, kernel.ts, the session manager or the Agent SDK; contribution.ts imports catalogue.ts, which imports it back only as types", () => {
     const importsOf = (file: string) => [...readFileSync(join(SRC, file), "utf8").matchAll(/^import (type )?.* from "([^"]+)";$/gm)].map((m) => ({ type: m[1] !== undefined, from: m[2] as string }));
@@ -334,6 +389,9 @@ describe("the catalogue's modules are CLI-safe leaves", () => {
       for (const i of importsOf(file)) expect(i.from, `${file} imports ${i.from}`).not.toMatch(/claude-agent-sdk|tools\/server|server\.js$|sessions\/manager|(^|\/)kernel\.js$|features\/index/);
     }
     expect(importsOf("features/catalogue.ts").filter((i) => i.from === "./contribution.js").every((i) => i.type)).toBe(true);
+    // job-needs.ts imports catalogue.ts at run time, so the catalogue imports it back only as a type (no load cycle).
+    expect(importsOf("features/catalogue.ts").filter((i) => i.from === "./job-needs.js").every((i) => i.type)).toBe(true);
+    for (const i of importsOf("features/job-needs.ts")) expect(i.from, `job-needs.ts imports ${i.from}`).not.toMatch(/claude-agent-sdk|tools\/server|sessions\/manager|(^|\/)kernel\.js$|features\/index/);
     expect(importsOf("tools/phase1-descriptions.ts").filter((i) => i.from === "../features/contribution.js").every((i) => i.type)).toBe(true);
   });
 
