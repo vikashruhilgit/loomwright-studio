@@ -23,6 +23,7 @@ import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/inde
 import { agentSettingsPath } from "../src/agents/settings.js";
 import { daemonKernelDeps } from "../src/daemon-deps.js";
 import { GITHUB_KEYCHAIN_SERVICE } from "../src/integrations/github/client.js";
+import { MCP_TRACKERS } from "../src/integrations/mcp/trackers.js";
 import type { McpTicketReader, McpTicketResult } from "../src/integrations/mcp/trackers.js";
 import type { GitHubClientDeps } from "../src/integrations/github/client.js";
 import { startKernel } from "../src/kernel.js";
@@ -755,15 +756,14 @@ describe("a ticket poll's dry run: its own connection, no GitHub, the tracker na
   const task = (id: string, over: Record<string, unknown> = {}): Record<string, unknown> => ({
     id,
     name: `Task ${id}`,
-    description: `Body of ${id}`,
-    status: { status: "open" },
+    status: "to do",
     tags: [{ name: "studio" }],
     url: `https://app.clickup.com/t/${id}`,
     date_updated: "1762163100000",
     ...over,
   });
   const REV_A1 = "2025-11-03T09:45:00.000Z";
-  const listTool = JSON.stringify([{ name: "get_workspace_tasks", proxy: "kernel_mcp_r_clickup_get_workspace_tasks", read_only: true, description: "", schema: "{}" }]);
+  const listTool = JSON.stringify([{ name: "clickup_filter_tasks", proxy: "kernel_mcp_r_clickup_clickup_filter_tasks", read_only: true, description: "", schema: "{}" }]);
 
   /** A reader that records its calls and answers `answer`: the only way a test reaches a tracker (never the Keychain or a vendor address). */
   function reader(answer: McpTicketResult): McpTicketReader & { calls: { tool: string; args: Record<string, unknown> }[] } {
@@ -804,11 +804,12 @@ describe("a ticket poll's dry run: its own connection, no GitHub, the tracker na
       ["clickup:b2", "2025-11-03T09:46:40.000Z", "run", JSON.stringify({ "item.id": "clickup:b2", "item.revision": "2025-11-03T09:46:40.000Z" })],
     ]);
     // The same fetch a due poll makes: one call of the listing tool, the tag sent as given, the kernel's own tag check applied.
-    expect(tickets.calls).toEqual([{ tool: "get_workspace_tasks", args: { list_ids: ["901"], tags: ["studio"] } }]);
+    expect(tickets.calls).toEqual([{ tool: "clickup_filter_tasks", args: { list_ids: ["901"], tags: ["studio"] } }]);
     expect(h.client?.calls).toEqual([]);
     // The first would-run task is the one reviewed, and it keeps its status for the prompt.
     expect(plan.poll.reviewed).toBe("clickup:b2");
-    expect(plan.review).toMatchObject({ ref: "clickup:b2", status: "open", text: "Body of b2" });
+    expect(plan.review).toMatchObject({ ref: "clickup:b2", status: "to do" });
+    expect(plan.review).not.toHaveProperty("text");
     expect(formatPollSummary(plan.poll)).toContain("The poll found 2 ClickUp tasks: 1 would run, 1 would skip: clickup:a1 would skip");
     // The model sees the title and text wrapped from the task's own ref.
     expect(wrapPollForModel(plan.poll).items.map((i) => i.title)).toEqual([`${untrustedOpen("clickup:a1")}Task a1${UNTRUSTED_CLOSE}`, `${untrustedOpen("clickup:b2")}Task b2${UNTRUSTED_CLOSE}`]);
@@ -864,6 +865,34 @@ describe("a ticket poll's dry run: its own connection, no GitHub, the tracker na
     expect(fix.startsWith("ClickUp could not be read for clickup:list/901: tool_unavailable. ")).toBe(true);
     expect(fix).not.toMatch(/GitHub/);
     expect(h.client?.calls).toEqual([]);
+  });
+
+  it("a missing listing tool's fix names the tool and the connector, from the kernel's own data, and tells the owner to reconnect", async () => {
+    const h = await boot({ grant: false });
+    const { id } = await tracked(h, "clickup", CLICKUP_SPEC, { tools: "[]" });
+    const result = value<DryRunValue>(
+      await h.dryRun(id, "d1", async () => {
+        throw new Error("no session may start");
+      }),
+    );
+    const fix = (result.poll as PollDryRun).preview_incomplete?.fix as string;
+    expect((result.poll as PollDryRun).preview_incomplete?.reason).toBe("source_error");
+    expect(fix.startsWith("ClickUp could not be read for clickup:list/901: tool_unavailable. ")).toBe(true);
+    expect(fix).toContain(MCP_TRACKERS.clickup.tool);
+    expect(fix).toContain("clickup_filter_tasks");
+    expect(fix).toContain("clickup connector");
+    expect(fix).toMatch(/reconnect ClickUp in Integrations/);
+    // The kernel's reader refuses before any call: no GitHub client call either.
+    expect(h.client?.calls).toEqual([]);
+  });
+
+  it("no other failure code gets the tool sentence", async () => {
+    const h = await boot({ grant: false });
+    const { row, trigger } = await tracked(h, "clickup", CLICKUP_SPEC);
+    const plan = await previewPoll({ store: h.store, github: undefined, now: clock.at, agent: "wright", tickets: { call: async () => ({ ok: false, error: "mcp_timeout" }) } }, row, trigger);
+    const fix = plan.poll.preview_incomplete?.fix as string;
+    expect(fix).toContain("ClickUp could not be read for clickup:list/901: mcp_timeout. Check the clickup connection");
+    expect(fix).not.toContain("clickup_filter_tasks");
   });
 
   it("a code outside the kernel's fixed set never reaches the fix, nor does the server's text", async () => {

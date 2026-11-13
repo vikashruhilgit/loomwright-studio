@@ -1,0 +1,32 @@
+{
+  "_note": "RECORDED from one live clickup_filter_tasks call on 2026-11-13 (arguments {list_ids: [<list>], tags: [<tag>]}), with the task's id, name, link, update time, list id and list name replaced by neutral placeholders. Field names, nesting and value types are as observed: status is a string, tags are {name} objects, date_updated is epoch milliseconds as a string, and the listing carries no body. See docs/evidence/phase-8-20g-clickup-reader.md.",
+  "response": {
+    "tasks": [
+      {
+        "id": "86a0000a1",
+        "custom_id": null,
+        "name": "Placeholder task",
+        "status": "to do",
+        "url": "https://app.clickup.com/t/86a0000a1",
+        "priority": null,
+        "assignees": [],
+        "tags": [
+          {
+            "name": "studio-sandbox"
+          }
+        ],
+        "due_date": null,
+        "date_updated": "1762163100000",
+        "date_closed": null,
+        "list": {
+          "id": "901",
+          "name": "Placeholder list"
+        }
+      }
+    ],
+    "count": 1,
+    "page": 0,
+    "has_more": false,
+    "next_page": null
+  }
+}

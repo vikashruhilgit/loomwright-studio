@@ -65,8 +65,10 @@ import { flush, makePluginDir, stubProvider } from "../../kernel/test/session-fa
 import { launchApp, processEnv } from "./electron-harness";
 import {
   ANSWER_TEXT,
+  CLICKUP_LIST_TOOL,
   CLICKUP_REF,
   CLICKUP_TASK,
+  CLICKUP_TASK_BODY,
   CLICKUP_TASK_ROW,
   COMMENT_FIX,
   COMMENT_QUESTION,
@@ -486,7 +488,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   const created = createAgent(store, dataDir, crewCharter(checkout), { by: "owner", homeDir: home }, clock.now());
   expect(created.ok ? "" : created.message).toBe("");
   expect((await api("POST", `/agents/${CREW}/set`, { field: "connectors", value: "github:write" })).status).toBe(200);
-  expect((await api("POST", `/agents/${CREW}/set`, { field: "connectors", value: "clickup:get_workspace_tasks" })).status).toBe(200);
+  expect((await api("POST", `/agents/${CREW}/set`, { field: "connectors", value: `clickup:${CLICKUP_LIST_TOOL}` })).status).toBe(200);
   expect(getAgent(store, CREW)).toMatchObject({ status: "active", created_by: "owner" });
 
   app = await launchApp({ ...processEnv(), STUDIO_DATA_DIR: dataDir, STUDIO_APP_FIXTURE_TOKEN: token });
@@ -531,7 +533,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
 
   // ---- 1. (a) A GitHub issue becomes PR A: the tickets playbook polls issues, its session hands the ticket to /automate ----
   const ISSUE_TICKET: TicketHandover = { ref: ISSUE_REF, title: "Add a ping command", link: `https://github.com/${REPO}/issues/${ISSUE_NUMBER}`, body: "Add `studio ping`: it prints pong and exits 0." };
-  const CLICKUP_TICKET: TicketHandover = { ref: CLICKUP_REF, title: CLICKUP_TASK_ROW.name, link: CLICKUP_TASK_ROW.url, body: CLICKUP_TASK_ROW.description };
+  const CLICKUP_TICKET: TicketHandover = { ref: CLICKUP_REF, title: CLICKUP_TASK_ROW.name, link: CLICKUP_TASK_ROW.url, body: CLICKUP_TASK_BODY };
   const issues = playbook(
     "Tickets: GitHub issues",
     "Hand each open issue on studio-sandbox to /automate and follow its pull request.",
@@ -605,10 +607,10 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   expect(seen.runs[1]).toMatchObject({ ref: CLICKUP_REF, started: "parked", during: "live", after: "parked" });
   expect(seen.runs[1]?.mergeAttempt).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "merge_blocked" });
   expect(playbookSessions(store, tasks)).toHaveLength(2);
-  // The kernel read ClickUp itself through the fake server, with the poll's filters: one `get_workspace_tasks` call per fire.
+  // The kernel read ClickUp itself through the fake server, with the poll's filters: one listing-tool call per fire.
   const clickupCalls = clickup.mcp.mcpCalls.filter((c) => c.method === "tools/call");
   expect(clickupCalls.length).toBeGreaterThanOrEqual(1);
-  expect(clickupCalls.every((c) => c.name === "get_workspace_tasks" && JSON.stringify(c.arguments) === JSON.stringify({ list_ids: ["901"] }))).toBe(true);
+  expect(clickupCalls.every((c) => c.name === CLICKUP_LIST_TOOL && JSON.stringify(c.arguments) === JSON.stringify({ list_ids: ["901"] }))).toBe(true);
   await step();
   await expect.poll(() => trackRows(store).length, WAIT).toBe(2);
   noFailures();

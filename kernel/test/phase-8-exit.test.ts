@@ -89,6 +89,10 @@ const REPO = "vikashruhilgit/studio-sandbox";
 const OWNER = "vikashruhilgit";
 const ISSUE = 11;
 const CLICKUP_TASK = "cu-1";
+/** The recorded ClickUp tool list and one recorded `clickup_filter_tasks` answer (`fixtures/mcp-trackers/`); the listing tool's name is read from the first. */
+const CLICKUP_TOOLS = (JSON.parse(readFileSync(new URL("./fixtures/mcp-trackers/clickup-tools.json", import.meta.url), "utf8")) as { tools: { name: string }[] }).tools;
+const CLICKUP_LIST_TOOL = CLICKUP_TOOLS[0]?.name as string;
+const CLICKUP_RECORDED = (JSON.parse(readFileSync(new URL("./fixtures/mcp-trackers/clickup-filter-tasks-response.json", import.meta.url), "utf8")) as { response: { tasks: Record<string, unknown>[] } }).response;
 const PR_A = 21;
 const PR_B = 22;
 const COMMENTS: readonly GitHubPullComment[] = [
@@ -448,11 +452,13 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
       comments: { [`${REPO}#${PR_A}`]: COMMENTS },
       mergeStates: Object.fromEntries(TICKETS.map((t) => [`${REPO}#${t.pr}`, { head_sha: t.head, approvals: 0, changes_requested: false, ci: "green" as const }])),
     });
+    // The recorded answer's task, with this walk's id, title, link and time: the shape is the live one (a listed task carries no body).
     const clickupTasks = {
-      tasks: [{ id: CLICKUP_TASK, name: TICKET_B.title, description: TICKET_B.body, status: "open", url: TICKET_B.link, date_updated: "1762682400000" }],
+      ...CLICKUP_RECORDED,
+      tasks: [{ ...CLICKUP_RECORDED.tasks[0], id: CLICKUP_TASK, name: TICKET_B.title, status: "to do", url: TICKET_B.link, date_updated: "1762682400000" }],
     };
     const mcp = await startFakeMcp({
-      tools: (JSON.parse(readFileSync(new URL("./fixtures/mcp-trackers/clickup-tools.json", import.meta.url), "utf8")) as { tools: unknown[] }).tools,
+      tools: CLICKUP_TOOLS,
       accessTtlSeconds: null,
       callResult: () => ({ content: [{ type: "text", text: JSON.stringify(clickupTasks) }] }),
     });
@@ -614,7 +620,7 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     expect(created).toMatchObject({ ok: true, filesError: null });
     const settingsFile = agentSettingsPath(dataDir, "mason");
     const rendered = JSON.parse(readFileSync(settingsFile, "utf8")) as Record<string, unknown>;
-    writeFileSync(settingsFile, `${JSON.stringify({ ...rendered, connectors: { github: "write", clickup: ["get_workspace_tasks"] } }, null, 2)}\n`);
+    writeFileSync(settingsFile, `${JSON.stringify({ ...rendered, connectors: { github: "write", clickup: [CLICKUP_LIST_TOOL] } }, null, 2)}\n`);
     expect(getAgent(store, "mason")?.status).toBe("active");
     const grant = readAgentSettings(dataDir, "mason");
     expect(grant.ok && grant.settings.githubWrite).toBe(true);
@@ -769,7 +775,7 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     noFailures();
 
     // The tickets reached the kernel through the real ticket reader: one `tools/call` to the fake server.
-    expect(mcp.mcpCalls.filter((m) => m.method === "tools/call").every((m) => m.name === "get_workspace_tasks")).toBe(true);
+    expect(mcp.mcpCalls.filter((m) => m.method === "tools/call").every((m) => m.name === CLICKUP_LIST_TOOL)).toBe(true);
     expect(mcp.mcpCalls.some((m) => m.method === "tools/call")).toBe(true);
     expect(github.callsTo("listIssues").length).toBeGreaterThanOrEqual(1);
     // Two intake sessions, each a live run of its playbook as mason, each given a token down-scoped to the one repo; and, for each,

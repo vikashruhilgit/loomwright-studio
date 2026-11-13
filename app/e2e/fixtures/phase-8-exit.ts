@@ -214,20 +214,25 @@ export class SandboxGitHub extends FakeGitHubClient {
 
 // ---- The fake ClickUp --------------------------------------------------------------------------
 
-const CLICKUP_TOOLS = (JSON.parse(readFileSync(fileURLToPath(new URL("../../../kernel/test/fixtures/mcp-trackers/clickup-tools.json", import.meta.url)), "utf8")) as { tools: unknown[] }).tools;
-/** The one tool a ClickUp poll calls (`MCP_TRACKERS.clickup.tool`). */
-const CLICKUP_LIST_TOOL = "get_workspace_tasks";
+const CLICKUP_FIXTURES = fileURLToPath(new URL("../../../kernel/test/fixtures/mcp-trackers/", import.meta.url));
+const CLICKUP_TOOLS = (JSON.parse(readFileSync(join(CLICKUP_FIXTURES, "clickup-tools.json"), "utf8")) as { tools: { name: string }[] }).tools;
+/** One live `clickup_filter_tasks` answer, recorded with placeholder ids and text (`clickup-filter-tasks-response.json`). */
+const CLICKUP_RECORDED = (JSON.parse(readFileSync(join(CLICKUP_FIXTURES, "clickup-filter-tasks-response.json"), "utf8")) as { response: { tasks: Record<string, unknown>[] } }).response;
+/** The one tool a ClickUp poll calls (`MCP_TRACKERS.clickup.tool`): the listing tool the recorded tool list holds. */
+export const CLICKUP_LIST_TOOL = CLICKUP_TOOLS[0]?.name as string;
 
-/** The task the ClickUp poll finds. `date_updated` is epoch milliseconds, as ClickUp sends it. */
+/** The task the ClickUp poll finds, in the recorded answer's shape: a listed task carries no body. `date_updated` is epoch milliseconds as a string, as ClickUp sends it. */
 export const CLICKUP_TASK_ROW = {
+  ...CLICKUP_RECORDED.tasks[0],
   id: CLICKUP_TASK,
   name: "Add a greeting banner",
-  description: "Print a banner when the app starts.",
-  status: { status: "open" },
+  status: "to do",
   tags: [],
   url: `https://app.clickup.com/t/${CLICKUP_TASK}`,
   date_updated: String(Date.parse("2026-11-09T08:10:00.000Z")),
 };
+/** The task's body, as the stand-in session is handed it (the listing does not carry it). */
+export const CLICKUP_TASK_BODY = "Print a banner when the app starts.";
 
 export interface Clickup {
   /** The kernel's ticket reader, over the fake server and the fake Keychain. */
@@ -248,7 +253,7 @@ export async function startClickup(clock: Clock): Promise<Clickup> {
   const mcp = await startFakeMcp({
     tools: CLICKUP_TOOLS,
     accessTtlSeconds: null,
-    callResult: (name) => (name === CLICKUP_LIST_TOOL ? { content: [{ type: "text", text: JSON.stringify({ tasks: [CLICKUP_TASK_ROW] }) }] } : undefined),
+    callResult: (name) => (name === CLICKUP_LIST_TOOL ? { content: [{ type: "text", text: JSON.stringify({ ...CLICKUP_RECORDED, tasks: [CLICKUP_TASK_ROW] }) }] } : undefined),
   });
   const keychain = fakeKeychain();
   const connector = createMcpConnector({ keychain: keychain.reader, writer: keychain.writer, deleter: keychain.deleter, serverFor: () => ({ url: mcp.mcpUrl }), allowLoopbackHttp: true });

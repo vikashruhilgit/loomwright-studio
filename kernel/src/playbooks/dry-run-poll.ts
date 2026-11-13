@@ -19,8 +19,10 @@
 // same `mcpConnectorGate` a due poll uses (`connector_missing`, the fix naming
 // the tracker); no GitHub connector, client or grant is asked for. A fetch that
 // fails is `rate_limited` or `source_error` (a ticket source's fix names the
-// tracker and the fixed code the kernel wrote, never the server's text). Each
-// is a `preview_incomplete`: no session starts, the parsed spec is still
+// tracker and the fixed code the kernel wrote, never the server's text; for
+// `tool_unavailable` it also names the tool and the connector, both the
+// kernel's own data).
+// Each is a `preview_incomplete`: no session starts, the parsed spec is still
 // returned, and the dry run still counts (the enable stays possible: a real
 // run parks at run time instead, item 05).
 //
@@ -34,13 +36,13 @@
 // (the untrusted-data wrapper), `../loop/internal.js`,
 // the triggers feature's public index (and `../triggers/poll.js`, for the
 // tracker a source reads), the MCP connector's gate (`mcpConnectorGate`, the
-// function `triggers/poll.ts` uses) and the ticket reader's failure codes and
-// type (`../integrations/mcp/trackers.js`), type-only integrations and feature
-// modules and this feature's files; never the Agent SDK, the session manager
+// function `triggers/poll.ts` uses) and the ticket reader's failure codes, the
+// tracker definitions (`MCP_TRACKERS`) and type (`../integrations/mcp/trackers.js`),
+// type-only integrations and feature modules and this feature's files; never the Agent SDK, the session manager
 // or `kernel.ts`. `./dry-run.ts` imports it, never the other way round.
 import { agentSettingsPath } from "../agents/settings.js";
 import { mcpConnectorGate } from "../integrations/mcp/connector.js";
-import { MCP_TICKET_FAILURES } from "../integrations/mcp/trackers.js";
+import { MCP_TICKET_FAILURES, MCP_TRACKERS } from "../integrations/mcp/trackers.js";
 import type { McpTicketReader } from "../integrations/mcp/trackers.js";
 import type { GitHubClient, PollSpec } from "../integrations/types.js";
 import { wrapUntrusted } from "../brain/context.js";
@@ -217,7 +219,9 @@ export async function previewPoll(
     if (tracker !== undefined) {
       // The message is the kernel's own fixed code, never the server's text; anything else is shown as the closed `client_error`.
       const code = (MCP_TICKET_FAILURES as readonly unknown[]).includes(fetched.message) ? fetched.message : fetched.error;
-      return incomplete(spec, "source_error", `${tracker.label} could not be read for ${fetched.repo}: ${code}. Check the ${tracker.kind} connection in Integrations and the poll's filters, then dry-run again.`);
+      // A missing tool is named with the connector: both are the kernel's own data (`MCP_TRACKERS`), never the server's text.
+      const missing = code === "tool_unavailable" ? `The ${tracker.kind} connector's tool list lacks ${MCP_TRACKERS[tracker.kind].tool}; reconnect ${tracker.label} in Integrations so the list is read again. ` : "";
+      return incomplete(spec, "source_error", `${tracker.label} could not be read for ${fetched.repo}: ${code}. ${missing}Check the ${tracker.kind} connection in Integrations and the poll's filters, then dry-run again.`);
     }
     // The client's error message is outside text (a response body can carry a PR author's): kept out of the fix the model reads.
     const detail = fetched.status !== undefined ? ` (HTTP ${fetched.status})` : "";
