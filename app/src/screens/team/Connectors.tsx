@@ -27,6 +27,7 @@
 // `<kind>:none`) to the same route. Wright has no detail route, so its per-tool
 // grant is unknown (no checkboxes), never "not granted". As with GitHub, the row
 // changes only when the feed's `agent_*` event refetches the detail.
+import { useEffect, useRef } from "react";
 import type { McpConnection, McpConnectionKind, RosterEntry, StudioBridge } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { type GithubGrantValue, setAgentConnectors, setAgentMcpTools } from "./actions";
@@ -195,6 +196,19 @@ function McpRow({ row, busy, onMcpChange }: { readonly row: McpGrantRow; readonl
 
 /** A crew member's GitHub row: its level (or unknown), the other two levels as buttons, and the Write line at Write. */
 function CrewGrant({ level, state, busy, onChange }: { readonly level: GithubLevel | undefined; readonly state: ConnectorsState; readonly busy: boolean; readonly onChange: ConnectorsProps["onChange"] }) {
+  // The button the owner just used is the one that unmounts when the feed's refetch changes the level (only the other
+  // two levels render), which would drop a keyboard user's focus to the body. A browser fires no blur when a focused
+  // node is removed, so `inGroup` still says focus was here at the swap, and focus moves to the group instead.
+  const group = useRef<HTMLDivElement>(null);
+  const inGroup = useRef(false);
+  const shown = useRef(level);
+  useEffect(() => {
+    const changed = shown.current !== level;
+    shown.current = level;
+    if (!changed || !inGroup.current) return;
+    const active = document.activeElement;
+    if (group.current !== null && (active === null || active === document.body)) group.current.focus();
+  }, [level]);
   return (
     <>
       <dl className="team-insp-kv" data-testid="team-connector-github">
@@ -211,7 +225,7 @@ function CrewGrant({ level, state, busy, onChange }: { readonly level: GithubLev
         </p>
       ) : null}
       {level === undefined ? null : (
-        <div className="team-insp-subhead" role="group" aria-label="Change the GitHub grant" data-testid="team-connector-levels">
+        <div className="team-insp-subhead" role="group" aria-label="Change the GitHub grant" tabIndex={-1} ref={group} onFocus={() => { inGroup.current = true; }} onBlur={() => { inGroup.current = false; }} data-testid="team-connector-levels">
           {GITHUB_LEVELS.filter((other) => other !== level).map((other) => (
             <Button key={other} size="row" variant={other === "none" ? "ghost" : "secondary"} loading={busy} data-testid={`team-connector-level-${other}`} onClick={() => onChange(other)}>
               {LEVEL_WORDS[other]}

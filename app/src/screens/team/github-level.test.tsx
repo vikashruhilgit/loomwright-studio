@@ -312,6 +312,23 @@ describe("the crew member's GitHub row", () => {
     expect(writeLine(mason)).toBeNull();
   });
 
+  it("keeps keyboard focus in the level group when the refetch swaps the chosen button out", async () => {
+    const kernel = await startTeam({ ...crew({ github: "read" }, ["github"]), set: setOk("connectors", null, null) });
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(grantWords(mason)).toBe("Read"));
+    const write = within(mason).getByRole("button", { name: "Write" });
+    write.focus();
+    expect(document.activeElement).toBe(write);
+    fireEvent.click(write);
+    await waitFor(() => expect(posted(kernel)).toEqual(["github:write"]));
+    kernel.held = { ...kernel.held, mason: { github: "write" } };
+    emit(kernel, "agent_settings_set");
+    await waitFor(() => expect(grantWords(mason)).toBe("Write"));
+    expect(levelButtons(mason)).toEqual(["None", "Read"]);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(within(mason).getByTestId("team-connector-levels"));
+  });
+
   it("a refusal shows the kernel's message in words and the row keeps the old level", async () => {
     const kernel = await startTeam({ ...crew(["github"], undefined), set: () => refused(409, { error: "settings_changed", message: "<b>the file changed</b> while it was being set" }) });
     const mason = await openInspector("Mason");
