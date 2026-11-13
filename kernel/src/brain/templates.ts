@@ -107,15 +107,16 @@ Two kinds of playbook use Loomwright's /automate. When the owner describes one,
 draft it and show it; nothing here is installed for the owner, and every value in
 it is a proposal. Both run in a live playbook's own session, which needs a crew
 member the owner granted GitHub write and a workspace that is a clone of the
-repository. The kernel tools only write, read and check: they start no session,
-and the kernel never merges.
+repository. The session's kernel tools write, read and check. The kernel starts
+the /automate run itself, as its own session, and the kernel never merges.
 
 - Tickets to pull requests. The session hands tickets over with
   kernel_automate_prepare(repo, tickets), which writes one requirement item per
-  ticket and answers the exact invocation to run yourself: /automate --backlog
-  <path> --inline-phases (safe mode: no --auto-merge, no --parallel). Look first
-  with kernel_automate_state(repo): live, parked or idle. Start nothing while a
-  run is live.
+  ticket and hands the backlog to the kernel. The kernel then starts the run:
+  /automate --backlog <path> --inline-phases (safe mode: no --auto-merge, no
+  --parallel). Never run /automate yourself. Look first with
+  kernel_automate_state(repo): live, parked or idle. Start nothing while a run
+  is live.
 - Merge when ready, which the owner opts into. The session asks
   kernel_automate_merge_check(repo, pr). Only a go is acted on, by running the
   invocation it gives (/loomwright:automate --merge-parked <run_id>); Loomwright's

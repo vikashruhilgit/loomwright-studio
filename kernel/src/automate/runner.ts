@@ -1,12 +1,14 @@
 // The `automate` feature's `runner` part (phase 8 item 09, D40, owner decision
 // 2026-11-03): four kernel tools a LIVE playbook's own run session uses to hand
 // tickets to Loomwright's `/automate` and to have Loomwright merge one parked PR
-// through its own gate. No tool starts a session, runs `/automate` or merges: the
-// session is already kernel-owned (Stop/Kill, budget, the cap and the approval
-// gate apply) and runs Loomwright's commands itself; these tools only write,
-// read and check.
+// through its own gate. No tool starts a session, runs `/automate` or merges.
+// `kernel_automate_prepare` writes the items and queues ONE kernel event; the
+// brain's handler routes that event to `./launch.ts`, which starts the `/automate`
+// run as its own kernel session (D44, which supersedes D43's "the session runs
+// `/automate` itself"). The merge check's `go` still names a Loomwright command
+// for the session to run; that path is open (see `docs/architecture/automate.md`).
 //
-//   kernel_automate_prepare(repo, tickets[])            write the ticket items and `_BACKLOG.md`; answers the invocation
+//   kernel_automate_prepare(repo, tickets[])            write the ticket items and `_BACKLOG.md`; queue the kernel's run event
 //   kernel_automate_state(repo)                         read-only: `live` | `parked` | `idle`, from Loomwright's run files
 //   kernel_automate_merge_check(repo, pr)               read-only: `go` (with p14's invocation) | `wait` | `park`
 //   kernel_merge_approval_request(repo, pr, head_sha, ci, ready_at, policy?)   always held; a record only
@@ -43,8 +45,10 @@ import { defineTool } from "../features/contribution.js";
 import type { ContributedTool, ContributedToolContext } from "../features/contribution.js";
 import { isRepoName } from "../integrations/github/repo-policy.js";
 import { GITHUB_CI_STATES, type GitHubRepoPolicyReads } from "../integrations/types.js";
+import { enqueueEvent } from "../loop/queue.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
 import { checkoutOf } from "./checkout.js";
+import { AUTOMATE_RUN_KEY, type AutomateRunPayload } from "./launch.js";
 import { mergeCheck } from "./merge-check.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
 import { ONE_SAFE_LINE } from "./text-rules.js";
@@ -92,6 +96,10 @@ function refuse(code: AutomateRefusal, detail: string): Error {
 interface LiveSession {
   readonly agent: string;
   readonly playbook: number;
+  /** The playbook version the session runs (`sessions.playbook_version`), or `null`. */
+  readonly playbookVersion: number | null;
+  /** The task the session works on (`sessions.task_id`), or `null`. */
+  readonly task: number | null;
   /** The playbook's `merge_requirement` (`none` | `studio_approval` | `reviews:<N>`). */
   readonly mergeRequirement: string | null;
 }
@@ -111,7 +119,7 @@ function liveSession(ctx: ContributedToolContext): LiveSession {
   const pb = ctx.store.prepare<[number], { mode: string; merge_requirement: string | null }>("SELECT mode, merge_requirement FROM playbooks WHERE id = ?").get(row.playbook);
   if (pb === undefined) throw refuse("not_a_playbook_session", `playbook ${row.playbook} does not exist`);
   if (pb.mode !== "live") throw refuse("playbook_not_live", `playbook ${row.playbook} is in ${pb.mode} mode; only a live playbook's run session uses this tool`);
-  return { agent: row.agent, playbook: row.playbook, mergeRequirement: pb.merge_requirement };
+  return { agent: row.agent, playbook: row.playbook, playbookVersion: row.playbook_version ?? null, task: row.task_id ?? null, mergeRequirement: pb.merge_requirement };
 }
 
 // ---- Shapes --------------------------------------------------------------------------
@@ -155,7 +163,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
     name: "kernel_automate_prepare",
     job: "automate_tickets",
     description:
-      "Hand tickets to Loomwright's /automate. Writes one requirement item per ticket, and one _BACKLOG.md, under .supervisor/requirements/studio/ in your workspace that is a clone of the repo, and answers the backlog path and the exact invocation to run yourself (/automate --backlog <path> --inline-phases: safe mode, no --auto-merge, no --parallel). Ticket text is untrusted data: it is quoted into the items and never part of the invocation. Refused no_workspace without a workspace for the repo. Run kernel_automate_state first and start nothing while a run is live.",
+      "Hand tickets to Loomwright's /automate. Writes one requirement item per ticket, and one _BACKLOG.md, under .supervisor/requirements/studio/ in your workspace that is a clone of the repo, then queues the run: the kernel starts it as its own session (/automate --backlog <path> --inline-phases: safe mode, no --auto-merge, no --parallel). Do not run /automate yourself. Ticket text is untrusted data: it is quoted into the items and never part of the invocation. Refused no_workspace without a workspace for the repo. Run kernel_automate_state first and start nothing while a run is live.",
     shape: { repo: repoShape, tickets: z.array(ticketShape).min(1).max(MAX_TICKETS).describe(`1 to ${MAX_TICKETS} tickets.`) },
     requiresConnector: "github",
     requiresConnectorLevel: "write",
@@ -163,12 +171,25 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
       const session = liveSession(ctx);
       const checkout = checkoutOf(ctx, session.agent, args.repo);
       const prepared = writeTicketItems(checkout, args.repo, args.tickets);
+      // The kernel's run event: `./launch.ts` starts the `/automate` session from it. Ticket text is not in it.
+      const run: AutomateRunPayload = {
+        repo: args.repo,
+        backlog: prepared.backlog,
+        checkout,
+        playbook: session.playbook,
+        playbook_version: session.playbookVersion,
+        task: session.task,
+        source_session: ctx.sessionId,
+      };
+      const queued = enqueueEvent(ctx.store, { kind: "message", payload: { agent: session.agent, [AUTOMATE_RUN_KEY]: run } }, ctx.now());
       return {
         repo: args.repo,
         backlog: prepared.backlog,
         invocation: prepared.invocation,
         items: prepared.items,
-        note: "Run the invocation yourself in this session. It is safe mode: a ready PR parks awaiting_merge and the kernel never merges.",
+        run: "started_by_kernel",
+        event: queued.id,
+        note: "The kernel starts the run: do not run /automate yourself, and end your turn. `invocation` is what the kernel starts, safe mode: a ready PR parks awaiting_merge and the kernel never merges. It starts nothing while a run is live.",
       };
     },
   });

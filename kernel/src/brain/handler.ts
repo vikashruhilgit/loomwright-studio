@@ -61,11 +61,14 @@
 // A message whose payload carries `playbook` is a playbook's run, not a
 // message: it goes to `handlePlaybookMessage` (`../playbooks/runs.ts`) before
 // anything above, and writes no `brain_messages` row (its record is the
-// `playbook_runs` row).
+// `playbook_runs` row). One that carries `automate_run` is the kernel's start
+// of a crew member's `/automate` run (D44, queued by `kernel_automate_prepare`):
+// it goes to `handleAutomateRun` (`../automate/launch.ts`), also with no row.
 //
 // Imports only types from the loop and the session manager (never the
 // manager itself or the Agent SDK: the `studio` CLI loads this module); its
 // runtime imports beyond its siblings are `node:*`, the playbook runs, the
+// automate feature's launch (`../automate/launch.js`), the
 // agents feature's SDK-free leaves (registry, settings, charter files,
 // memory), `../loop/queue.js` and `../loop/steps.js`.
 import { existsSync } from "node:fs";
@@ -75,6 +78,7 @@ import { agentMemoryDir } from "../agents/memory.js";
 import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
 import type { AgentSettingsRefusal } from "../agents/settings.js";
+import { AUTOMATE_RUN_KEY, handleAutomateRun } from "../automate/launch.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { enqueueEvent } from "../loop/queue.js";
 import { runStep } from "../loop/steps.js";
@@ -333,6 +337,8 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
   return async (ctx: EventContext): Promise<void> => {
     // A playbook's message: its run (no `brain_messages` row).
     if (ctx.event.payload.playbook !== undefined) return handlePlaybookMessage(ctx, { now, timeZone, loomwright });
+    // A kernel-started /automate run (D44): `kernel_automate_prepare` queued it (no `brain_messages` row).
+    if (ctx.event.payload[AUTOMATE_RUN_KEY] !== undefined) return handleAutomateRun(ctx);
     const { event, store } = ctx;
     const agent = event.payload.agent;
     if (typeof agent !== "string") return;

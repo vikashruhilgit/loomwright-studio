@@ -425,6 +425,12 @@ describe("docs/architecture/brain.md (AC9)", () => {
     expect(section).toContain("Merge when ready, which the owner opts into.");
     expect(section).toContain("/automate --backlog <path> --inline-phases");
     expect(section).toContain("no --auto-merge, no --parallel");
+    // D44: prepare hands the backlog over and the kernel starts the run; the session never runs /automate itself.
+    expect(section).toContain("hands the backlog to the kernel");
+    expect(section).toContain("The kernel starts the /automate run itself, as its own session");
+    expect(section).toContain("Never run /automate yourself.");
+    expect(section).not.toContain("they start no session");
+    expect(section).not.toContain("to run yourself");
     expect(section).toContain("/loomwright:automate --merge-parked <run_id>");
     // A proposal the owner reads, never installed; the kernel never merges; ticket text is data.
     expect(section).toContain("nothing here is installed for the owner");

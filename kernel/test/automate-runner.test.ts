@@ -95,6 +95,12 @@ describe("AC2: kernel_automate_prepare", () => {
     expect(out["invocation"]).not.toContain("--auto-merge");
     expect(out["invocation"]).not.toContain("--parallel");
 
+    // D44: the kernel starts the run. The answer says so and tells the session not to run /automate itself.
+    expect(out["run"]).toBe("started_by_kernel");
+    expect(out["note"]).toContain("The kernel starts the run");
+    expect(out["note"]).toContain("do not run /automate yourself");
+    expect(out["note"]).not.toContain("Run the invocation yourself");
+
     // Each item carries the ticket's title, link and dedupe ref.
     const items = out["items"] as { ref: string; path: string; existing: boolean }[];
     expect(items.map((i) => [i.ref, i.existing])).toEqual([["PROJ-101", false], ["o/r#12", false]]);
@@ -237,6 +243,46 @@ describe("AC2: kernel_automate_prepare", () => {
     symlinkSync(outside, join(env.checkout, ".supervisor", "requirements"));
     expect(errorOf(await prepare({ repo: "o/r", tickets: TICKETS }))).toMatch(/^unsafe_path: requirements /);
     expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("queues exactly one kernel run event per successful call, with the backlog, checkout and calling session in it and no ticket text; a refused call queues none (D44)", async () => {
+    const queued = (): { id: number; kind: string; payload: Record<string, unknown> }[] =>
+      env.store
+        .prepare<[], { id: number; kind: string; payload_json: string }>("SELECT id, kind, payload_json FROM event_queue ORDER BY id")
+        .all()
+        .map((r) => ({ id: r.id, kind: r.kind, payload: JSON.parse(r.payload_json) as Record<string, unknown> }));
+    expect(queued()).toEqual([]);
+
+    // A refusal (no workspace for the repo, or bad input) writes no item and queues no run.
+    expect(errorOf(await prepare({ repo: "o/other", tickets: TICKETS }))).toMatch(/^no_workspace: /);
+    expect(errorOf(await prepare({ repo: "o/r", tickets: [{ ...TICKETS[0], link: "javascript:alert(1)" }] }))).toMatch(/^invalid_input: /);
+    expect(queued()).toEqual([]);
+
+    const out = value(await prepare({ repo: "o/r", tickets: TICKETS }));
+    const [event, ...rest] = queued();
+    expect(rest).toEqual([]);
+    expect(event).toMatchObject({ id: out["event"], kind: "message" });
+    // The payload: the crew member, and the run under its own key (the brain routes on it, never on `playbook`).
+    expect(event?.payload).toEqual({
+      agent: "mason",
+      automate_run: {
+        repo: "o/r",
+        backlog: join(env.checkout, ITEMS, BACKLOG_FILE),
+        checkout: env.checkout,
+        playbook: live.playbook,
+        playbook_version: null,
+        task: null,
+        source_session: expect.any(Number),
+      },
+    });
+    expect(event?.payload["playbook"]).toBeUndefined();
+    // Nothing a ticket said is in the event.
+    const text = JSON.stringify(event?.payload);
+    for (const t of TICKETS) for (const part of [t.title, t.link, t.body]) expect(text).not.toContain(part);
+
+    // A second call is a second hand-over: one more event (Loomwright's own run state keeps a second drain from starting).
+    value(await prepare({ repo: "o/r", tickets: [TICKETS[0]] }));
+    expect(queued()).toHaveLength(2);
   });
 
   it("helpers: a title is one clean line, a body is quoted line by line, an item name is a slug plus a hash of the exact ref", () => {
