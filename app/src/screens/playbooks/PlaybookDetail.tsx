@@ -20,6 +20,7 @@ import {
   ASK_DRY_RUN_ENABLE_LABEL,
   LIVE_EXPLANATION,
   LIVE_NEEDS_ENABLE_TEXT,
+  DRAFT_NEXT_STEP_TEXT,
   LIVE_NEXT_STEP_TEXT,
   NOT_COUNTED,
   NOT_SET,
@@ -32,6 +33,7 @@ import {
   liveChoosable,
   modeCaption,
   modeSavedText,
+  wentOffline,
   runItemText,
   runKindWord,
   runTokensText,
@@ -179,33 +181,34 @@ function ModeControl({
 }: Pick<PlaybookDetailProps, "playbook" | "actions" | "liveAskOpen" | "onAskLive" | "onCancelLive" | "onSet" | "onAskDryRunEnable">) {
   const [note, setNote] = useState<Notice | undefined>(undefined);
   // Live was set and the kernel wrote a version: the next step (dry run, then enable) is Wright's to start.
-  const [next, setNext] = useState(false);
+  const [next, setNext] = useState<"live" | "draft" | null>(null);
   const isLive = playbook.mode === "live";
   const held = actions.offline || actions.pending !== null;
 
-  const settle = async (answer: Promise<WriteOutcome<PlaybookChangeResponse> | undefined>, toLive: boolean): Promise<void> => {
+  const settle = async (answer: Promise<WriteOutcome<PlaybookChangeResponse> | undefined>, toLive: boolean, wasOn: boolean): Promise<void> => {
     const outcome = await answer;
     // Dropped by the guard: an earlier write is still pending, and its answer is the one to show.
     if (outcome === undefined) return;
     if (!outcome.ok) {
       setNote({ tone: "danger", text: outcome.text });
-      setNext(false);
+      setNext(null);
       return;
     }
-    setNote({ tone: "ok", text: modeSavedText(outcome.body) });
-    setNext(toLive && outcome.body.changed);
+    setNote({ tone: "ok", text: modeSavedText(outcome.body, wasOn) });
+    // Live: the new version is a draft. Draft: only if the playbook was on and came back a draft (it is off now).
+    setNext(outcome.body.changed && toLive ? "live" : wentOffline(wasOn, outcome.body) ? "draft" : null);
   };
   const confirmLive = (): void => {
     onCancelLive();
     setNote(undefined);
-    setNext(false);
-    void settle(onSet(playbook, "mode", "live"), true);
+    setNext(null);
+    void settle(onSet(playbook, "mode", "live"), true, isOn(playbook));
   };
   const chooseDraft = (): void => {
     if (!isLive) return;
     setNote(undefined);
-    setNext(false);
-    void settle(onSet(playbook, "mode", "draft"), false);
+    setNext(null);
+    void settle(onSet(playbook, "mode", "draft"), false, isOn(playbook));
   };
   const chooseLive = (): void => {
     if (liveChoosable(playbook)) onAskLive(playbook);
@@ -247,9 +250,9 @@ function ModeControl({
           {note.text}
         </p>
       )}
-      {next ? (
+      {next !== null ? (
         <div className="pb-actions" data-testid={IDS.modeNextStep}>
-          <span className="pb-cap">{LIVE_NEXT_STEP_TEXT}</span>
+          <span className="pb-cap">{next === "live" ? LIVE_NEXT_STEP_TEXT : DRAFT_NEXT_STEP_TEXT}</span>
           <Button variant="secondary" size="row" data-testid={IDS.askDryRunEnable} icon={<Icon name="chat" className="pb-glyph" />} disabled={actions.offline} onClick={() => onAskDryRunEnable(playbook)}>
             {ASK_DRY_RUN_ENABLE_LABEL}
           </Button>

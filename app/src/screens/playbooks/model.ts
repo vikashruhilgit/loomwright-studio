@@ -440,14 +440,26 @@ export const LIVE_NEEDS_ENABLE_TEXT = "Live can only be chosen on a playbook tha
 /** After Live was set: the next two steps, before the playbook runs live. */
 export const LIVE_NEXT_STEP_TEXT = "This new version is a draft. It needs its own dry run and an enable approval before it runs live.";
 
+/** After Draft was set on an enabled playbook: it is off now, so the same two steps stand before it runs again. */
+export const DRAFT_NEXT_STEP_TEXT = "This new version is a draft. It needs its own dry run and an enable approval before it runs again.";
+
+/** Appended when a changed Set took an enabled playbook offline: the kernel reverts it to a draft on any changed Set. */
+export const DRAFT_AGAIN_TEXT = " The playbook is a draft again until you turn it on.";
+
+/** True when a changed Set came back on a playbook that was on before it: the kernel made it a draft again. */
+export function wentOffline(wasOn: boolean, answer: PlaybookChangeResponse): boolean {
+  return answer.changed && wasOn && answer.playbook.status === "draft";
+}
+
 /** The label of the hand-off button (and the ⌘K command's wording). */
 export const ASK_DRY_RUN_ENABLE_LABEL = "Ask Wright for the dry run and enable";
 
 /** The card's line after a Set of `mode` the kernel accepted: the version it answered with, and any mirror-file error in its words. */
-export function modeSavedText(answer: PlaybookChangeResponse): string {
+export function modeSavedText(answer: PlaybookChangeResponse, wasOn: boolean): string {
   if (!answer.changed) return `No change: mode already reads that, so the kernel wrote no version (still v${answer.playbook.version}).`;
   const mirror = answer.mirror_error === undefined ? "" : ` The playbook's mirror file could not be written: ${safe(answer.mirror_error)}`;
-  return `Mode: saved as v${answer.playbook.version}.${mirror}`;
+  const draftAgain = wentOffline(wasOn, answer) ? DRAFT_AGAIN_TEXT : "";
+  return `Mode: saved as v${answer.playbook.version}.${draftAgain}${mirror}`;
 }
 
 /** The line the dry-run-and-enable hand-off puts in Wright's composer: it names the playbook by id and slug and asks for its dry run, then its enable. The owner sends it. */

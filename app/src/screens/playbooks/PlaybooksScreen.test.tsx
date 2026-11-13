@@ -660,9 +660,13 @@ describe("phase 8 item 20e: the card's Mode control and the truthful Mode row", 
   });
 
   it("modeSavedText names the version the kernel answered with", () => {
-    const answer = { playbook: playbook(1, { version: 9 }), changed: true };
-    expect(modeSavedText(answer)).toContain("saved as v9");
-    expect(modeSavedText({ ...answer, changed: false })).toContain("wrote no version (still v9)");
+    const answer = { playbook: playbook(1, { version: 9, status: "draft" }), changed: true };
+    expect(modeSavedText(answer, false)).toContain("saved as v9");
+    expect(modeSavedText({ ...answer, changed: false }, true)).toContain("wrote no version (still v9)");
+    // An enabled playbook that comes back a draft is said to be a draft again; one that was never on is not.
+    expect(modeSavedText(answer, true)).toContain("The playbook is a draft again until you turn it on.");
+    expect(modeSavedText(answer, false)).not.toContain("draft again");
+    expect(modeSavedText({ ...answer, playbook: playbook(1, { version: 9, status: "enabled" }) }, true)).not.toContain("draft again");
   });
 
   it("AC1: an enabled draft-mode playbook offers Draft and Live, Draft marked chosen, Live choosable; the control sits outside the Policy rows", async () => {
@@ -761,7 +765,10 @@ describe("phase 8 item 20e: the card's Mode control and the truthful Mode row", 
     expect(posts(fake, "POST /playbooks/:id/set")[0]).toMatchObject({ params: { id: 1 }, body: { field: "mode", value: "draft" } });
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(screen.getByTestId(IDS.modeNote).textContent).toContain("saved as v4"));
-    expect(screen.queryByTestId(IDS.askDryRunEnable)).toBeNull();
+    // The kernel reverts an enabled playbook to a draft on any changed Set: say so, and offer the way back on.
+    expect(screen.getByTestId(IDS.modeNote).textContent).toContain("The playbook is a draft again until you turn it on.");
+    expect(screen.getByTestId(IDS.modeNextStep).textContent).toContain("before it runs again");
+    expect(screen.getByTestId(IDS.askDryRunEnable)).toBeTruthy();
     // Now a draft-mode playbook (the kernel's answer has landed): Draft is chosen already.
     await waitFor(() => expect(radio("Draft").getAttribute("aria-checked")).toBe("true"));
     fireEvent.click(radio("Draft"));
