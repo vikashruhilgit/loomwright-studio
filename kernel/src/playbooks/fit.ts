@@ -184,7 +184,7 @@ function grantNeeds(store: Store, row: PlaybookRow, tools: readonly CatalogueToo
 function closeText(name: string, kind: NeedsGapKind, closable: boolean, commandRoute: boolean): string {
   if (closable) return "a charter change can give it";
   if (commandRoute) return "D44 leaves this route to the crew session, which no charter should allow, so no grant is proposed and you can enable the playbook anyway";
-  return kind === "workspace" ? `only you can add one: Team → ${name}'s inspector` : `only you can grant it: Team → ${name}'s inspector`;
+  return kind === "workspace" ? "only you know where your copy of the repo is: tell Wright, and it proposes a charter update listing it" : `only you can grant it: Team → ${name}'s inspector`;
 }
 
 /**

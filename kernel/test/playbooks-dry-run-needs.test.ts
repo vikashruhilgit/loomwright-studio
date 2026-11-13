@@ -179,7 +179,7 @@ describe("AC4: the dry run names the calls a real run would be refused, and the 
         kind: "workspace",
         what: ["a copy of a repo to work in"],
         closable: false,
-        line: "A real run of Hand tickets to /automate would be refused: Mason has no copy of a repo to work in; only you can add one: Team → Mason's inspector.",
+        line: "A real run of Hand tickets to /automate would be refused: Mason has no copy of a repo to work in; only you know where your copy of the repo is: tell Wright, and it proposes a charter update listing it.",
       },
     ]);
     expect(dry.fit?.lines).toEqual([dry.fit?.refused_calls[0]?.line]);
@@ -246,7 +246,7 @@ describe("AC4: the dry run names the calls a real run would be refused, and the 
     expect(proposed?.allowedBashPrefixes).toEqual(["gh pr"]);
     expect(JSON.stringify(fit?.proposed_update)).not.toMatch(/Skill|git push|git commit|workspace/);
     // The workspace is the owner's step, in plain words.
-    expect(fit?.lines.some((l) => l.includes("only you can add one: Team → Mason's inspector"))).toBe(true);
+    expect(fit?.lines.some((l) => l.includes("only you know where your copy of the repo is: tell Wright, and it proposes a charter update listing it"))).toBe(true);
     // The crew route's line says no grant is proposed and the owner may enable anyway (D44).
     expect(fit?.lines.some((l) => l.includes("no grant is proposed and you can enable the playbook anyway"))).toBe(true);
   });
