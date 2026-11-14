@@ -31,16 +31,23 @@ export const WORKSPACE_FLAG = "no copy of a repo to work in";
 
 /**
  * The kernel's flagged tracker line names this (`TRACKER_ACCESS_FLAG` in `kernel/src/agents/charter-readiness.ts`, byte for
- * byte): `<name> can't read <tracker> tickets yet: it has no <tracker> access` (or `only part of`). The card keys its
- * tick-to-grant row on it, as it keys the workspace row on `WORKSPACE_FLAG`.
+ * byte): `<name> can't read <tracker> tickets yet: it has no <tracker> access` (or `only part of`). `trackerLine`'s
+ * no-access pattern is built from it, so this byte-for-byte pin guards what the card matches (its tick-to-grant row).
  */
 export const TRACKER_ACCESS_FLAG = "tickets yet: it has ";
 
-/** The kernel's "tracker not connected" line names this (`TRACKER_NOT_CONNECTED_FLAG`): the card offers Connect on it. */
+/** The kernel's "tracker not connected" line names this (`TRACKER_NOT_CONNECTED_FLAG`); `trackerLine`'s not-connected pattern is built from it (the card offers Connect). */
 export const TRACKER_NOT_CONNECTED_FLAG = "isn't connected on Integrations";
 
 /** The MCP trackers the kernel's tracker lines name, by the label they print (`CONNECTOR_LABELS`). */
 const TRACKER_LABELS: Readonly<Record<string, "clickup" | "jira">> = { ClickUp: "clickup", Jira: "jira" };
+
+/** A literal as RegExp source. */
+const reEscape = (literal: string): string => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The two anchored patterns, with the pinned flags spliced in so a pin on a flag is a pin on what is matched. */
+const NOT_CONNECTED_LINE = new RegExp(`^duty \\d+: (ClickUp|Jira) ${reEscape(TRACKER_NOT_CONNECTED_FLAG)}, so .+ can't read its tickets yet \\(connect it there first; only you can grant access\\)$`);
+const NO_ACCESS_LINE = new RegExp(`^duty \\d+: .+ can't read (ClickUp|Jira) ${reEscape(TRACKER_ACCESS_FLAG)}(?:no \\1 access|only part of the \\1 access to read them) \\(only you can grant it\\)$`);
 
 /** What a readiness line says about a ticket duty's tracker, for the card's fix: which MCP tracker, and whether it lacks access or is not connected. */
 export interface TrackerLine {
@@ -61,9 +68,9 @@ export interface TrackerLine {
  * colon after the number, so a duty excerpt that imitates either sentence matches neither.
  */
 export function trackerLine(text: string): TrackerLine | undefined {
-  const off = /^duty \d+: (ClickUp|Jira) isn't connected on Integrations, so .+ can't read its tickets yet \(connect it there first; only you can grant access\)$/.exec(text);
+  const off = NOT_CONNECTED_LINE.exec(text);
   if (off?.[1] !== undefined) return { kind: TRACKER_LABELS[off[1]] as "clickup" | "jira", state: "not_connected" };
-  const access = /^duty \d+: .+ can't read (ClickUp|Jira) tickets yet: it has (?:no \1 access|only part of the \1 access to read them) \(only you can grant it\)$/.exec(text);
+  const access = NO_ACCESS_LINE.exec(text);
   if (access?.[1] !== undefined) return { kind: TRACKER_LABELS[access[1]] as "clickup" | "jira", state: "no_access" };
   return undefined;
 }

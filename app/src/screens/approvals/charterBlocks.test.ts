@@ -156,6 +156,12 @@ describe("item 21b: the tracker lines the card keys its fix on", () => {
     expect(TRACKER_ACCESS_FLAG).toBe("tickets yet: it has ");
   });
 
+  it("the rest of what trackerLine matches is the kernel's own text (the sentence tails and the no-access forms)", () => {
+    for (const fragment of ["(only you can grant it)", "(connect it there first; only you can grant access)", ", so ${name} can't read its tickets yet", "can't read ${label} tickets yet: it has ${part ? `only part of the ${label} access to read them` : `no ${label} access`}"]) {
+      expect(KERNEL).toContain(fragment);
+    }
+  });
+
   it("reads which MCP tracker a flagged line is about, from the kernel's sentences", () => {
     expect(trackerLine("duty 1: Mason can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toEqual({ kind: "clickup", state: "no_access" });
     expect(trackerLine("duty 2: Mason can't read Jira tickets yet: it has only part of the Jira access to read them (only you can grant it)")).toEqual({ kind: "jira", state: "no_access" });
