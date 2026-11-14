@@ -646,6 +646,22 @@ export interface AgentDetailResponse {
   readonly workspaces: readonly string[] | null;
   readonly memory: { readonly dir: string; readonly files: readonly { readonly name: string; readonly path: string; readonly present: boolean }[] };
   readonly charter: unknown;
+  /**
+   * The member's granted kernel tools grouped by catalogue job, in the order the held charter card groups them,
+   * the tools the catalogue does not list last (item 21b). `null` when the settings file was refused or the
+   * kernel has no catalogue; absent from an older kernel's answer.
+   */
+  readonly jobs?: readonly AgentJobGroup[] | null;
+}
+
+/** One catalogue job of a member's granted kernel tools. */
+export interface AgentJobGroup {
+  /** The catalogue job's id; `null` for the "Other tools" group (granted kernel tools the catalogue does not list). */
+  readonly job: string | null;
+  /** The job's label ("Hand tickets to /automate"), or "Other tools". */
+  readonly label: string;
+  /** The granted kernel tools' names, without the `mcp__kernel__` prefix. */
+  readonly tools: readonly string[];
 }
 
 /** `POST /agents`: a charter, as the owner saw it (the kernel validates it whole). */
@@ -1473,7 +1489,26 @@ export interface McpConnection {
   readonly server_url: string | null;
   readonly status: ConnectorStatus;
   readonly granted_tools: readonly string[];
+  /**
+   * The listed tools in the owner's words (phase 8 item 21b): each capability the connection can offer, with only
+   * the tools it lists. `null` when the kernel could not build them (the tool list cannot be read); absent from an
+   * older kernel's answer. The app then falls back to the raw `granted_tools` list with a line saying the plain list
+   * is unavailable, and changes no grant.
+   */
+  readonly capabilities?: readonly McpCapability[] | null;
+  /** The listed tools no capability names: named, never hidden, never granted by a capability tick. `null` with `capabilities`. */
+  readonly other_tools?: readonly string[] | null;
   readonly token_expiry: IsoTime | null;
+}
+
+/** One thing a crew member may be let do in a tracker, in words. `tools` are the server's own names (untrusted text), the enforced detail. */
+export interface McpCapability {
+  readonly id: string;
+  readonly label: string;
+  /** True when the capability writes, deletes or posts: the row marks it in words as one that changes things. */
+  readonly changes: boolean;
+  /** The connection's listed tools this capability covers; never empty. */
+  readonly tools: readonly string[];
 }
 
 /**

@@ -213,7 +213,8 @@ describe("connecting (AC1, AC5)", () => {
     expect(row).toMatchObject({ kind: "jira", server_url: r.f.mcpUrl, status: "connected", token_expiry: new Date(T0_MS + 3600 * 1000).toISOString() });
     expect(storedToolsOf(row?.granted_tools ?? null).map((t) => t.name)).toEqual(["search_issues", "create_issue"]);
     expect(listMcpConnections(env.store)).toEqual([
-      { kind: "jira", server_url: r.f.mcpUrl, status: "connected", granted_tools: ["search_issues", "create_issue"], token_expiry: new Date(T0_MS + 3600 * 1000).toISOString() },
+      // The fake server's tool names are in no capability, so they are all `other_tools` (named, never hidden).
+      { kind: "jira", server_url: r.f.mcpUrl, status: "connected", granted_tools: ["search_issues", "create_issue"], capabilities: [], other_tools: ["search_issues", "create_issue"], token_expiry: new Date(T0_MS + 3600 * 1000).toISOString() },
     ]);
 
     // One event, with the counts and no secret.
@@ -892,6 +893,7 @@ describe("disconnecting (AC7)", () => {
     expect(eventsOf().at(-1)?.payload).toMatchObject({ kind: "jira", status: "disconnected" });
     expect(mcpConnectorGate(env.store, "jira")).toEqual({ kind: "connector_missing", status: "disconnected" });
     expect(listMcpConnections(env.store)[0]?.granted_tools).toEqual([]);
+    expect(listMcpConnections(env.store)[0]).toMatchObject({ capabilities: null, other_tools: null });
   });
 
   it("deletes the item even when there is no row, and then says there is no connector", async () => {
@@ -936,11 +938,27 @@ describe("disconnecting (AC7)", () => {
 });
 
 describe("the row's read side", () => {
+  it("shows a ClickUp row's tools in the owner's words: capabilities with only the listed tools, the rest as other_tools, and granted_tools still the server's names", () => {
+    const stored = ["clickup_filter_tasks", "clickup_get_task", "clickup_create_comment", "clickup_delete_task", "clickup_get_goals"].map((name) => ({ name, proxy: `kernel_mcp_w_${name}`, read_only: false, description: "", schema: "{}" }));
+    env.store.prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES ('clickup', 'https://x.test', 'connected', ?)").run(JSON.stringify(stored));
+    const view = listMcpConnections(env.store)[0];
+    expect(view?.granted_tools).toEqual(["clickup_filter_tasks", "clickup_get_task", "clickup_create_comment", "clickup_delete_task", "clickup_get_goals"]);
+    expect(view?.capabilities).toEqual([
+      { id: "read", label: "Read tickets", changes: false, tools: ["clickup_filter_tasks", "clickup_get_task"] },
+      { id: "comment", label: "Comment on tickets", changes: true, tools: ["clickup_create_comment"] },
+      { id: "delete", label: "Delete or merge tickets, or delete comments", changes: true, tools: ["clickup_delete_task"] },
+    ]);
+    expect(view?.other_tools).toEqual(["clickup_get_goals"]);
+    // Nothing the kernel keeps privately (proxy names, read-only flags) reaches the plain list.
+    expect(JSON.stringify(view)).not.toMatch(/kernel_mcp_|read_only/);
+  });
   it("shows no row that is not an MCP kind, and reads an unreadable tool list as no tools", () => {
     env.store.prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES ('github', 'https://x.test', 'connected', '[]')").run();
     env.store.prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES ('jira', 'https://x.test', 'connected', '{not json')").run();
     env.store.prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES ('clickup', 'https://x.test', 'connected', '{\"a\":1}')").run();
     expect(listMcpConnections(env.store).map((c) => [c.kind, c.granted_tools])).toEqual([["jira", []], ["clickup", []]]);
+    // An unreadable list also leaves the plain list unbuilt (null, not an empty list that reads as "nothing offered"): the app shows the raw list.
+    expect(listMcpConnections(env.store).map((c) => [c.kind, c.capabilities, c.other_tools])).toEqual([["jira", null, null], ["clickup", null, null]]);
     expect(storedToolsOf(null)).toEqual([]);
     expect(storedToolsOf("[1,null,{\"name\":\"x\"}]")).toEqual([]);
   });
@@ -1039,11 +1057,12 @@ describe("GET /connectors carries mcp_connections (AC11)", () => {
     const body = res.body as { connectors: unknown[]; mcp_connections: Record<string, unknown>[] };
     expect(body.connectors).toEqual([]);
     expect(body.mcp_connections).toEqual([
-      { kind: "jira", server_url: r.f.mcpUrl, status: "connected", granted_tools: ["search_issues", "create_issue"], token_expiry: new Date(T0_MS + 3600 * 1000).toISOString() },
-      { kind: "clickup", server_url: null, status: "disconnected", granted_tools: [], token_expiry: null },
+      { kind: "jira", server_url: r.f.mcpUrl, status: "connected", granted_tools: ["search_issues", "create_issue"], capabilities: [], other_tools: ["search_issues", "create_issue"], token_expiry: new Date(T0_MS + 3600 * 1000).toISOString() },
+      // No tool list was ever stored: the plain list cannot be built (null, never an empty one), so the app falls back to the raw list.
+      { kind: "clickup", server_url: null, status: "disconnected", granted_tools: [], capabilities: null, other_tools: null, token_expiry: null },
     ]);
     // Exactly the contract's fields: no id, no proxy names, no read-only flags, no token.
-    for (const row of body.mcp_connections) expect(Object.keys(row).sort()).toEqual(["granted_tools", "kind", "server_url", "status", "token_expiry"]);
+    for (const row of body.mcp_connections) expect(Object.keys(row).sort()).toEqual(["capabilities", "granted_tools", "kind", "other_tools", "server_url", "status", "token_expiry"]);
     const text = JSON.stringify(res.body);
     for (const leak of ["kernel_mcp_", "read_only", "proxy", "access_token", "refresh_token", ...r.f.secrets()]) expect(text, leak).not.toContain(leak);
   });
