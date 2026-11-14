@@ -1,6 +1,7 @@
 # 21e — A dry run names the owner's missing grant instead of running a review that can't act
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/277
 
 **As** the owner of Loomwright Studio,
 **I want** a poll playbook's dry run to tell me plainly when its crew member lacks a grant its jobs need, and not spend a session on a review that can't use those jobs,
@@ -72,3 +73,9 @@ kernel/test/playbooks-dry-run-poll.test.ts
 kernel/test/playbooks-dry-run-poll-unit.test.ts
 docs/architecture/dry-run.md
 docs/evidence/phase-8-21e-dry-run-owner-step.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-14T17:11:55Z
+- **Brief:** .supervisor/jobs/done/2026-11-14-dry-run-owner-step-open.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/277
