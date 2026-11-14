@@ -58,6 +58,14 @@ export interface JobNeedsDeclaration {
    * tools (`requiresConnector` / `requiresConnectorLevel`), read from the catalogue.
    */
   readonly workspace: boolean;
+  /**
+   * The job works tickets from a tracker the duty names (a duty entry's `source`: GitHub Issues, ClickUp or
+   * Jira, `TICKET_SOURCES` in `../agents/charter-files.ts`). Declared once, on the one ticket job, never one per
+   * tracker. The charter readiness check reads it through `jobNeedsTicketSource`: a ticket duty states its
+   * source (data, never a grant) and the check says in words whether the member can read that tracker's tickets.
+   * A readiness item, not a playbook fit gap, so `NeedsGapKind` (`./job-needs.ts`) is unchanged.
+   */
+  readonly ticketSource: boolean;
   readonly loomwrightCommands: readonly string[];
 }
 
@@ -74,6 +82,7 @@ function needs(declared: Partial<JobNeedsDeclaration> = {}): JobNeedsDeclaration
     bashPrefixes: Object.freeze([...(declared.bashPrefixes ?? [])]),
     connectors: Object.freeze([...(declared.connectors ?? [])]),
     workspace: declared.workspace ?? false,
+    ticketSource: declared.ticketSource ?? false,
     loomwrightCommands: Object.freeze([...(declared.loomwrightCommands ?? [])]),
   });
 }
@@ -88,7 +97,7 @@ function needs(declared: Partial<JobNeedsDeclaration> = {}): JobNeedsDeclaration
  */
 export const TOOL_JOB_DEFINITIONS = Object.freeze({
   // D44: the kernel starts `/loomwright:automate` under its own frozen policy, so the job needs no Claude tool or shell prefix.
-  automate_tickets: Object.freeze({ label: "Hand tickets to /automate", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:automate"] }) }),
+  automate_tickets: Object.freeze({ label: "Hand tickets to /automate", needs: needs({ workspace: true, ticketSource: true, loomwrightCommands: ["/loomwright:automate"] }) }),
   // D44-open: the crew session runs `/loomwright:review-pr` itself (the kernel does not launch this route yet).
   triage_pr_comments: Object.freeze({ label: "Triage PR comments", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:review-pr"] }) }),
   // D44-open: the crew session runs `/loomwright:automate --merge-parked` itself.
@@ -122,6 +131,11 @@ export type ToolJob = keyof typeof TOOL_JOBS;
 /** Whether job `job` works in a copy of a repo (`JobNeedsDeclaration.workspace`). */
 export function jobNeedsWorkspace(job: ToolJob): boolean {
   return TOOL_JOB_DEFINITIONS[job].needs.workspace;
+}
+
+/** Whether job `job` works tickets from a tracker its duty names (`JobNeedsDeclaration.ticketSource`). */
+export function jobNeedsTicketSource(job: ToolJob): boolean {
+  return TOOL_JOB_DEFINITIONS[job].needs.ticketSource;
 }
 
 /** Every job id, in `TOOL_JOBS` order. Frozen. */
@@ -514,6 +528,39 @@ export function jobDisplayLines(allowedTools: readonly string[], catalogue: Tool
     lines.push(`job: ${DISPLAY_NOT_IN_CATALOGUE}${mark(added)}${gains(added, unknown)}`, ...(purposes ? unknown.map((name) => `  - ${name}${mark(!added && isNew(name))}`) : []));
   }
   return lines;
+}
+
+/** The label of the group `jobGroups` ends with: the granted kernel tools the catalogue does not list, named, never hidden. */
+export const JOB_GROUP_OTHER_LABEL = "Other tools";
+
+/** One job of a member's granted kernel tools: `AgentJobGroup` in `app/src/api/contract.ts`. */
+export interface JobGroup {
+  /** The catalogue job's id; `null` for the group of tools the catalogue does not list. */
+  readonly job: ToolJob | null;
+  /** The job's label, or `JOB_GROUP_OTHER_LABEL`. */
+  readonly label: string;
+  /** The granted kernel tools' names (`kernel_…`, without the `mcp__kernel__` prefix): the job's, in catalogue order. */
+  readonly tools: readonly string[];
+}
+
+/**
+ * The granted kernel tools of `allowedTools` grouped by job, the same grouping and
+ * order as `jobDisplayLines`: one group per job with a granted tool, in catalogue
+ * order, then, last, the granted kernel tools the catalogue does not list as one group
+ * (`job: null`, `JOB_GROUP_OTHER_LABEL`). Every other entry (a Claude tool, a Bash
+ * prefix) is left to the enforced list. `[]` when no kernel tool is granted.
+ * Mechanism only (invariant 1): it reads what is granted and grants nothing.
+ */
+export function jobGroups(allowedTools: readonly string[], catalogue: ToolCatalogue): JobGroup[] {
+  const granted = kernelToolNames(allowedTools);
+  const groups: JobGroup[] = [];
+  for (const job of catalogue.jobs) {
+    const tools = job.tools.filter((t) => granted.includes(t.name)).map((t) => t.name);
+    if (tools.length > 0) groups.push({ job: job.id, label: job.label, tools });
+  }
+  const unknown = granted.filter((name) => catalogueTool(catalogue, name) === undefined);
+  if (unknown.length > 0) groups.push({ job: null, label: JOB_GROUP_OTHER_LABEL, tools: unknown });
+  return groups;
 }
 
 /** What an update's display puts after a job line, purpose line or name the change adds (`jobDisplayLines`' `held`). */

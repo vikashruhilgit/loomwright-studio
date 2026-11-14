@@ -27,11 +27,20 @@
 // invalid_input` with `field: "connectors"`. Wright's set is answered the same
 // way.
 //
+// Phase 8 item 21b (a grant by capability, in words): Mason's `GET /agents/:id`
+// answers `jobs` (the catalogue job labels of its granted kernel tools), and with
+// `tracker: true` `GET /connectors` carries a connected ClickUp connection whose
+// `capabilities` and `other_tools` the inspector offers as a list of capabilities;
+// `POST /agents/:id/set` takes `clickup:<tool>[,<tool>…]` / `clickup:none` (every
+// tool one the connection lists, else `400 invalid_input`), keeps each member's
+// ClickUp tools and serves them in `settings.content.connectors.clickup`.
+//
 // Every value here is fixture data: no real path, account or token.
 import type {
   AgentChangeResponse,
   AgentCreateResponse,
   AgentDetailResponse,
+  AgentJobGroup,
   AgentRow,
   AgentSetResponse,
   Approval,
@@ -41,6 +50,8 @@ import type {
   ConnectorKind,
   ConnectorsResponse,
   EventFrame,
+  McpCapability,
+  McpConnection,
   RosterEntry,
   SessionSummary,
   SessionsResponse,
@@ -110,9 +121,37 @@ export const MASON_CHARTER = {
 } as const;
 
 export const MASON_TOOL_POLICY = {
-  allowedTools: ["Read", "Grep", "Glob"],
+  allowedTools: ["Read", "Grep", "Glob", "mcp__kernel__kernel_notify_owner"],
   allowedBashPrefixes: ["gh pr view", "gh pr diff", "gh pr comment"],
 } as const;
+
+/** The catalogue jobs of Mason's granted kernel tools, as `GET /agents/mason` answers `jobs`. */
+export const MASON_JOBS: readonly AgentJobGroup[] = [{ job: "notify_owner", label: "Notify the owner", tools: ["kernel_notify_owner"] }];
+
+/** The fixture ClickUp connection's capabilities in words, each with only the tools it lists. */
+export const CLICKUP_CAPABILITIES: readonly McpCapability[] = [
+  { id: "read", label: "Read tickets", changes: false, tools: ["clickup_get_task", "clickup_filter_tasks"] },
+  { id: "comment", label: "Comment on tickets", changes: false, tools: ["clickup_create_task_comment"] },
+  { id: "create", label: "Create tickets", changes: true, tools: ["clickup_create_task"] },
+  { id: "delete", label: "Delete tickets", changes: true, tools: ["clickup_delete_task", "clickup_merge_tasks"] },
+];
+
+/** A tool the fixture connection lists that no capability names. */
+export const CLICKUP_OTHER_TOOLS: readonly string[] = ["clickup_oddity"];
+
+const CLICKUP_LISTED: readonly string[] = [...CLICKUP_CAPABILITIES.flatMap((c) => c.tools), ...CLICKUP_OTHER_TOOLS];
+
+function clickupConnection(): McpConnection {
+  return {
+    kind: "clickup",
+    server_url: "https://clickup.example.test/mcp",
+    status: "connected",
+    granted_tools: CLICKUP_LISTED,
+    capabilities: CLICKUP_CAPABILITIES,
+    other_tools: CLICKUP_OTHER_TOOLS,
+    token_expiry: null,
+  };
+}
 
 export const MASON_NEVER = ["git_push", "gh_pr_create", "gh_pr_review", "gh_pr_edit", "gh_pr_close"] as const;
 
@@ -210,20 +249,25 @@ function settingsOf(entry: RosterEntry, permissionMode: string, toolPolicy: unkn
 /** An agent's GitHub level, as the settings file holds it: none (no key), read (`["github"]`) or write (`{github: "write"}`). */
 type GithubLevel = "none" | "read" | "write";
 
-/** The `connectors` key of the settings file for `level`: absent at none, as the kernel writes it. */
-function connectorsOf(level: GithubLevel): Record<string, unknown> {
+/**
+ * The `connectors` key of the settings file for `level` and the member's ClickUp tools: absent at none with no
+ * ClickUp tools, as the kernel writes it; the array form at read; the object form at write, or whenever ClickUp tools are held.
+ */
+function connectorsOf(level: GithubLevel, clickup: readonly string[]): Record<string, unknown> {
+  if (clickup.length > 0) return { connectors: { ...(level === "none" ? {} : { github: level }), clickup: [...clickup] } };
   if (level === "read") return { connectors: ["github"] };
   if (level === "write") return { connectors: { github: "write" } };
   return {};
 }
 
-function detailOf(member: CrewMember, level: GithubLevel): AgentDetailResponse {
+function detailOf(member: CrewMember, level: GithubLevel, clickup: readonly string[]): AgentDetailResponse {
   const id = member.entry.id;
   const memoryDir = `${TEAM_DATA_DIR}/memory/${id}`;
-  const settings = member.settings as { never?: unknown; workspaces?: unknown };
+  const settings = member.settings as { never?: unknown; workspaces?: unknown; tool_policy?: { allowedTools?: unknown } };
+  const kernelNotify = Array.isArray(settings.tool_policy?.allowedTools) && settings.tool_policy.allowedTools.includes("mcp__kernel__kernel_notify_owner");
   return {
     agent: member.entry,
-    settings: { file: `${TEAM_DATA_DIR}/config/agents/${id}.json`, content: { ...(member.settings as object), ...connectorsOf(level) }, error: null },
+    settings: { file: `${TEAM_DATA_DIR}/config/agents/${id}.json`, content: { ...(member.settings as object), ...connectorsOf(level, clickup) }, error: null },
     never: Array.isArray(settings.never) ? (settings.never as string[]) : null,
     workspaces: Array.isArray(settings.workspaces) ? (settings.workspaces as string[]) : null,
     memory: {
@@ -231,6 +275,7 @@ function detailOf(member: CrewMember, level: GithubLevel): AgentDetailResponse {
       files: ["role.md", "preferences.md", "people.md", "lessons.md"].map((name) => ({ name, path: `${memoryDir}/${name}`, present: name !== "lessons.md" })),
     },
     charter: member.charter,
+    jobs: kernelNotify ? MASON_JOBS : [],
   };
 }
 
@@ -265,6 +310,10 @@ export interface TeamFixtureOptions {
   readonly collision?: boolean;
   /** The GitHub connector's state from the start: a row with this status, or none (default: none, "not connected"). */
   readonly connector?: Connector["status"] | "none";
+  /** A connected ClickUp connection (with its capabilities in words) in `GET /connectors`. Default false: none. */
+  readonly tracker?: boolean;
+  /** The ClickUp tools Mason holds from the start (default none). */
+  readonly clickupHeld?: readonly string[];
 }
 
 export interface TeamFixture {
@@ -317,6 +366,9 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
   const wright: { entry: RosterEntry } = { entry: { ...WRIGHT } };
   /** Each agent's GitHub level once a set changed it; until then the roster's grant (read when it holds GitHub). */
   const levels = new Map<string, GithubLevel>();
+  /** Each agent's ClickUp tools once a set changed them; Mason's start from `clickupHeld`. */
+  const clickupTools = new Map<string, readonly string[]>([[MASON.id, options.clickupHeld ?? []]]);
+  const clickupOf = (id: string): readonly string[] => clickupTools.get(id) ?? [];
   const levelOf = (entry: RosterEntry): GithubLevel => levels.get(entry.id) ?? ((entry.connectors ?? []).includes("github") ? "read" : "none");
   let connector: Connector["status"] | "none" = options.connector ?? "none";
   let pending: CrewMember | undefined;
@@ -349,6 +401,19 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
     const found = id === "wright" ? wright : member(id);
     if (found === undefined) return notFound(id);
     const body = isRecord(req.body) ? req.body : {};
+    const clickup = body.field === "connectors" && typeof body.value === "string" ? /^clickup:(.+)$/.exec(body.value) : null;
+    if (clickup !== null) {
+      const tools = clickup[1] === "none" ? [] : (clickup[1] ?? "").split(",");
+      const unlisted = tools.find((tool) => !CLICKUP_LISTED.includes(tool));
+      if (unlisted !== undefined) return { status: 400, body: { error: "invalid_input", field: "connectors", message: `${unlisted} is not a tool this connection lists` } };
+      const before = clickupOf(id);
+      const moved = before.join(",") !== tools.join(",");
+      clickupTools.set(id, tools);
+      const asKinds = (list: readonly string[]): readonly string[] | null => (list.length === 0 ? null : ["clickup"]);
+      if (moved) kernel?.appendEvent(event("agent_settings_set", { id, field: "connectors", old: asKinds(before), new: asKinds(tools) }));
+      const answer: AgentSetResponse = { agent: found.entry, field: "connectors", old: asKinds(before), new: asKinds(tools), changed: moved };
+      return { status: 200, body: answer };
+    }
     const next: GithubLevel | undefined = body.value === "github" ? "read" : body.value === "github:write" ? "write" : body.value === "github:none" || body.value === "none" ? "none" : undefined;
     if (body.field !== "connectors" || next === undefined) {
       return { status: 400, body: { error: "invalid_input", field: "connectors", message: "connectors must be github or none" } };
@@ -422,13 +487,13 @@ export function teamFixture(options: TeamFixtureOptions = {}): TeamFixture {
     options: {
       routes: {
         "GET /agents": () => ({ status: 200, body: { agents: [wright.entry, ...crew.map((m) => m.entry)] } }),
-        "GET /connectors": () => ({ status: 200, body: { connectors: connector === "none" ? [] : [connectorRow(connector)] } satisfies ConnectorsResponse }),
+        "GET /connectors": () => ({ status: 200, body: { connectors: connector === "none" ? [] : [connectorRow(connector)], ...(options.tracker === true ? { mcp_connections: [clickupConnection()] } : {}) } satisfies ConnectorsResponse }),
         "POST /agents/:id/set": set,
         "GET /agents/:id": (req) => {
           const id = req.params.id ?? "";
           if (id === "wright") return { status: 409, body: { error: "reserved", message: "wright is the lead agent; its settings are wright.json" } };
           const found = member(id);
-          return found === undefined ? notFound(id) : { status: 200, body: detailOf(found, levelOf(found.entry)) };
+          return found === undefined ? notFound(id) : { status: 200, body: detailOf(found, levelOf(found.entry), clickupOf(id)) };
         },
         "POST /agents": create,
         "POST /agents/:id/rename": (req) => {

@@ -311,6 +311,14 @@ export interface ContributedRouteRequest {
    */
   readonly approvalApplier?: ApprovalApplier;
   /**
+   * The kernel's tool catalogue (`startKernel`'s `toolCatalogue`, passed through the API
+   * server's `toolCatalogue` option), when the composition built one. Only a route that
+   * groups a member's granted tools by job reads it (`GET /agents/:id`'s `jobs`). Absent
+   * when none was built or building it failed: the route then answers no grouping, never
+   * a guessed one. Optional in the type for the same reason as `sessions`.
+   */
+  readonly catalogue?: ToolCatalogue;
+  /**
    * The API server's own bound loopback origin (`http://127.0.0.1:<port>`),
    * read from its `address()`, never from the request's `Host` header (which a
    * caller controls). The API server always sets it; a route that builds an

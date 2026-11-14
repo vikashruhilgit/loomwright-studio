@@ -182,7 +182,7 @@ function masonCharter(repo: string): Record<string, unknown> {
     avatar: { shape: "crab", hue: "crew-teal" },
     persona: "A careful reviewer who comments on pull requests.\nIt explains each finding plainly.",
     // A duty entry, as Wright's create drafts it: reviewing through git and gh needs no kernel tool.
-    duties: [{ text: "Review the pull requests in the repo and leave review comments.", jobs: [] }],
+    duties: [{ text: "Review the pull requests in the repo and leave review comments.", jobs: [], source: "none" }],
     boundaries: ["Never push code, and never open, edit, review-approve or close a pull request or issue."],
     model: MASON_MODEL,
     permission_mode: "default",

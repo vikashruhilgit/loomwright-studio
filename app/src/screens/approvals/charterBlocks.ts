@@ -18,6 +18,7 @@
 // category in words; an unknown one shown as its own text), the limits on one
 // line, the other tools and Bash prefixes, plus the "what changed" sentence
 // between two versions and the `owner/repo` names a workspace lookup may try.
+import type { McpCapability, McpConnectionKind, OwnerGrant } from "../../api/contract";
 import { count } from "../chat/continuity";
 import { CHARTER_JOB_PREFIX, CHARTER_PURPOSE_PREFIX, CHARTER_READINESS_HEADING_PREFIX, charterDisplayParts } from "./subject";
 import type { CharterDisplayParts } from "./subject";
@@ -27,6 +28,52 @@ export const KERNEL_TOOL_PREFIX = "mcp__kernel__";
 
 /** The kernel's flagged workspace line names this (`workspaceItem` in `kernel/src/agents/charter-readiness.ts`). */
 export const WORKSPACE_FLAG = "no copy of a repo to work in";
+
+/**
+ * The kernel's flagged tracker line names this (`TRACKER_ACCESS_FLAG` in `kernel/src/agents/charter-readiness.ts`, byte for
+ * byte): `<name> can't read <tracker> tickets yet: it has no <tracker> access` (or `only part of`). `trackerLine`'s
+ * no-access pattern is built from it, so this byte-for-byte pin guards what the card matches (its tick-to-grant row).
+ */
+export const TRACKER_ACCESS_FLAG = "tickets yet: it has ";
+
+/** The kernel's "tracker not connected" line names this (`TRACKER_NOT_CONNECTED_FLAG`); `trackerLine`'s not-connected pattern is built from it (the card offers Connect). */
+export const TRACKER_NOT_CONNECTED_FLAG = "isn't connected on Integrations";
+
+/** The MCP trackers the kernel's tracker lines name, by the label they print (`CONNECTOR_LABELS`). */
+const TRACKER_LABELS: Readonly<Record<string, "clickup" | "jira">> = { ClickUp: "clickup", Jira: "jira" };
+
+/** A literal as RegExp source. */
+const reEscape = (literal: string): string => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The two anchored patterns, with the pinned flags spliced in so a pin on a flag is a pin on what is matched. */
+const NOT_CONNECTED_LINE = new RegExp(`^duty \\d+: (ClickUp|Jira) ${reEscape(TRACKER_NOT_CONNECTED_FLAG)}, so .+ can't read its tickets yet \\(connect it there first; only you can grant access\\)$`);
+const NO_ACCESS_LINE = new RegExp(`^duty \\d+: .+ can't read (ClickUp|Jira) ${reEscape(TRACKER_ACCESS_FLAG)}(?:no \\1 access|only part of the \\1 access to read them) \\(only you can grant it\\)$`);
+
+/** What a readiness line says about a ticket duty's tracker, for the card's fix: which MCP tracker, and whether it lacks access or is not connected. */
+export interface TrackerLine {
+  readonly kind: "clickup" | "jira";
+  readonly state: "no_access" | "not_connected";
+}
+
+/**
+ * The MCP tracker a flagged readiness line is about, or `undefined` for any other line (GitHub Issues are read through
+ * the GitHub connector, so they have no tick-to-grant row). The kernel's text is untrusted: a member's display name
+ * sits inside both sentences and could imitate the other one, so each form is anchored to the kernel's whole line shape
+ * (`trackerItem` in `kernel/src/agents/charter-readiness.ts`, which always begins `duty <n>: `):
+ * - not connected: `duty <n>: <tracker> isn't connected on Integrations, so <name> can't read its tickets yet (connect it
+ *   there first; only you can grant access)`. The tracker label comes before the name, so the name cannot move it; tried first.
+ * - no access: `duty <n>: <name> can't read <tracker> tickets yet: it has no|only part of the <tracker> access ... (only you
+ *   can grant it)`. Anchored at both ends, so the last sentence (the kernel's own) is the one read, and a name cannot add one after it.
+ * The two forms end differently, so one line cannot satisfy both. A duty's flagged line (`duty <n> not covered ...`) has no
+ * colon after the number, so a duty excerpt that imitates either sentence matches neither.
+ */
+export function trackerLine(text: string): TrackerLine | undefined {
+  const off = NOT_CONNECTED_LINE.exec(text);
+  if (off?.[1] !== undefined) return { kind: TRACKER_LABELS[off[1]] as "clickup" | "jira", state: "not_connected" };
+  const access = NO_ACCESS_LINE.exec(text);
+  if (access?.[1] !== undefined) return { kind: TRACKER_LABELS[access[1]] as "clickup" | "jira", state: "no_access" };
+  return undefined;
+}
 
 export type CharterBlockKind = "jobs" | "enforced" | "settings" | "role";
 
@@ -283,4 +330,17 @@ export function repoCandidates(display: string, parts: CharterDisplayParts | und
     }
   }
   return out;
+}
+
+/**
+ * The owner's tracker ticks after one capability is ticked (`on`) or cleared on a held charter card: the kind's tools
+ * the owner chose, as the `owner_grant` the approve posts. One MCP kind at a time (the approve body carries one), so a
+ * tick for another kind while one holds ticks changes nothing; clearing the last tool answers `undefined` (nothing to
+ * grant: the approve posts no `owner_grant`). The order is the order ticked, so the posted list is stable.
+ */
+export function nextOwnerGrant(current: OwnerGrant | undefined, kind: McpConnectionKind, capability: McpCapability, on: boolean): OwnerGrant | undefined {
+  if (current !== undefined && current.kind !== kind) return current;
+  const held = current?.tools ?? [];
+  const tools = on ? [...held, ...capability.tools.filter((tool) => !held.includes(tool))] : held.filter((tool) => !capability.tools.includes(tool));
+  return tools.length === 0 ? undefined : { kind, tools };
 }

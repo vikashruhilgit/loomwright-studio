@@ -9,12 +9,12 @@
 // command are in `github-level.test.tsx` (phase 8 item 20).
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentDetailResponse, ApiRequest, ApiResult, Connector, ConnectorStatus, EventFrame, McpConnection, RosterEntry, StatusBody } from "../../api/contract";
+import type { AgentDetailResponse, ApiRequest, ApiResult, Connector, ConnectorStatus, EventFrame, McpCapability, McpConnection, RosterEntry, StatusBody } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge, Responder } from "../../store/fake-bridge";
-import { changeMcpGrant, mcpGrantRows } from "./Connectors";
+import { CapabilityList, capabilityState, changeCapabilityGrant, changeMcpGrant, mcpGrantRows, otherToolsSummary } from "./Connectors";
 import { type ConnectorsState, connectorStateText, githubGranted, mcpToolsHeld } from "./model";
 import { TeamView } from "./TeamView";
 
@@ -561,5 +561,208 @@ describe("the Connectors row's MCP grant", () => {
     expect(notice.textContent).toBe("invalid_input: <b>bad</b> tool");
     expect(notice.querySelector("b")).toBeNull();
     expect(ticked(mason, "jira")).toEqual(["getJiraIssue"]);
+  });
+});
+
+// ---- Phase 8 item 21b: the grant by capability, in words ----------------------------------------------
+
+const CLICKUP_CAPABILITIES: readonly McpCapability[] = [
+  { id: "read", label: "Read tickets", changes: false, tools: ["clickup_get_task", "clickup_filter_tasks"] },
+  { id: "comment", label: "Comment on tickets", changes: false, tools: ["clickup_create_task_comment"] },
+  { id: "create", label: "Create tickets", changes: true, tools: ["clickup_create_task"] },
+  { id: "delete", label: "Delete tickets", changes: true, tools: ["clickup_delete_task", "clickup_merge_tasks"] },
+];
+const CLICKUP_OTHER = ["clickup_oddity"];
+const CLICKUP_LISTED = [...CLICKUP_CAPABILITIES.flatMap((c) => c.tools), ...CLICKUP_OTHER];
+
+function clickupWithCapabilities(extra: Partial<McpConnection> = {}): McpConnection {
+  return { ...mcpRow("clickup", CLICKUP_LISTED), capabilities: CLICKUP_CAPABILITIES, other_tools: CLICKUP_OTHER, ...extra };
+}
+
+describe("capabilityState", () => {
+  const read = CLICKUP_CAPABILITIES[0] as McpCapability;
+  it("reads all, some or none of a capability's listed tools as granted, partly granted (n of m) or not granted", () => {
+    expect(capabilityState(read, ["clickup_get_task", "clickup_filter_tasks", "other"])).toMatchObject({ status: "granted", words: "granted" });
+    expect(capabilityState(read, ["clickup_filter_tasks"])).toMatchObject({ status: "partly", held: 1, of: 2, words: "partly granted (1 of 2)" });
+    expect(capabilityState(read, [])).toMatchObject({ status: "none", words: "not granted" });
+    expect(capabilityState(read, ["clickup_oddity"])).toMatchObject({ status: "none", words: "not granted" });
+  });
+});
+
+describe("changeCapabilityGrant", () => {
+  const agent = { id: "mason", display_name: "Mason" };
+  const changed = () => ok({ agent: {}, field: "connectors", old: null, new: null, changed: true });
+  const del = CLICKUP_CAPABILITIES[3] as McpCapability;
+  const read = CLICKUP_CAPABILITIES[0] as McpCapability;
+
+  it("ticking adds exactly that capability's tools to what the member holds, and names the capability in the result", async () => {
+    const fake = fakeBridge();
+    fake.route("POST /agents/:id/set", changed);
+    const held = ["clickup_create_task", "clickup_oddity"];
+    expect(await changeCapabilityGrant(fake.bridge, agent, "clickup", read, held, true)).toEqual({ ok: true, text: "ClickUp: Read tickets granted to Mason." });
+    expect(fake.requestsTo("POST /agents/:id/set").map((r) => r.req.body)).toEqual([{ field: "connectors", value: "clickup:clickup_create_task,clickup_oddity,clickup_get_task,clickup_filter_tasks" }]);
+  });
+
+  it("a partly held capability's tick grants only the rest; an untick takes away only that capability's tools", async () => {
+    const fake = fakeBridge();
+    fake.route("POST /agents/:id/set", changed);
+    await changeCapabilityGrant(fake.bridge, agent, "clickup", read, ["clickup_filter_tasks", "clickup_oddity"], true);
+    expect((await changeCapabilityGrant(fake.bridge, agent, "clickup", del, ["clickup_delete_task", "clickup_merge_tasks", "clickup_oddity"], false)).text).toBe("ClickUp: Delete tickets revoked from Mason.");
+    await changeCapabilityGrant(fake.bridge, agent, "clickup", del, ["clickup_delete_task", "clickup_merge_tasks"], false);
+    expect(fake.requestsTo("POST /agents/:id/set").map((r) => (r.req.body as { value: string }).value)).toEqual([
+      "clickup:clickup_filter_tasks,clickup_oddity,clickup_get_task",
+      "clickup:clickup_oddity",
+      "clickup:none",
+    ]);
+  });
+
+  it("sends nothing when the member's grant is unknown, and shows a refusal as text", async () => {
+    const fake = fakeBridge();
+    fake.route("POST /agents/:id/set", () => refused(400, { error: "invalid_input", message: "<b>no</b>" }));
+    const unknown = await changeCapabilityGrant(fake.bridge, agent, "clickup", read, undefined, true);
+    expect(unknown.ok).toBe(false);
+    expect(fake.requestsTo("POST /agents/:id/set")).toHaveLength(0);
+    expect(await changeCapabilityGrant(fake.bridge, agent, "clickup", read, [], true)).toEqual({ ok: false, text: "invalid_input: <b>no</b>" });
+  });
+});
+
+describe("CapabilityList", () => {
+  it("shows each capability's words and state, marks the ones that change things, and keeps raw names one expand away", () => {
+    render(<CapabilityList kind="clickup" capabilities={CLICKUP_CAPABILITIES} otherTools={CLICKUP_OTHER} held={["clickup_get_task", "clickup_delete_task"]} />);
+    const list = screen.getByTestId("team-connector-mcp-clickup-capabilities");
+    const state = (id: string) => within(list).getByTestId(`team-connector-mcp-clickup-capabilities-${id}-state`).textContent;
+    expect(state("read")).toBe("partly granted (1 of 2)");
+    expect(state("comment")).toBe("not granted");
+    expect(state("delete")).toBe("partly granted (1 of 2)");
+    expect(within(list).queryByTestId("team-connector-mcp-clickup-capabilities-read-changes")).toBeNull();
+    expect(within(list).getByTestId("team-connector-mcp-clickup-capabilities-create-changes").textContent).toBe("changes things");
+    expect(within(list).getByTestId("team-connector-mcp-clickup-capabilities-delete-changes").textContent).toBe("changes things");
+    const names = within(list).getByTestId("team-connector-mcp-clickup-capabilities-delete-tools");
+    expect(names.textContent).toBe("clickup_delete_taskclickup_merge_tasks");
+    expect((names.closest("details") as HTMLDetailsElement).open).toBe(false);
+    // Read-only without a handler: no box can be ticked.
+    expect(within(list).getAllByRole("checkbox").every((box) => (box as HTMLInputElement).disabled)).toBe(true);
+  });
+
+  it("lists a listed tool no capability names, and a held tool the connection no longer lists, under Other tools, by name", () => {
+    render(<CapabilityList kind="clickup" capabilities={CLICKUP_CAPABILITIES} otherTools={CLICKUP_OTHER} held={["clickup_oddity", "clickup_retired"]} />);
+    const other = screen.getByTestId("team-connector-mcp-clickup-capabilities-other");
+    expect(within(other).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["clickup_oddity (granted)", "clickup_retired (granted)"]);
+    expect(within(other).queryAllByRole("checkbox")).toEqual([]);
+  });
+
+  it("folds Other tools under a line in words, closed until the owner opens it, so no raw name shows above it (21b Validation 2, step 2)", () => {
+    render(<CapabilityList kind="clickup" capabilities={CLICKUP_CAPABILITIES} otherTools={CLICKUP_OTHER} held={["clickup_oddity", "clickup_retired"]} />);
+    const other = screen.getByTestId("team-connector-mcp-clickup-capabilities-other");
+    expect(other.tagName).toBe("DETAILS");
+    expect((other as HTMLDetailsElement).open).toBe(false);
+    const summary = screen.getByTestId("team-connector-mcp-clickup-capabilities-other-summary");
+    expect(summary.tagName).toBe("SUMMARY");
+    expect(summary.textContent).toBe("2 other tools · no capability covers these, so a tick never grants them · 2 granted");
+    expect(summary.textContent).not.toMatch(/clickup_/);
+  });
+
+  it("otherToolsSummary counts in words, one or many, and names how many are held only when some are", () => {
+    expect(otherToolsSummary(21, 0)).toBe("21 other tools · no capability covers these, so a tick never grants them");
+    expect(otherToolsSummary(1, 1)).toBe("1 other tool · no capability covers it, so a tick never grants it · 1 granted");
+  });
+
+  it("a tick reports the capability and the way, and a partly held capability is indeterminate until ticked", () => {
+    const calls: Array<[string, boolean]> = [];
+    render(<CapabilityList kind="clickup" capabilities={CLICKUP_CAPABILITIES} otherTools={[]} held={["clickup_get_task"]} onToggle={(c, on) => calls.push([c.id, on])} />);
+    const box = screen.getByRole("checkbox", { name: "Read tickets" }) as HTMLInputElement;
+    expect(box.indeterminate).toBe(true);
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Create tickets" }));
+    expect(calls).toEqual([["read", true], ["create", true]]);
+    expect(screen.queryByTestId("team-connector-mcp-clickup-capabilities-other")).toBeNull();
+  });
+
+  it("renders kernel strings as text, never markup", () => {
+    const hostile = "<img src=x onerror=alert(1)>";
+    render(<CapabilityList kind="jira" capabilities={[{ id: "read", label: hostile, changes: false, tools: [hostile] }]} otherTools={[hostile]} held={[]} />);
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByRole("checkbox", { name: hostile })).toBeTruthy();
+  });
+});
+
+describe("the Connectors row's capability grant", () => {
+  const withClickup = (extra: Partial<Parameters<typeof startTeam>[0]> = {}, connection: McpConnection = clickupWithCapabilities()) =>
+    startTeam({
+      connectors: ok({ connectors: [connector("connected")], mcp_connections: [connection] }),
+      content: { connectors: { github: "read", clickup: ["clickup_get_task", "clickup_oddity"] } },
+      ...extra,
+    });
+  const capState = (inspector: HTMLElement, id: string): string | null => within(inspector).getByTestId(`team-connector-mcp-clickup-capabilities-${id}-state`).textContent;
+
+  it("offers the grant as capabilities in words, with nothing ticked by a tick-less member and the raw per-tool list not shown", async () => {
+    await withClickup({ content: {} });
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(capState(mason, "read")).toBe("not granted"));
+    expect(within(mason).getAllByRole("checkbox").filter((b) => (b as HTMLInputElement).checked)).toEqual([]);
+    expect(within(mason).queryByTestId("team-connector-mcp-clickup-tools")).toBeNull();
+    expect(within(mason).queryByTestId("team-connector-mcp-clickup-plain-unavailable")).toBeNull();
+    expect(mcpWords(mason, "clickup")).toBe("no tools granted");
+  });
+
+  it("reads a member holding some of a capability as partly granted (n of m), and other tools by name, never ticked", async () => {
+    await withClickup();
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(capState(mason, "read")).toBe("partly granted (1 of 2)"));
+    expect(capState(mason, "delete")).toBe("not granted");
+    const other = within(mason).getByTestId("team-connector-mcp-clickup-capabilities-other");
+    expect(other.textContent).toContain("clickup_oddity");
+  });
+
+  it("ticking a partly held capability posts the whole next set (what it holds plus the rest), names the capability, and changes the row only through the feed", async () => {
+    const kernel = await withClickup({ set: setOk("connectors", null, null) });
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(capState(mason, "read")).toBe("partly granted (1 of 2)"));
+    fireEvent.click(within(mason).getByRole("checkbox", { name: "Read tickets" }));
+    await waitFor(() => expect(requests(kernel, "POST /agents/:id/set")).toHaveLength(1));
+    expect(requests(kernel, "POST /agents/:id/set")[0]).toMatchObject({ params: { id: "mason" }, body: { field: "connectors", value: "clickup:clickup_get_task,clickup_oddity,clickup_filter_tasks" } });
+    expect((await within(mason).findByTestId("team-insp-notice")).textContent).toBe("ClickUp: Read tickets granted to Mason.");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(capState(mason, "read")).toBe("partly granted (1 of 2)");
+  });
+
+  it("ticking a capability never grants an other tool, and unticking a granted one keeps the rest", async () => {
+    const kernel = await withClickup({ content: { connectors: { clickup: ["clickup_create_task", "clickup_get_task", "clickup_filter_tasks"] } }, set: setOk("connectors", null, null) });
+    const mason = await openInspector("Mason");
+    await waitFor(() => expect(capState(mason, "create")).toBe("granted"));
+    fireEvent.click(within(mason).getByRole("checkbox", { name: "Comment on tickets" }));
+    await waitFor(() => expect(requests(kernel, "POST /agents/:id/set")).toHaveLength(1));
+    fireEvent.click(within(mason).getByRole("checkbox", { name: "Create tickets" }));
+    await waitFor(() => expect(requests(kernel, "POST /agents/:id/set")).toHaveLength(2));
+    const values = requests(kernel, "POST /agents/:id/set").map((r) => (r.body as { value: string }).value);
+    expect(values).toEqual([
+      "clickup:clickup_create_task,clickup_get_task,clickup_filter_tasks,clickup_create_task_comment",
+      "clickup:clickup_get_task,clickup_filter_tasks",
+    ]);
+    expect(values.join()).not.toContain("clickup_oddity");
+    expect(values.join()).not.toContain("clickup_delete_task");
+  });
+
+  it("falls back to the raw per-tool list with a line saying the plain list is unavailable when capabilities is null or absent, and changes no grant", async () => {
+    for (const connection of [clickupWithCapabilities({ capabilities: null, other_tools: null }), mcpRow("clickup", CLICKUP_LISTED)]) {
+      const kernel = await withClickup({}, connection);
+      const mason = await openInspector("Mason");
+      await waitFor(() => expect(mcpWords(mason, "clickup")).toBe(`2 of ${CLICKUP_LISTED.length} tools granted`));
+      expect(within(mason).getByTestId("team-connector-mcp-clickup-plain-unavailable").textContent).toContain("unavailable");
+      expect(within(mcpTools(mason, "clickup")).getAllByRole("checkbox")).toHaveLength(CLICKUP_LISTED.length);
+      expect(ticked(mason, "clickup")).toEqual(["clickup_get_task", "clickup_oddity"]);
+      expect(within(mason).queryByTestId("team-connector-mcp-clickup-capabilities")).toBeNull();
+      expect(requests(kernel, "POST /agents/:id/set")).toEqual([]);
+      cleanup();
+    }
+  });
+
+  it("shows Wright's capability grant as unknown, with no list to tick", async () => {
+    await withClickup();
+    const wright = await openInspector("Wright");
+    await waitFor(() => expect(mcpWords(wright, "clickup")).toBe("grant unknown"));
+    expect(within(wright).queryByTestId("team-connector-mcp-clickup-capabilities")).toBeNull();
+    expect(within(wright).queryAllByRole("checkbox")).toEqual([]);
   });
 });

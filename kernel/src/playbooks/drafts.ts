@@ -63,7 +63,7 @@ import type {
 } from "../features/contribution.js";
 import { createMcpTicketReader } from "../integrations/mcp/trackers.js";
 import { errorMessage } from "../loop/internal.js";
-import { runStep } from "../loop/steps.js";
+import { runStep, runStepAsync } from "../loop/steps.js";
 import type { Store } from "../store/store.js";
 import { MAX_CRON_LENGTH, POLL_FILTER_KEYS, POLL_SOURCES, TRIGGER_KINDS, formatZoned } from "../triggers/index.js";
 import type { TriggerView } from "../triggers/index.js";
@@ -198,16 +198,48 @@ function storeTrigger(t: z.infer<typeof triggerShape>): PlaybookTriggerInput {
   return { kind, spec, ...(tz === undefined ? {} : { tz }) };
 }
 
+/** What `draftStep` hands its write: the resolved trigger, or `undefined` when the call carries none (an update's). */
+type Resolved<T> = T extends undefined ? undefined : PlaybookTriggerInput;
+
 /**
- * `storeTrigger`'s trigger with a `clickup.tasks` poll's list or space name turned into its ID
- * (`resolveClickupNames`, the kernel's own read with the owner's sign-in, never the session's grant).
- * Runs before the work step and only reads: a refusal (no match, several, a failed lookup) writes nothing,
- * a value that is already an ID makes no call, and a repeat that still carries the name looks it up again.
+ * A create's or update's work step, keyed `ctx.stepKey(idempotencyKey)`, claimed BEFORE the ClickUp lookup:
+ * its `fn` builds the stored trigger (`storeTrigger`), turns a `clickup.tasks` poll's list name into its ID
+ * (`resolveClickupNames`, the kernel's own read with the owner's sign-in, never the session's grant: the
+ * lookup phase), then runs `write` (the store's one transaction: the write phase). So a repeat under the
+ * same key returns the first result without a second lookup, even if the list was renamed or the sign-in
+ * expired since, and the `REPEAT` promise holds.
+ *
+ * `noEffect` (dry-run's `phase` idiom) releases the claim, so a later same-key call runs again, when nothing
+ * could have happened: every error of the lookup phase (the lookup only reads: a shape refusal, no match, a
+ * space name, a failed lookup), and a write refusal when no lookup call was made (`lookedUp` false: the
+ * resolved spec text equals the stored one, since `resolveClickupNames` returns the text unchanged whenever
+ * it makes no call), which is `runStep`'s own rollback. A write refused after a lookup is not released:
+ * the step is `failed:error` and a same-key repeat is refused `already failed` without another lookup.
+ * `refuseCrewDrafting`, `draftOwner` and `actingAgentFor` stay before the claim, in the handlers.
  */
-async function resolvedTrigger(store: Store, t: z.infer<typeof triggerShape>): Promise<PlaybookTriggerInput> {
-  const stored = storeTrigger(t);
-  if (stored.kind !== "poll") return stored;
-  return { ...stored, spec: await resolveClickupNames(createMcpTicketReader(), store, stored.spec) };
+function draftStep<T extends z.infer<typeof triggerShape> | undefined>(
+  ctx: ContributedToolContext,
+  idempotencyKey: string,
+  trigger: T,
+  write: (resolved: Resolved<T>) => PlaybookChange,
+): Promise<ToolResult> {
+  let phase: "lookup" | "write" = "lookup";
+  let lookedUp = false;
+  return runStepAsync(
+    ctx.store,
+    ctx.stepKey(idempotencyKey),
+    async () => {
+      let resolved: PlaybookTriggerInput | undefined;
+      if (trigger !== undefined) {
+        const stored = storeTrigger(trigger);
+        resolved = stored.kind !== "poll" ? stored : { ...stored, spec: await resolveClickupNames(createMcpTicketReader(), ctx.store, stored.spec) };
+        lookedUp = resolved.spec !== stored.spec;
+      }
+      phase = "write";
+      return resultOf(write(resolved as Resolved<T>));
+    },
+    { now: ctx.now, noEffect: () => phase === "lookup" || (phase === "write" && !lookedUp) },
+  );
 }
 
 // The closed sets are the store's own (never a copied list), so `tools/list` publishes them as enums and a positive
@@ -421,33 +453,26 @@ const create = defineTool({
   handler: (a, ctx) =>
     namedAsync("kernel_playbook_create", async () => {
       const agent = draftOwner(ctx.store, refuseCrewDrafting(ctx), a.agent);
-      const trigger = await resolvedTrigger(ctx.store, a.trigger);
-      const first = runStep(
-        ctx.store,
-        ctx.stepKey(a.idempotency_key),
-        () =>
-          resultOf(
-            createPlaybook(
-              ctx.store,
-              {
-                agent,
-                name: a.name,
-                intent: a.intent,
-                jobs: a.jobs,
-                target_repo: a.target_repo,
-                trigger,
-                dedupe_key: a.dedupe_key,
-                priority: a.priority,
-                model: a.model,
-                token_limit: a.token_limit,
-                mode: a.mode,
-                merge_requirement: a.merge_requirement,
-                sessionId: ctx.sessionId,
-              },
-              ctx.now(),
-            ),
-          ),
-        { now: ctx.now },
+      const first = await draftStep(ctx, a.idempotency_key, a.trigger, (trigger) =>
+        createPlaybook(
+          ctx.store,
+          {
+            agent,
+            name: a.name,
+            intent: a.intent,
+            jobs: a.jobs,
+            target_repo: a.target_repo,
+            trigger,
+            dedupe_key: a.dedupe_key,
+            priority: a.priority,
+            model: a.model,
+            token_limit: a.token_limit,
+            mode: a.mode,
+            merge_requirement: a.merge_requirement,
+            sessionId: ctx.sessionId,
+          },
+          ctx.now(),
+        ),
       );
       return afterStep(ctx, first);
     }),
@@ -471,12 +496,12 @@ const update = defineTool({
       refuseCrewDrafting(ctx);
       const agent = actingAgentFor(ctx, a.id);
       const { trigger, ...rest } = a.changes;
-      const changes = trigger === undefined ? rest : { ...rest, trigger: await resolvedTrigger(ctx.store, trigger) };
-      const first = runStep(
-        ctx.store,
-        ctx.stepKey(a.idempotency_key),
-        () => resultOf(updatePlaybook(ctx.store, { id: a.id, agent, changes, sessionId: ctx.sessionId }, ctx.now())),
-        { now: ctx.now },
+      const first = await draftStep(ctx, a.idempotency_key, trigger, (resolved) =>
+        updatePlaybook(
+          ctx.store,
+          { id: a.id, agent, changes: resolved === undefined ? rest : { ...rest, trigger: resolved }, sessionId: ctx.sessionId },
+          ctx.now(),
+        ),
       );
       return afterStep(ctx, first);
     }),

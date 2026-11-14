@@ -84,15 +84,40 @@ export interface CharterLimits {
 export const CHARTER_LIMIT_KEYS = Object.freeze(["tokens_per_day", "sessions_at_once", "delegation_depth"] as const);
 
 /**
+ * Where a ticket duty's tickets come from (phase 8 item 21b): the trackers the kernel knows, closed in
+ * code, the same names as `CONNECTOR_KINDS` (`github` is GitHub Issues). It is data, never a grant: it says
+ * which tracker the duty reads, and the charter readiness check says whether the member can.
+ */
+export const TICKET_SOURCES = Object.freeze(["github", "clickup", "jira"] as const);
+
+/** One of `TICKET_SOURCES`. */
+export type TicketSource = (typeof TICKET_SOURCES)[number];
+
+/**
  * A duty that names its jobs: its text, and the catalogue jobs (`TOOL_JOBS`
  * ids, no repeats) that do it; `[]` is a duty that needs no kernel tool. The
  * charter readiness check (`./charter-readiness.ts`) reads `jobs`, never the
- * text.
+ * text. `source` is the tracker the duty works tickets from (`TICKET_SOURCES`),
+ * or `none` for a duty that works no tickets: on any duty, with or without a
+ * ticket job, since a duty can work a tracker's tickets through the member's
+ * connector access alone (read and comment) with no kernel job. Wright states
+ * it on every duty it drafts (`wrightDutyRefusal`), so the access check never
+ * depends on whether the model chose to tag a duty; it is optional in a stored
+ * charter (one written before this rule reads as unstated). Wright's proposal on
+ * the held card, never a grant (`connectors` stays the owner's: the owner grants
+ * a tracker's tools when they approve).
  */
 export interface DutyEntry {
   readonly text: string;
   readonly jobs: readonly ToolJob[];
+  readonly source?: DutySource;
 }
+
+/** What a duty's `source` may say: a tracker, or `none` (the duty works no tickets). */
+export const DUTY_SOURCES = Object.freeze([...TICKET_SOURCES, "none"] as const);
+
+/** One of `DUTY_SOURCES`. */
+export type DutySource = (typeof DUTY_SOURCES)[number];
 
 /**
  * One duty: an entry, or a bare line of text (the owner's own create, and
@@ -192,7 +217,8 @@ const personaSchema = z
 /**
  * A duty entry: its `text` (a prose line's rule) and `jobs`, each a `TOOL_JOBS`
  * id (an enum, so the published schema lists them; a job outside it is refused
- * naming it, `unknownJobMessage`), no repeats. Strict: a misspelt key is refused.
+ * naming it, `unknownJobMessage`), no repeats, and (optional) the ticket `source`
+ * of a duty that works tickets. Strict: a misspelt key is refused.
  */
 const dutyEntrySchema = z
   .object({
@@ -201,6 +227,9 @@ const dutyEntrySchema = z
       .array(z.enum(TOOL_JOB_IDS as [ToolJob, ...ToolJob[]]))
       .max(TOOL_JOB_IDS.length)
       .refine((list) => new Set(list).size === list.length, "must not repeat a job"),
+    // The tracker the duty works tickets from, or none (an enum, so the published schema lists it). Any duty may name one:
+    // reading and commenting on a tracker's tickets needs the member's connector access, not a kernel job.
+    source: z.enum(DUTY_SOURCES).optional(),
   })
   .strict();
 
@@ -512,13 +541,13 @@ function writeIfAbsent(path: string, text: string): boolean {
  * `role.md` names the connectors the settings file grants (read after the file
  * exists). Returns the paths it created. A write error is thrown.
  */
-function writeCharterFiles(dataDir: string, charter: Charter, homeDir?: string): string[] {
+function writeCharterFiles(dataDir: string, charter: Charter, homeDir?: string, connectors?: RecordedConnectors): string[] {
   const paths = agentFilePaths(dataDir, charter.id);
   const role = paths.memory[0] as string;
   mkdirSync(dirname(paths.settings), { recursive: true, mode: 0o700 });
   mkdirSync(paths.memoryDir, { recursive: true, mode: 0o700 });
   const created: string[] = [];
-  if (writeIfAbsent(paths.settings, renderAgentSettingsJson(charter))) created.push(paths.settings);
+  if (writeIfAbsent(paths.settings, settingsWithRecordedGrant(renderAgentSettingsJson(charter), connectors))) created.push(paths.settings);
   // The grant is the settings file's (the owner's `set` writes it there), so a re-created
   // role.md names what the file holds; a file the reader refuses names none.
   const settings = readAgentSettings(dataDir, charter.id, homeDir === undefined ? {} : { homeDir });
@@ -629,13 +658,58 @@ export type EnsureAgentFilesResult =
   /** The row's `charter_json` is no longer a valid charter for this id. Nothing was touched (never rendered from a damaged snapshot). */
   | { readonly ok: false; readonly error: "charter_invalid"; readonly field: string; readonly message: string };
 
+/** The `connectors` value the member's last recorded grant set (`value`, `null` for none), when one is recorded. */
+interface RecordedConnectors {
+  readonly value: unknown;
+}
+
+/**
+ * The connectors grant recorded for member `id` since its own `agent_created` event: the newest
+ * `agent_settings_set` event for its `connectors` (the owner's grant on an approval, or the owner's `set`).
+ * The grant is never in the charter, so this record, committed with the decision that made it, is what a
+ * re-created settings file is rebuilt from (phase 8 item 21b review): a file written after the commit that
+ * never landed, or one removed since, comes back with the grant the record says, never without it.
+ */
+function recordedConnectors(store: Store, id: string): RecordedConnectors | undefined {
+  const created = store
+    .prepare<[string], number | null>("SELECT max(id) FROM events WHERE kind = 'agent_created' AND json_extract(payload_json, '$.id') = ?")
+    .pluck()
+    .get(id);
+  if (created === undefined || created === null) return undefined;
+  const payload = store
+    .prepare<[number, string], string>(
+      "SELECT payload_json FROM events WHERE kind = 'agent_settings_set' AND id > ? AND json_extract(payload_json, '$.id') = ? AND json_extract(payload_json, '$.field') = 'connectors' ORDER BY id DESC LIMIT 1",
+    )
+    .pluck()
+    .get(created, id);
+  if (payload === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(payload) as { readonly new?: unknown };
+    return { value: parsed.new ?? null };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The charter's settings text with the recorded grant laid over its `connectors` (absent for `null`); the charter's own when none is recorded. */
+function settingsWithRecordedGrant(text: string, connectors: RecordedConnectors | undefined): string {
+  if (connectors === undefined) return text;
+  const file = JSON.parse(text) as Record<string, unknown>;
+  if (connectors.value === null) delete file.connectors;
+  else file.connectors = connectors.value;
+  const next = `${JSON.stringify(file, null, 2)}\n`;
+  // A grant the file can't hold is left out, as the charter's own: the reader then shows the access as missing, never a broken file.
+  return Buffer.byteLength(next) > MAX_SETTINGS_BYTES ? text : next;
+}
+
 /**
  * Re-create every missing file of crew member `id` from its row's
  * `charter_json`, each only when absent (exclusive create): the settings file
- * and `role.md`, then the other memory files through
- * `ensureAgentMemoryFiles`. An existing file, the owner's edit included, is
- * never touched. Item 05 calls it before every crew message. A write error
- * is thrown.
+ * (with the connectors grant recorded for it, `recordedConnectors`, since the
+ * charter never carries an owner's tracker grant) and `role.md`, then the
+ * other memory files through `ensureAgentMemoryFiles`. An existing file, the
+ * owner's edit included, is never touched. Item 05 calls it before every crew
+ * message. A write error is thrown.
  */
 export function ensureAgentFiles(store: Store, dataDir: string, id: string, options: { readonly homeDir?: string } = {}): EnsureAgentFilesResult {
   if (!isValidAgentId(id)) return { ok: false, error: "agent_id_invalid", message: `id ${quotedClip(id)}: ${ID_RULE}` };
@@ -650,5 +724,5 @@ export function ensureAgentFiles(store: Store, dataDir: string, id: string, opti
   const checked = validateCharter(json, { dataDir, ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }) });
   if (!checked.ok) return { ok: false, error: "charter_invalid", field: checked.field, message: `charter_json of ${id}: ${checked.message}` };
   if (checked.charter.id !== id) return { ok: false, error: "charter_invalid", field: "id", message: `charter_json of ${id}: its id is ${JSON.stringify(checked.charter.id)}` };
-  return { ok: true, created: writeCharterFiles(dataDir, checked.charter, options.homeDir) };
+  return { ok: true, created: writeCharterFiles(dataDir, checked.charter, options.homeDir, recordedConnectors(store, id)) };
 }

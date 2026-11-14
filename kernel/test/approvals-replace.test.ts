@@ -363,7 +363,7 @@ function crew(id: string, persona = "Tells the owner what changed."): Record<str
     display_name: id[0]?.toUpperCase() + id.slice(1),
     avatar: { shape: "crab", hue: "crew-teal" },
     persona,
-    duties: [{ text: "Tell the owner what changed", jobs: ["notify_owner"] }],
+    duties: [{ text: "Tell the owner what changed", jobs: ["notify_owner"], source: "none" }],
     boundaries: ["Never merge a pull request yourself."],
     model: "claude-sonnet-5",
     permission_mode: "default",

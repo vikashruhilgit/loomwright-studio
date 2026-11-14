@@ -13,6 +13,7 @@ import { WebSocketServer } from "ws";
 import type { ApprovalApplier } from "../approvals/store.js";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
+import type { ToolCatalogue } from "../features/catalogue.js";
 import { UNAUTHENTICATED_ROUTE_PATHS, compileRoutePath, matchRoutePath } from "../features/contribution.js";
 import type { ContributedBrowserAnswer, KillSwitchView, OwnedRoute, StatusView } from "../features/contribution.js";
 import { isPaused, releasePause } from "../console/pause.js";
@@ -134,6 +135,8 @@ export interface ApiServerOptions {
   readonly routes?: readonly OwnedRoute[];
   /** The kernel-applied actions' applier, passed on every contributed route request (the approvals decision reads it). Default none. */
   readonly approvalApplier?: ApprovalApplier;
+  /** The kernel's tool catalogue, passed on every contributed route request as `catalogue` (`GET /agents/:id` groups a member's tools by job with it). Default none. */
+  readonly toolCatalogue?: ToolCatalogue;
   /**
    * The kernel's whole session manager, passed on every contributed route
    * request as `sessions` (a route that stops or kills one session reads it).
@@ -590,6 +593,8 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
   const loomwrightStatus = sessions.loomwrightStatus?.bind(sessions);
   // Added to every contributed route's request only when the composition built one.
   const applier = options.approvalApplier === undefined ? {} : { approvalApplier: options.approvalApplier };
+  // The same: `catalogue` only when the composition built one (`startKernel` passes null when building it failed).
+  const catalogued = options.toolCatalogue === undefined ? {} : { catalogue: options.toolCatalogue };
   // The same: `sessions` only when the composition gave the whole manager.
   const managed = options.sessionManager === undefined ? {} : { sessions: options.sessionManager };
   // Read-only: a route may read the switch, never engage or release it.
@@ -793,6 +798,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
         ...origin,
         ...managed,
         ...applier,
+        ...catalogued,
       });
       // The seam's body is JSON: serialized here, so a string answers a JSON
       // string (`send` writes a string as already-serialized text, phase 1's use).
