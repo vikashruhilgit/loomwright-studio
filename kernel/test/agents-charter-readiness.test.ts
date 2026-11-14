@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import type { HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  NO_TRACKERS,
   READINESS_COVERED_PREFIX,
   READINESS_DUTY_EXCERPT_MAX,
   READINESS_FLAG_PREFIX,
@@ -26,20 +27,27 @@ import {
   READINESS_HEADING_PREFIX,
   READINESS_NOT_CHECKED_PREFIX,
   READINESS_READY_PREFIX,
+  TRACKER_ACCESS_FLAG,
+  TRACKER_NOT_CONNECTED_FLAG,
+  TRACKER_NO_SOURCE_FLAG,
+  TRACKER_STATUSES,
   charterReadiness,
   dutyExcerpt,
   openFlagsSentence,
+  trackerReadiness,
   wrightDutyRefusal,
 } from "../src/agents/charter-readiness.js";
-import type { ReadinessGrant, ReadinessResult } from "../src/agents/charter-readiness.js";
+import type { ReadinessGrant, ReadinessResult, TrackerEnv } from "../src/agents/charter-readiness.js";
 import { AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME } from "../src/agents/charter-tools.js";
-import { agentSettingsPath, createAgent, getAgent, renderRoleMd, validateCharter } from "../src/agents/index.js";
+import { CHARTER_JSON_SCHEMA, TICKET_SOURCES } from "../src/agents/charter-files.js";
+import { agentSettingsPath, createAgent, getAgent, readAgentSettings, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
 import { decideApproval } from "../src/approvals/index.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
+import type { OwnerGrant } from "../src/approvals/store.js";
 import { readWorkspaceRepos, remoteRepos } from "../src/automate/checkout.js";
 import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
-import { TOOL_JOBS, TOOL_JOB_DEFINITIONS, TOOL_JOB_IDS, buildToolCatalogue, jobNeedsWorkspace } from "../src/features/catalogue.js";
+import { TOOL_JOBS, TOOL_JOB_DEFINITIONS, TOOL_JOB_IDS, buildToolCatalogue, jobNeedsTicketSource, jobNeedsWorkspace } from "../src/features/catalogue.js";
 import type { ToolJob } from "../src/features/catalogue.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
@@ -105,6 +113,12 @@ function toolsOf(job: ToolJob): string[] {
 
 /** A duty entry. */
 const duty = (text: string, ...jobs: ToolJob[]) => ({ text, jobs });
+
+/** A ticket duty that states its tracker (`source`), as a charter drafted since item 21b does. */
+const ticketDuty = (text: string, source: "github" | "clickup" | "jira" = "github") => ({ text, jobs: ["automate_tickets"], source });
+
+/** The line a ticket duty that states no source reads (AC17): a charter written before item 21b. */
+const noSourceLine = (n: number) => `  flagged: duty ${n} doesn't say which tracker it reads`;
 
 /** A developer charter granting every tool of `jobs` (plus Read), with `duties` and no workspace unless `extra` says. */
 function crew(duties: unknown[], jobs: readonly ToolJob[], extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -206,7 +220,7 @@ async function boot(check?: HeldToolCheck) {
   const handle = await manager.startSession({ agent: "wright", prompt: "Draft a crew member.", model: MODEL, permissionMode: "default", cwd: tmp, policy: WRIGHT_POLICY, closeInputOnResult: false });
   const gate = gateOf(fakes.calls[fakes.calls.length - 1] as FakeCall);
   const applier = approvalApplierOf(SHIPPED_TOOLS);
-  const decide = (id: number) => decideApproval(store, { id, decision: "once", by: "owner" }, clock.at, applier);
+  const decide = (id: number, ownerGrant?: OwnerGrant) => decideApproval(store, { id, decision: "once", by: "owner", ...(ownerGrant === undefined ? {} : { ownerGrant }) }, clock.at, applier);
   const display = (n = 1) => String(events(store, "approval_requested")[n - 1]?.payload.display);
   const applied = (n = 1) => events(store, "approval_decided")[n - 1]?.payload.applied;
   const approvals = () => count(store, "SELECT count(*) FROM approvals");
@@ -262,7 +276,7 @@ describe("AC1 and AC4: everything covered and ready, nothing flagged, no note", 
     const h = await boot();
     h.ownerCreate(
       // (Not the two crew-run command jobs: their Skill and shell needs are flagged, `agents-charter-needs.test.ts`.)
-      crew([duty("Turn tickets into PRs", "automate_tickets"), duty("Read the PRs", "read_pr")], ["automate_tickets", "read_pr"], {
+      crew([ticketDuty("Turn tickets into PRs"), duty("Read the PRs", "read_pr")], ["automate_tickets", "read_pr"], {
         workspaces: [ws],
       }),
     );
@@ -276,6 +290,7 @@ describe("AC1 and AC4: everything covered and ready, nothing flagged, no note", 
       // One line per connector level: a job's read need folds into a write need.
       "  ready: GitHub access for Read a PR: granted",
       "  ready: GitHub write access for Hand tickets to /automate: granted",
+      "  ready: duty 1: Dev can read GitHub tickets",
     ]);
     // The readiness block is right after the head line.
     expect(h.display().split("\n")[1]).toBe(READINESS_HEADING);
@@ -286,7 +301,7 @@ describe("AC1 and AC4: everything covered and ready, nothing flagged, no note", 
 
   it("AC1 (unit): nothing open gives no agentNote and no open-flags clause", () => {
     const ws = checkout(join(tmp, "work", "sandbox"), "https://github.com/owner/studio-sandbox.git");
-    const r = readiness(crew([duty("Hand tickets over", "automate_tickets")], ["automate_tickets"], { workspaces: [ws] }), { kind: "stored", raw: { github: "write" } }, "update");
+    const r = readiness(crew([ticketDuty("Hand tickets over")], ["automate_tickets"], { workspaces: [ws] }), { kind: "stored", raw: { github: "write" } }, "update");
     expect(r.open).toEqual([]);
     expect(r.agentNote).toBeUndefined();
     expect(openFlagsSentence(r)).toBe("");
@@ -331,6 +346,7 @@ describe("AC2: approval #19's charter", () => {
       "  flagged: copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)",
       "  ready: GitHub access for Read a PR: proposed in this charter",
       "  flagged: GitHub write access for Hand tickets to /automate: only you can grant it (Team, in the member's inspector)",
+      noSourceLine(1),
     ]);
     // The note proposes exactly the two missing jobs, by their catalogue tool names, and no other tool.
     const note = held.permissionDecisionReason.slice(HELD_REASON.length + 1);
@@ -516,7 +532,7 @@ describe("AC8: an approval with flags still open names them in the applied sente
     expect(h.applied()).toBe(
       "The kernel created crew member dev (Dev) on approval 1." +
         `${PROCEED}duty 2 is not covered (needs Triage PR comments); duty 3 is not covered (needs Ask for a merge); ` +
-        "no copy of a repo to work in (for Hand tickets to /automate); GitHub write access for Hand tickets to /automate: the owner's step in Team.",
+        "no copy of a repo to work in (for Hand tickets to /automate); GitHub write access for Hand tickets to /automate: the owner's step in Team; duty 1 names no ticket source.",
     );
   });
 
@@ -632,6 +648,8 @@ describe("AC10: a check that cannot run says which and why, never ready", () => 
       "  not checked: duty 2 (the kernel's tool catalogue is unavailable): Triage PR comments",
       "  not checked: duty 3 (the kernel's tool catalogue is unavailable): Ask for merges",
       "  not checked: jobs: the kernel's tool catalogue is unavailable, so the jobs' needs were not checked",
+      // A duty's tracker is its own word, so it is checked whatever the catalogue says.
+      noSourceLine(1),
     ]);
     expect(r.agentNote).toBeDefined();
     expect(proposedFix(r.agentNote)).toBeUndefined();
@@ -851,6 +869,8 @@ describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, 
       ...A21_DUTY_LINES,
       "  flagged: copy of a repo for Hand tickets to /automate: it has no copy of a repo to work in (no workspace is listed)",
       "  flagged: GitHub write access for Hand tickets to /automate: only you can grant it (Team, in the member's inspector)",
+      noSourceLine(1),
+      noSourceLine(2),
     ]);
     expect(MAX_APPROVAL_DISPLAY - head.length).toBeGreaterThanOrEqual(1200);
     // AC6: the head quotes no duty whole; role.md, in the stored display, has every duty's full text.
@@ -948,5 +968,340 @@ describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, 
       READINESS_HEADING,
       ...A21_EXCERPTS.map((e, i) => `  flagged: duty ${i + 1} names no job (written before duties named their jobs): ${e}`),
     ]);
+  });
+});
+
+// ---- Item 21b: a ticket duty states its tracker, and the check says whether the member can read it ---------------
+
+const READ_TOOLS = ["clickup_filter_tasks", "clickup_get_task"];
+const LISTED_TOOLS = [...READ_TOOLS, "clickup_create_comment", "clickup_unheard_of"];
+const CLICKUP_UP: TrackerEnv = { ...NO_TRACKERS, clickup: { connected: true, readTools: READ_TOOLS } };
+const NAME = "Dev";
+
+/** A ClickUp ticket-working charter: the one ticket duty, `source` as given (absent: the legacy form), a workspace so nothing else is flagged. */
+function clickupCrew(source: string | undefined, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const entry = { text: "Work the owner's ClickUp tickets", jobs: ["automate_tickets"], ...(source === undefined ? {} : { source }) };
+  return crew([entry], ["automate_tickets"], extra);
+}
+
+function trackerReadinessOf(c: unknown, grant: ReadinessGrant, trackers: TrackerEnv | undefined, action: "create" | "update" = "create", ownerGrant?: OwnerGrant): ReadinessResult {
+  return charterReadiness({
+    action,
+    charter: validated(c),
+    catalogue: CATALOGUE,
+    grant,
+    dataDir,
+    homeDir: home,
+    ...(trackers === undefined ? {} : { trackers }),
+    ...(ownerGrant === undefined ? {} : { ownerGrant }),
+  });
+}
+
+const trackerLines = (r: ReadinessResult): string[] => r.items.filter((i) => i.subject === "tracker").map((i) => i.line);
+
+/** The `connectors` a member's settings file holds. */
+function connectorsOf(id: string): unknown {
+  return (JSON.parse(readFileSync(agentSettingsPath(dataDir, id), "utf8")) as { connectors?: unknown }).connectors;
+}
+
+/** A usable ClickUp connection that lists `LISTED_TOOLS`. */
+function connectClickup(store: Store, status = "connected"): void {
+  const stored = LISTED_TOOLS.map((name) => ({ name, proxy: `kernel_mcp_w_clickup_${name}`, read_only: false, description: "", schema: "{}" }));
+  store.prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES ('clickup', 'https://mcp.example.test/mcp', ?, ?)").run(status, JSON.stringify(stored));
+}
+
+describe("21b: the charter names a ticket duty's source (AC13, AC19)", () => {
+  it("TICKET_SOURCES is closed, published as an enum in the charter schema, and a source is accepted only on a duty that works tickets", () => {
+    expect(TICKET_SOURCES).toEqual(["github", "clickup", "jira"]);
+    const duties = (CHARTER_JSON_SCHEMA as { properties: { duties: { items: { anyOf: { properties?: { source?: { enum?: string[] } } }[] } } } }).properties.duties.items.anyOf;
+    expect(duties.find((d) => d.properties?.source !== undefined)?.properties?.source?.enum).toEqual(["github", "clickup", "jira"]);
+    for (const source of TICKET_SOURCES) expect(validateCharter(clickupCrew(source), { dataDir, homeDir: home }).ok).toBe(true);
+    // A duty with no source is accepted (a charter written before this item).
+    expect(validateCharter(clickupCrew(undefined), { dataDir, homeDir: home }).ok).toBe(true);
+    const wrong = validateCharter(crew([{ text: "Read the PRs", jobs: ["read_pr"], source: "clickup" }], ["read_pr"]), { dataDir, homeDir: home });
+    expect(wrong).toMatchObject({ ok: false, error: "charter_invalid", field: "duties.0.source" });
+    expect(!wrong.ok && wrong.message).toContain("source is only for a duty that works tickets");
+    expect(validateCharter(crew([{ text: "Read", jobs: [], source: "github" }], []), { dataDir, homeDir: home })).toMatchObject({ ok: false, field: "duties.0.source" });
+    expect(validateCharter(clickupCrew("trello"), { dataDir, homeDir: home })).toMatchObject({ ok: false, error: "charter_invalid", field: "duties.0.source" });
+    // A bare line cannot carry one.
+    expect(validateCharter(crew(["Work tickets"], []), { dataDir, homeDir: home }).ok).toBe(true);
+  });
+
+  it("the source is data, never a grant: a duty carrying a grant (a connectors or clickup key) is refused as an unknown key, and Wright's connectors may not name clickup or jira", async () => {
+    for (const key of ["connectors", "clickup", "grant", "tools"]) {
+      const entry = { text: "Work tickets", jobs: ["automate_tickets"], source: "clickup", [key]: ["clickup_get_task"] };
+      expect(validateCharter(crew([entry], ["automate_tickets"]), { dataDir, homeDir: home })).toMatchObject({ ok: false, field: `duties.0.${key}` });
+    }
+    const h = await boot();
+    for (const kind of ["clickup", "jira"]) {
+      const refused = await h.create(clickupCrew("clickup", { connectors: [kind] }));
+      expect(refused.permissionDecisionReason).toContain("invalid_input");
+      expect(refused.permissionDecisionReason).toContain(`the ${kind} grant is owner-only`);
+    }
+    expect(h.approvals()).toBe(0);
+  });
+
+  it("only the ticket job declares a ticket source, once, on the job (not one per tracker)", () => {
+    expect(TOOL_JOB_IDS.filter((id) => jobNeedsTicketSource(id))).toEqual(["automate_tickets"]);
+  });
+});
+
+describe("21b: whether the member can read the tracker (AC14, AC16, AC17, AC18)", () => {
+  it("the closed statuses, and the flag texts the app mirrors", () => {
+    expect(TRACKER_STATUSES).toEqual(["granted", "no_access", "not_connected", "no_source"]);
+    expect([TRACKER_ACCESS_FLAG, TRACKER_NOT_CONNECTED_FLAG, TRACKER_NO_SOURCE_FLAG]).toEqual(["tickets yet: it has ", "isn't connected on Integrations", "doesn't say which tracker it reads"]);
+  });
+
+  it("AC17: a ticket duty with no stated source is flagged in words, the charter is still accepted, and Wright is asked to propose one (create) or told it can't (update)", () => {
+    const created = trackerReadinessOf(clickupCrew(undefined), { kind: "proposed", connectors: [] }, CLICKUP_UP);
+    expect(trackerLines(created)).toEqual(["  flagged: duty 1 doesn't say which tracker it reads"]);
+    expect(created.items.find((i) => i.subject === "tracker")?.tracker).toEqual({
+      duty: "Work the owner's ClickUp tickets",
+      source: null,
+      status: "no_source",
+      sentence: "duty 1 doesn't say which tracker it reads",
+    });
+    expect(created.open.map((i) => i.brief)).toContain("duty 1 names no ticket source");
+    expect(created.agentNote).toContain("draft the charter again with that duty's source set to github, clickup or jira");
+    expect(created.agentNote).toContain("grants nothing");
+    const updated = trackerReadinessOf(clickupCrew(undefined), { kind: "stored", raw: undefined }, CLICKUP_UP, "update");
+    expect(updated.agentNote).toContain("an update never changes duties");
+    expect(updated.agentNote).not.toContain("draft the charter again with that duty's source");
+  });
+
+  it("AC14: a ClickUp ticket duty with no ClickUp access is flagged, naming the member and the tracker; the access is the owner's step", () => {
+    const r = trackerReadinessOf(clickupCrew("clickup"), { kind: "proposed", connectors: [] }, CLICKUP_UP);
+    expect(trackerLines(r)).toEqual(["  flagged: duty 1: Dev can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)"]);
+    expect(trackerLines(r)[0]).toContain(TRACKER_ACCESS_FLAG);
+    expect(r.items.find((i) => i.subject === "tracker")?.tracker).toMatchObject({ source: "clickup", status: "no_access", sentence: "Dev can't read ClickUp tickets yet: it has no ClickUp access" });
+    expect(r.open.map((i) => i.brief)).toContain("Dev can't read ClickUp tickets yet (ClickUp access is the owner's step)");
+    // Wright is told it is the owner's step, never a change it drafts.
+    expect(r.agentNote).toContain("ClickUp and Jira access is the owner's own step, never a change you draft");
+    expect(r.agentNote).toContain("the owner can tick the access on the held card");
+    // Nothing else about the charter moved: no extra flag, no job fix.
+    expect(proposedFix(r.agentNote)).toBeUndefined();
+  });
+
+  it("a member holding only part of the read tools is no_access ('only part'), still flagged with the same flag text", () => {
+    const grant: ReadinessGrant = { kind: "stored", raw: { clickup: ["clickup_filter_tasks"] } };
+    const r = trackerReadinessOf(clickupCrew("clickup"), grant, CLICKUP_UP, "update");
+    expect(trackerLines(r)).toEqual(["  flagged: duty 1: Dev can't read ClickUp tickets yet: it has only part of the ClickUp access to read them (only you can grant it)"]);
+    expect(trackerLines(r)[0]).toContain(TRACKER_ACCESS_FLAG);
+  });
+
+  it("a member holding every listed read tool is granted: a ready line, nothing open for the tracker, no tracker note; tools outside the read capability add nothing", () => {
+    const grant: ReadinessGrant = { kind: "stored", raw: { clickup: [...READ_TOOLS, "clickup_create_comment"] } };
+    const r = trackerReadinessOf(clickupCrew("clickup"), grant, CLICKUP_UP, "update");
+    expect(trackerLines(r)).toEqual(["  ready: duty 1: Dev can read ClickUp tickets"]);
+    expect(r.open.filter((i) => i.subject === "tracker")).toEqual([]);
+    expect(r.agentNote ?? "").not.toContain("ClickUp and Jira access");
+    // Holding only a comment tool is not reading.
+    expect(trackerLines(trackerReadinessOf(clickupCrew("clickup"), { kind: "stored", raw: { clickup: ["clickup_create_comment"] } }, CLICKUP_UP, "update"))[0]).toContain(TRACKER_ACCESS_FLAG);
+  });
+
+  it("AC18: a tracker that is not connected is flagged as such (the app offers Connect), is not a read-access line, and the charter is still accepted", () => {
+    const r = trackerReadinessOf(clickupCrew("clickup"), { kind: "proposed", connectors: [] }, NO_TRACKERS);
+    expect(trackerLines(r)).toEqual(["  flagged: duty 1: ClickUp isn't connected on Integrations, so Dev can't read its tickets yet (connect it there first; only you can grant access)"]);
+    expect(trackerLines(r)[0]).toContain(TRACKER_NOT_CONNECTED_FLAG);
+    expect(trackerLines(r)[0]).not.toContain(TRACKER_ACCESS_FLAG);
+    expect(r.items.find((i) => i.subject === "tracker")?.tracker?.status).toBe("not_connected");
+    expect(r.agentNote).toContain("connects it on Integrations first");
+    // No tracker view at all reads as no tracker connected (fail closed): never ready.
+    expect(trackerReadinessOf(clickupCrew("clickup"), { kind: "proposed", connectors: [] }, undefined).items.find((i) => i.subject === "tracker")?.tracker?.status).toBe("not_connected");
+    // Whatever the member holds, an unconnected tracker is not connected.
+    const holds: ReadinessGrant = { kind: "stored", raw: { clickup: READ_TOOLS } };
+    expect(trackerReadinessOf(clickupCrew("clickup"), holds, NO_TRACKERS, "update").items.find((i) => i.subject === "tracker")?.tracker?.status).toBe("not_connected");
+  });
+
+  it("GitHub Issues are read through the member's GitHub grant, whether or not an MCP tracker is connected", () => {
+    const none = trackerReadinessOf(clickupCrew("github"), { kind: "proposed", connectors: [] }, NO_TRACKERS);
+    expect(trackerLines(none)).toEqual(["  flagged: duty 1: Dev can't read GitHub tickets yet: it has no GitHub access (only you can grant it)"]);
+    const held = trackerReadinessOf(clickupCrew("github"), { kind: "proposed", connectors: ["github"] }, NO_TRACKERS);
+    expect(trackerLines(held)).toEqual(["  ready: duty 1: Dev can read GitHub tickets"]);
+  });
+
+  it("the grant the owner ticks counts as held (and only what it names): the tracker reads as ready, a lesser tick leaves it open", () => {
+    const base = { kind: "proposed", connectors: [] } as const;
+    expect(trackerReadinessOf(clickupCrew("clickup"), base, CLICKUP_UP, "create", { kind: "clickup", tools: READ_TOOLS }).items.find((i) => i.subject === "tracker")?.tracker?.status).toBe("granted");
+    expect(trackerReadinessOf(clickupCrew("clickup"), base, CLICKUP_UP, "create", { kind: "clickup", tools: ["clickup_get_task"] }).items.find((i) => i.subject === "tracker")?.tracker?.status).toBe("no_access");
+    // Another tracker's tick is not this tracker's.
+    expect(trackerReadinessOf(clickupCrew("clickup"), base, CLICKUP_UP, "create", { kind: "jira", tools: READ_TOOLS }).items.find((i) => i.subject === "tracker")?.tracker?.status).toBe("no_access");
+  });
+
+  it("only a duty entry whose jobs include the ticket job is a ticket duty: a bare line, a duty naming other jobs, or text that says 'tickets' adds no tracker line", () => {
+    const r = trackerReadinessOf(crew(["Work the ClickUp tickets", duty("Work the ClickUp tickets and the clickup source", "read_pr"), duty("automate_tickets clickup")], ["read_pr"]), { kind: "proposed", connectors: [] }, CLICKUP_UP);
+    expect(trackerLines(r)).toEqual([]);
+  });
+
+  it("one line per ticket duty, in charter order, after every other line", () => {
+    const c = crew(
+      [{ text: "Tickets from ClickUp", jobs: ["automate_tickets"], source: "clickup" }, duty("Read PRs", "read_pr"), { text: "Tickets from Jira", jobs: ["automate_tickets"], source: "jira" }, { text: "More tickets", jobs: ["automate_tickets"] }],
+      ["automate_tickets", "read_pr"],
+    );
+    const r = trackerReadinessOf(c, { kind: "proposed", connectors: [] }, CLICKUP_UP);
+    expect(trackerLines(r)).toEqual([
+      "  flagged: duty 1: Dev can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)",
+      "  flagged: duty 3: Jira isn't connected on Integrations, so Dev can't read its tickets yet (connect it there first; only you can grant access)",
+      "  flagged: duty 4 doesn't say which tracker it reads",
+    ]);
+    expect(r.lines.slice(-3)).toEqual(trackerLines(r));
+    expect(trackerReadiness({ charter: validated(c), grant: { kind: "proposed", connectors: [] }, trackers: CLICKUP_UP }).map((i) => i.line)).toEqual(trackerLines(r));
+  });
+
+  it("a grant that can't be read is not checked, never ready (and names no status)", () => {
+    const r = trackerReadinessOf(clickupCrew("clickup"), { kind: "unread", reason: "the settings file can't be read (EACCES)" }, CLICKUP_UP, "update");
+    expect(trackerLines(r)).toEqual(["  not checked: duty 1: not checked (the settings file can't be read (EACCES))"]);
+    expect(r.items.find((i) => i.subject === "tracker")?.tracker).toBeUndefined();
+  });
+
+  it("only a no_access line carries TRACKER_ACCESS_FLAG: no other readiness line of the charter does", () => {
+    const c = crew([{ text: "Tickets", jobs: ["automate_tickets"], source: "clickup" }, { text: "More", jobs: ["automate_tickets"] }], ["automate_tickets", "read_pr"]);
+    for (const trackers of [CLICKUP_UP, NO_TRACKERS]) {
+      const withFlag = trackerReadinessOf(c, { kind: "proposed", connectors: [] }, trackers).lines.filter((l) => l.includes(TRACKER_ACCESS_FLAG));
+      expect(withFlag.length).toBe(trackers === CLICKUP_UP ? 1 : 0);
+    }
+  });
+});
+
+describe("21b: the held create, with and without the owner's ticks on the card (AC15, AC16)", () => {
+  /** A held create for a ClickUp ticket duty, ClickUp connected and listing `LISTED_TOOLS`. */
+  async function heldCreate() {
+    const h = await boot();
+    connectClickup(h.store);
+    const ws = checkout(join(tmp, "work", "sandbox"), "https://github.com/owner/studio-sandbox.git");
+    const held = await h.create(clickupCrew("clickup", { workspaces: [ws] }));
+    expect(held.permissionDecision).toBe("deny");
+    return { h, held };
+  }
+  const STILL_OPEN = "Dev can't read ClickUp tickets yet (ClickUp access is the owner's step)";
+
+  it("the held card shows the tracker row in the readiness block, and Wright's held reason says the same and names it the owner's step", async () => {
+    const { h, held } = await heldCreate();
+    expect(readinessLines(h.display())).toContain("  flagged: duty 1: Dev can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)");
+    expect(held.permissionDecisionReason).toContain(STILL_OPEN);
+    expect(held.permissionDecisionReason).toContain("ClickUp and Jira access is the owner's own step");
+    // The proposal is data: the stored settings file the card shows holds no ClickUp tool, and nothing has been granted.
+    expect(h.display()).not.toContain("clickup_get_task");
+  });
+
+  it("AC16: approved with no tick, the member is created without the access, and the applied sentence still names it as open", async () => {
+    const { h } = await heldCreate();
+    h.decide(1);
+    expect(getAgent(h.store, "dev")).toBeDefined();
+    expect(connectorsOf("dev")).toBeUndefined();
+    expect(h.applied()).toContain(`${PROCEED}`);
+    expect(h.applied()).toContain(STILL_OPEN);
+    expect(h.applied()).not.toContain("The owner granted");
+    expect(events(h.store, "agent_settings_set")).toEqual([]);
+  });
+
+  it("AC15: approved with the owner's ticks, the member holds exactly those tools (the owner's, recorded as such) and the applied sentence names the tracker access no longer open", async () => {
+    const { h } = await heldCreate();
+    h.decide(1, { kind: "clickup", tools: READ_TOOLS });
+    expect(getAgent(h.store, "dev")).toBeDefined();
+    // The settings file the member starts with holds the grant (written first, so the self-heal never loses it).
+    expect(connectorsOf("dev")).toEqual({ clickup: READ_TOOLS });
+    expect(readAgentSettings(dataDir, "dev", { homeDir: home })).toMatchObject({ ok: true, settings: { connectors: ["clickup"] } });
+    expect(h.applied()).toContain("The owner granted ClickUp access with this approval.");
+    expect(h.applied()).not.toContain(STILL_OPEN);
+    expect(h.applied()).not.toContain("ClickUp tickets");
+    // The audit trail names the owner and the approval; Wright's draft carried no grant.
+    expect(events(h.store, "agent_settings_set").map((e) => e.payload)).toEqual([{ id: "dev", field: "connectors", old: null, new: { clickup: READ_TOOLS }, by: "owner", approval_id: 1 }]);
+    expect(events(h.store, "approval_decided")[0]?.payload).toMatchObject({ decision: "once", by: "owner", owner_grant: { kind: "clickup", tools: READ_TOOLS } });
+    // role.md, written after the settings file, names what the file grants.
+    expect(readFileSync(join(dataDir, "memory", "dev", "role.md"), "utf8")).toContain("connectors (ClickUp)");
+  });
+
+  it("a lesser tick (one read tool) is granted as ticked and the access is still named open, part of it", async () => {
+    const { h } = await heldCreate();
+    h.decide(1, { kind: "clickup", tools: ["clickup_get_task"] });
+    expect(connectorsOf("dev")).toEqual({ clickup: ["clickup_get_task"] });
+    expect(h.applied()).toContain("The owner granted ClickUp access with this approval.");
+    expect(h.applied()).toContain(STILL_OPEN);
+  });
+
+  it("the owner's tick keeps the GitHub grant the create proposed (the one merge replaces only the tracker's key)", async () => {
+    const h = await boot();
+    connectClickup(h.store);
+    const ws = checkout(join(tmp, "work", "sandbox"), "https://github.com/owner/studio-sandbox.git");
+    await h.create(clickupCrew("clickup", { workspaces: [ws], connectors: ["github"] }));
+    h.decide(1, { kind: "clickup", tools: READ_TOOLS });
+    expect(connectorsOf("dev")).toEqual({ github: "read", clickup: READ_TOOLS });
+  });
+
+  it("an owner's tick on a create the kernel then refuses (an id already taken) writes nothing, the grant included", async () => {
+    const { h } = await heldCreate();
+    h.ownerCreate(crew([duty("Other", "read_pr")], ["read_pr"]));
+    h.decide(1, { kind: "clickup", tools: READ_TOOLS });
+    expect(connectorsOf("dev")).toBeUndefined();
+    expect(events(h.store, "agent_settings_set")).toEqual([]);
+    expect(events(h.store, "approval_decided")[0]?.payload).not.toHaveProperty("owner_grant");
+  });
+});
+
+describe("21b: the held update, with and without the owner's ticks (AC15, AC16)", () => {
+  async function member() {
+    const h = await boot();
+    connectClickup(h.store);
+    h.ownerCreate(clickupCrew("clickup"));
+    return h;
+  }
+  const STILL_OPEN = "Dev can't read ClickUp tickets yet (ClickUp access is the owner's step)";
+
+  it("the held update names the missing access, and approved with no tick keeps naming it open", async () => {
+    const h = await member();
+    const held = await h.update("dev", { limits: { tokens_per_day: 100000 } });
+    expect(readinessLines(h.display())).toContain("  flagged: duty 1: Dev can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)");
+    expect(held.permissionDecisionReason).toContain(STILL_OPEN);
+    h.decide(1);
+    expect(connectorsOf("dev")).toBeUndefined();
+    expect(h.applied()).toContain(STILL_OPEN);
+  });
+
+  it("approved with the owner's ticks, the grant joins the same file write, is recorded as the owner's, and the applied sentence no longer names the access open", async () => {
+    const h = await member();
+    await h.update("dev", { limits: { tokens_per_day: 100000 } });
+    h.decide(1, { kind: "clickup", tools: READ_TOOLS });
+    expect(connectorsOf("dev")).toEqual({ clickup: READ_TOOLS });
+    expect(JSON.parse(readFileSync(agentSettingsPath(dataDir, "dev"), "utf8")).limits).toEqual({ tokens_per_day: 100000 });
+    expect(h.applied()).toContain("The kernel updated crew member dev on approval 1: limits.tokens_per_day, connectors.");
+    expect(h.applied()).toContain("The owner granted ClickUp access with this approval.");
+    expect(h.applied()).not.toContain(STILL_OPEN);
+    expect(events(h.store, "agent_settings_set").map((e) => e.payload)).toEqual([{ id: "dev", field: "connectors", old: null, new: { clickup: READ_TOOLS }, by: "owner", approval_id: 1 }]);
+    expect(events(h.store, "agent_updated")[0]?.payload).toMatchObject({ id: "dev", fields: ["limits.tokens_per_day", "connectors"], approval_id: 1, by: "kernel" });
+  });
+
+  it("an update that changes only the display name still writes the owner's grant (the file is written for the grant alone)", async () => {
+    const h = await member();
+    await h.update("dev", { display_name: "Developer" });
+    h.decide(1, { kind: "clickup", tools: READ_TOOLS });
+    expect(getAgent(h.store, "dev")?.display_name).toBe("Developer");
+    expect(connectorsOf("dev")).toEqual({ clickup: READ_TOOLS });
+  });
+
+  it("a tick adds to what the member already holds (never narrows) and keeps its GitHub grant; ticking tools it already holds changes no file", async () => {
+    const h = await member();
+    h.setConnectors("dev", { github: "write", clickup: ["clickup_create_comment"] });
+    await h.update("dev", { limits: { tokens_per_day: 100000 } });
+    h.decide(1, { kind: "clickup", tools: READ_TOOLS });
+    expect(connectorsOf("dev")).toEqual({ github: "write", clickup: ["clickup_create_comment", ...READ_TOOLS] });
+    // A second update ticking only what it holds: the grant is unchanged and the sentence says no grant was made.
+    await h.update("dev", { limits: { tokens_per_day: 200000 } }, "u2");
+    h.decide(2, { kind: "clickup", tools: ["clickup_get_task"] });
+    expect(connectorsOf("dev")).toEqual({ github: "write", clickup: ["clickup_create_comment", ...READ_TOOLS] });
+    expect(h.applied(2)).toMatch(/^The kernel updated crew member dev on approval 2: limits\.tokens_per_day\. The owner chose to proceed with these still open: no copy of a repo/);
+    expect(h.applied(2)).not.toContain("The owner granted");
+    expect(events(h.store, "agent_settings_set")).toHaveLength(1);
+  });
+
+  it("an update whose settings file the kernel can no longer hold the grant in (a stored grant it can't read) refuses it, nothing written", async () => {
+    const h = await member();
+    h.setConnectors("dev", { clickup: "not-a-list" });
+    // The hold itself reads the stored grant as not checked, so the update is still held; the apply refuses the grant.
+    await h.update("dev", { limits: { tokens_per_day: 100000 } });
+    const before = readFileSync(agentSettingsPath(dataDir, "dev"), "utf8");
+    h.decide(1, { kind: "clickup", tools: READ_TOOLS });
+    expect(readFileSync(agentSettingsPath(dataDir, "dev"), "utf8")).toBe(before);
+    expect(h.store.prepare("SELECT payload_json FROM events WHERE kind = 'approval_decided'").pluck().get()).toContain("apply_refused");
   });
 });

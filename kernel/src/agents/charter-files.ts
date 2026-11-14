@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
-import { CONNECTOR_LABELS, TOOL_JOB_IDS } from "../features/catalogue.js";
+import { CONNECTOR_LABELS, TOOL_JOB_IDS, jobNeedsTicketSource } from "../features/catalogue.js";
 import type { ToolJob } from "../features/catalogue.js";
 import { CONNECTOR_KINDS } from "../integrations/types.js";
 import type { ConnectorKind } from "../integrations/types.js";
@@ -84,14 +84,28 @@ export interface CharterLimits {
 export const CHARTER_LIMIT_KEYS = Object.freeze(["tokens_per_day", "sessions_at_once", "delegation_depth"] as const);
 
 /**
+ * Where a ticket duty's tickets come from (phase 8 item 21b): the trackers the kernel knows, closed in
+ * code, the same names as `CONNECTOR_KINDS` (`github` is GitHub Issues). It is data, never a grant: it says
+ * which tracker the duty reads, and the charter readiness check says whether the member can.
+ */
+export const TICKET_SOURCES = Object.freeze(["github", "clickup", "jira"] as const);
+
+/** One of `TICKET_SOURCES`. */
+export type TicketSource = (typeof TICKET_SOURCES)[number];
+
+/**
  * A duty that names its jobs: its text, and the catalogue jobs (`TOOL_JOBS`
  * ids, no repeats) that do it; `[]` is a duty that needs no kernel tool. The
  * charter readiness check (`./charter-readiness.ts`) reads `jobs`, never the
- * text.
+ * text. `source` (optional) is the tracker a ticket duty reads its tickets from:
+ * valid only on a duty whose jobs include a ticket job (`jobNeedsTicketSource`),
+ * Wright's proposal on the held card, and never a grant (`connectors` stays the
+ * owner's: the owner grants a tracker's tools when they approve).
  */
 export interface DutyEntry {
   readonly text: string;
   readonly jobs: readonly ToolJob[];
+  readonly source?: TicketSource;
 }
 
 /**
@@ -192,7 +206,8 @@ const personaSchema = z
 /**
  * A duty entry: its `text` (a prose line's rule) and `jobs`, each a `TOOL_JOBS`
  * id (an enum, so the published schema lists them; a job outside it is refused
- * naming it, `unknownJobMessage`), no repeats. Strict: a misspelt key is refused.
+ * naming it, `unknownJobMessage`), no repeats, and (optional) the ticket `source`
+ * of a duty that works tickets. Strict: a misspelt key is refused.
  */
 const dutyEntrySchema = z
   .object({
@@ -201,8 +216,14 @@ const dutyEntrySchema = z
       .array(z.enum(TOOL_JOB_IDS as [ToolJob, ...ToolJob[]]))
       .max(TOOL_JOB_IDS.length)
       .refine((list) => new Set(list).size === list.length, "must not repeat a job"),
+    // The tracker a ticket duty reads (an enum, so the published schema lists it); the refine below keeps it to a ticket duty.
+    source: z.enum(TICKET_SOURCES).optional(),
   })
-  .strict();
+  .strict()
+  .refine((duty) => duty.source === undefined || duty.jobs.some(jobNeedsTicketSource), {
+    message: "source is only for a duty that works tickets (its jobs must include a job that does, such as automate_tickets)",
+    path: ["source"],
+  });
 
 const charterSchema = z
   .object({
