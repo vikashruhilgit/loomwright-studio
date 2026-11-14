@@ -144,3 +144,8 @@ docs/architecture/mcp-connectors.md
 docs/DESIGN.md
 docs/OPEN_QUESTIONS.md
 docs/evidence/phase-8-21b-tracker-grant-in-plain-words.md
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-14-crew-tracker-grant-in-plain-words.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
