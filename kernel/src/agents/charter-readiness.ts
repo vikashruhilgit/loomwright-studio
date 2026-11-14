@@ -9,10 +9,13 @@
 //
 // Inputs, and nothing else (invariant 3): the charter's own `duties[].jobs` and
 // `tool_policy.allowedTools`, its `workspaces`, the connectors it proposes (a
-// create) or the member's stored grant (an update), the kernel's tool catalogue
-// and each workspace's git config (read through `../automate/checkout.ts`'s one
-// remote parse). A duty's text is shown, never read for a job: text that looks
-// like a job id or a JSON entry adds nothing.
+// create) or the member's stored grant (an update), the kernel's tool catalogue,
+// each workspace's git config (read through `../automate/checkout.ts`'s one
+// remote parse) and, for a ticket duty (phase 8 item 21b), the tracker view the
+// caller read (`TrackerEnv`: is the tracker connected, which listed tools mean
+// "read tickets") and the tools the owner ticked on the held card (`ownerGrant`).
+// A duty's text is shown, never read for a job: text that looks like a job id or
+// a JSON entry adds nothing.
 //
 // Mechanism only (invariant 1): which jobs a duty needs is Wright's draft and
 // the owner's decision; this only compares lists and reads files. It never
@@ -27,14 +30,27 @@
 // `kernel.ts`.
 import { homedir } from "node:os";
 import { readWorkspaceRepos } from "../automate/checkout.js";
-import { KERNEL_TOOL_PREFIX, TOOL_JOBS, andList, connectorAccessText, connectorNeeds, holdsConnector, jobGranted, jobLackingTools, jobNeedsWorkspace } from "../features/catalogue.js";
+import {
+  CONNECTOR_LABELS,
+  KERNEL_TOOL_PREFIX,
+  TOOL_JOBS,
+  andList,
+  connectorAccessText,
+  connectorNeeds,
+  holdsConnector,
+  jobGranted,
+  jobLackingTools,
+  jobNeedsTicketSource,
+  jobNeedsWorkspace,
+} from "../features/catalogue.js";
 import type { ConnectorNeed, ToolCatalogue, ToolJob } from "../features/catalogue.js";
 import { jobNeedsGaps, resolveJobNeeds } from "../features/job-needs.js";
 import type { NeedsGap } from "../features/job-needs.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { PROTECTED_FOLDER_WHY, isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
-import type { Charter } from "./charter-files.js";
+import type { Charter, DutyEntry, TicketSource } from "./charter-files.js";
 import { parseConnectorsGrant } from "./settings.js";
+import type { McpGrantKind } from "./settings.js";
 
 // ---- The display format ------------------------------------------------------------
 //
@@ -47,6 +63,8 @@ import { parseConnectorsGrant } from "./settings.js";
 //       ready: <prerequisite> for <job labels>: <what it has>  READINESS_READY_PREFIX
 //       flagged: <prerequisite> for <job labels>: <missing>    READINESS_FLAG_PREFIX
 //       flagged: permission to <plain words> for <job label>: <why>   READINESS_FLAG_PREFIX
+//       ready | flagged: duty <n>: <member> can read <tracker> tickets, or can't read them yet: <why>
+//                        (item 21b: one per ticket duty), or: duty <n> doesn't say which tracker it reads
 //       not checked: <duty n, or prerequisite …>: <why not>    READINESS_NOT_CHECKED_PREFIX
 //
 // A duty is quoted by an excerpt of its text (`dutyExcerpt`: the whole text when
@@ -96,9 +114,32 @@ const PREFIXES: Readonly<Record<ReadinessStatus, string>> = Object.freeze({
 /**
  * What a finding is about: a duty, the code jobs' copy of a repo, the jobs'
  * connector access, a granted job's Claude tool or shell permission
- * (`permission`), or every job (no catalogue).
+ * (`permission`), a ticket duty's tracker (`tracker`: its source and whether the
+ * member can read it), or every job (no catalogue).
  */
-export type ReadinessSubject = "duty" | "workspace" | "connector" | "permission" | "jobs";
+export type ReadinessSubject = "duty" | "workspace" | "connector" | "permission" | "tracker" | "jobs";
+
+/**
+ * Whether a ticket duty's member can read its tracker's tickets (a closed list, mirrored as
+ * `TrackerAccess.status` in `app/src/api/contract.ts`): `granted`; `no_access` (the tracker is connected
+ * and the member lacks the read access, wholly or in part); `not_connected` (an MCP tracker the owner has not
+ * connected on Integrations); `no_source` (the duty does not say which tracker it reads).
+ */
+export const TRACKER_STATUSES = Object.freeze(["granted", "no_access", "not_connected", "no_source"] as const);
+
+/** One of `TRACKER_STATUSES`. */
+export type TrackerStatus = (typeof TRACKER_STATUSES)[number];
+
+/** What a `tracker` finding says, apart from its display line: the answer `GET /agents/:id`'s `tracker_access` gives per ticket duty. */
+export interface TrackerFinding {
+  /** The duty's full text (its `text`; a duty's text is shown, never read for a job). */
+  readonly duty: string;
+  /** The tracker the duty states; `null` when it states none (`no_source`). */
+  readonly source: TicketSource | null;
+  readonly status: TrackerStatus;
+  /** The finding as one sentence, in plain words (no prefix): `Ticket Runner can't read ClickUp tickets yet: it has no ClickUp access`. */
+  readonly sentence: string;
+}
 
 /** One finding: its display line, and a short form (no duty text) for Wright's note and the applied sentence. */
 export interface ReadinessItem {
@@ -108,6 +149,8 @@ export interface ReadinessItem {
   readonly brief: string;
   /** The jobs a `workspace`, `connector` or `permission` finding is about, in `TOOL_JOBS` order. */
   readonly jobs?: readonly ToolJob[];
+  /** A `tracker` finding's answer, when the check could say one (a grant it could not read is `not_checked` and has none). */
+  readonly tracker?: TrackerFinding;
 }
 
 /** What the check found. */
@@ -147,6 +190,36 @@ export interface ReadinessInput {
   readonly dataDir: string;
   /** The home dir the protected folders are under (default `os.homedir()`); a seam for tests. */
   readonly homeDir?: string;
+  /**
+   * The MCP trackers as the caller read them from the store (`trackerEnvOf` in `./charter-tools.ts`); this module
+   * never reads the store. Absent: no tracker is connected (fail closed), so a ClickUp or Jira ticket duty is flagged
+   * `not_connected` rather than guessed ready.
+   */
+  readonly trackers?: TrackerEnv;
+  /** The tools the owner ticked on the held card, applied with this decision: counted as held (never drafted by Wright). */
+  readonly ownerGrant?: OwnerMcpGrant;
+}
+
+/** One MCP tracker as the readiness check needs it: is its connection in use, and which of its listed tools mean "read tickets". */
+export interface TrackerConnectionState {
+  readonly connected: boolean;
+  /** The connection's listed tools of the "read tickets" capability (`TRACKER_READ_CAPABILITY`), in the capability's order; empty when none is listed. */
+  readonly readTools: readonly string[];
+}
+
+/** Every MCP tracker's state, by kind. */
+export type TrackerEnv = Readonly<Record<McpGrantKind, TrackerConnectionState>>;
+
+/** No MCP tracker connected: what an absent `ReadinessInput.trackers` means. */
+export const NO_TRACKERS: TrackerEnv = Object.freeze({
+  jira: Object.freeze({ connected: false, readTools: Object.freeze([]) }),
+  clickup: Object.freeze({ connected: false, readTools: Object.freeze([]) }),
+});
+
+/** An MCP tracker's tools the owner grants with an approval (`owner_grant` on approve): the connection's own tool names. */
+export interface OwnerMcpGrant {
+  readonly kind: McpGrantKind;
+  readonly tools: readonly string[];
 }
 
 // ---- The plain words ------------------------------------------------------------------
@@ -291,20 +364,25 @@ function shortestWorkspaceLine(jobs: readonly ToolJob[]): string {
 
 // ---- The connectors --------------------------------------------------------------------
 
-/** What the member holds: whether a need is met (`holdsConnector`, the catalogue's one rule), or why that can't be told. */
-type GrantView = { readonly holds: (need: ConnectorNeed) => boolean; readonly source: string } | { readonly unread: string };
+/** What the member holds: whether a need is met (`holdsConnector`, the catalogue's one rule) and which MCP tools it holds, or why that can't be told. */
+type GrantView =
+  | { readonly holds: (need: Pick<ConnectorNeed, "kind" | "write">) => boolean; readonly source: string; readonly mcp: (kind: McpGrantKind) => readonly string[] }
+  | { readonly unread: string };
 
-function grantView(grant: ReadinessGrant): GrantView {
+function grantView(grant: ReadinessGrant, ownerGrant?: OwnerMcpGrant): GrantView {
   if (grant.kind === "unread") return { unread: grant.reason };
+  // The tools the owner ticked with this approval count as held (a create's proposal and a stored grant alike).
+  const withOwner = (kind: McpGrantKind, held: readonly string[]): readonly string[] =>
+    ownerGrant?.kind === kind ? [...new Set([...held, ...ownerGrant.tools])] : held;
   if (grant.kind === "proposed") {
     // A create's proposal is a read grant; the write level is only ever set by the owner, in Team.
-    return { holds: (need) => holdsConnector({ connectors: grant.connectors, githubWrite: false }, need), source: "proposed in this charter" };
+    return { holds: (need) => holdsConnector({ connectors: grant.connectors, githubWrite: false }, need), source: "proposed in this charter", mcp: (kind) => withOwner(kind, []) };
   }
-  if (grant.raw === undefined || grant.raw === null) return { holds: () => false, source: "granted" };
+  if (grant.raw === undefined || grant.raw === null) return { holds: () => false, source: "granted", mcp: (kind) => withOwner(kind, []) };
   const read = parseConnectorsGrant(grant.raw);
   if (!read.ok) return { unread: `the member's connectors grant can't be read: ${read.message}` };
   const g = read.grant;
-  return { holds: (need) => holdsConnector(g, need), source: "granted" };
+  return { holds: (need) => holdsConnector(g, need), source: "granted", mcp: (kind) => withOwner(kind, g.mcp[kind] ?? []) };
 }
 
 /** One connector access line: the access (`GitHub write access`) and the jobs whose granted tools need it. */
@@ -377,7 +455,7 @@ function permissionFindings(
       const subject = `permission to use ${connectorAccessText(n)} for ${TOOL_JOBS[job]}`;
       if ("unread" in view) {
         items.push(item("permission", "not_checked", `${subject}: not checked (${view.unread})`, `${subject}: not checked`, [job]));
-      } else if (!view.holds({ kind: n.kind, write: n.write, job })) {
+      } else if (!view.holds({ kind: n.kind, write: n.write })) {
         ownerGrant = true;
         items.push(item("permission", "flagged", `${subject}: only you can grant it (Team, in the member's inspector)`, `${subject}: the owner's step in Team`, [job]));
       }
@@ -399,6 +477,86 @@ function permissionItem(job: ToolJob, gaps: readonly NeedsGap[]): ReadinessItem 
   return item("permission", "flagged", `${subject}: ${why}`, `${subject}: ${crew === gaps.length ? "not granted, and not for a charter to grant" : "not granted"}`, [job]);
 }
 
+// ---- The ticket duties' trackers -----------------------------------------------------------
+
+/**
+ * What a ticket duty's "no read access" line says (and so what the app's held card keys its tick-to-grant row on,
+ * as it keys the workspace row on `no copy of a repo to work in`): the app mirrors it as `TRACKER_ACCESS_FLAG` in
+ * `app/src/screens/approvals/charterBlocks.ts`, byte for byte. Both `no_access` sentences contain it
+ * (`<name> can't read <tracker> tickets yet: it has no <tracker> access` and `... it has only part of ...`), and no other line does.
+ */
+export const TRACKER_ACCESS_FLAG = "tickets yet: it has ";
+
+/** What the "tracker is not connected" line says (the app offers Connect on it). */
+export const TRACKER_NOT_CONNECTED_FLAG = "isn't connected on Integrations";
+
+/** What the "duty states no tracker" line says. */
+export const TRACKER_NO_SOURCE_FLAG = "doesn't say which tracker it reads";
+
+/** One ticket duty's finding: its source, and whether the member can read that tracker's tickets (one `tracker` item per ticket duty, in charter order). */
+function trackerItem(name: string, n: number, duty: DutyEntry, view: GrantView, env: TrackerEnv): ReadinessItem {
+  const text = duty.text;
+  const finding = (status: TrackerStatus, source: TicketSource | null, sentence: string): TrackerFinding => ({ duty: text, source, status, sentence: oneLine(sentence) });
+  const source = duty.source === "none" ? undefined : duty.source;
+  if (source === undefined) {
+    const sentence = `duty ${n} ${TRACKER_NO_SOURCE_FLAG}`;
+    return { ...item("tracker", "flagged", sentence, `duty ${n} names no ticket source`), tracker: finding("no_source", null, sentence) };
+  }
+  const label = CONNECTOR_LABELS[source];
+  const subject = `duty ${n}`;
+  const notChecked = (): ReadinessItem => item("tracker", "not_checked", `${subject}: not checked (${"unread" in view ? view.unread : ""})`, `${subject}: not checked`);
+  if (source !== "github" && !env[source].connected) {
+    const sentence = `${label} ${TRACKER_NOT_CONNECTED_FLAG}, so ${name} can't read its tickets yet`;
+    return {
+      ...item("tracker", "flagged", `${subject}: ${sentence} (connect it there first; only you can grant access)`, `${label} isn't connected, so ${name} can't read its tickets (the owner's step, on Integrations)`),
+      tracker: finding("not_connected", source, sentence),
+    };
+  }
+  if ("unread" in view) return notChecked();
+  // GitHub Issues are read through the member's GitHub connector; ClickUp and Jira through the connection's "read tickets" tools it holds.
+  const held = source === "github" ? [] : view.mcp(source);
+  const needed = source === "github" ? [] : env[source].readTools;
+  const granted = source === "github" ? view.holds({ kind: "github", write: false }) : needed.length > 0 && needed.every((t) => held.includes(t));
+  if (granted) {
+    const sentence = `${name} can read ${label} tickets`;
+    return { ...item("tracker", "ready", `${subject}: ${sentence}`, `${subject}: ${sentence}`), tracker: finding("granted", source, sentence) };
+  }
+  const part = source !== "github" && needed.some((t) => held.includes(t));
+  const sentence = `${name} can't read ${label} tickets yet: it has ${part ? `only part of the ${label} access to read them` : `no ${label} access`}`;
+  return {
+    ...item("tracker", "flagged", `${subject}: ${sentence} (only you can grant it)`, `${name} can't read ${label} tickets yet (${label} access is the owner's step)`),
+    tracker: finding("no_access", source, sentence),
+  };
+}
+
+/**
+ * Whether a duty entry works tickets: it names a tracker as its source (with or without a kernel job: reading and
+ * commenting need only the member's connector access), or one of its jobs works tickets (`jobNeedsTicketSource`;
+ * such a duty with no tracker named is flagged `no_source`). A bare line, or `source: "none"` with no ticket job, is not.
+ */
+function worksTickets(duty: DutyEntry): boolean {
+  return (duty.source !== undefined && duty.source !== "none") || duty.jobs.some(jobNeedsTicketSource);
+}
+
+/** One item per ticket duty (`worksTickets`), in charter order. */
+function trackerFindings(charter: Pick<Charter, "display_name" | "duties">, view: GrantView, env: TrackerEnv): ReadinessItem[] {
+  const items: ReadinessItem[] = [];
+  for (const [i, duty] of charter.duties.entries()) {
+    if (typeof duty === "string" || !worksTickets(duty)) continue;
+    items.push(trackerItem(charter.display_name, i + 1, duty, view, env));
+  }
+  return items;
+}
+
+/**
+ * The tracker finding of every ticket duty of `input.charter`: the one rule `charterReadiness` adds to its
+ * lines and `GET /agents/:id`'s `tracker_access` answers from, so the card and the inspector never disagree.
+ * Reads nothing and writes nothing; a `tracker` item with no `tracker` field is `not_checked` (the grant could not be read).
+ */
+export function trackerReadiness(input: { readonly charter: Pick<Charter, "display_name" | "duties"> } & Pick<ReadinessInput, "grant" | "trackers" | "ownerGrant">): ReadinessItem[] {
+  return trackerFindings(input.charter, grantView(input.grant, input.ownerGrant), input.trackers ?? NO_TRACKERS);
+}
+
 // ---- The check ---------------------------------------------------------------------------
 
 /**
@@ -413,6 +571,7 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
   const allowed = new Set(charter.tool_policy.allowedTools);
   const duties = dutyFindings(charter, catalogue, allowed);
   const items: ReadinessItem[] = [...duties.items];
+  const view = grantView(input.grant, input.ownerGrant);
   let noRepo = false;
   let unreadableRepo = false;
   let ownerGrant = false;
@@ -443,7 +602,6 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
       if (line.status === "not_checked") unreadableRepo = true;
       items.push(line);
     }
-    const view = grantView(input.grant);
     // Each connector's read line before its write line.
     for (const { need, jobs } of [...needs].sort((a, b) => Number(a.need.write) - Number(b.need.write))) {
       const line = connectorItem(need, jobs, view);
@@ -455,6 +613,10 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
     items.push(...permissions.items);
     if (permissions.ownerGrant) ownerGrant = true;
   }
+  // Last, one line per ticket duty: its tracker, and whether the member can read it (item 21b). The tracker is the duty's
+  // own word and needs no catalogue, so it is checked whatever the catalogue says.
+  const trackers = trackerFindings(charter, view, input.trackers ?? NO_TRACKERS);
+  items.push(...trackers);
   const open = items.filter((i) => i.status === "flagged" || i.status === "not_checked");
   const lines = [READINESS_HEADING, ...items.map((i) => i.line)];
   if (open.length === 0) return { lines, items, open };
@@ -462,6 +624,7 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
   // added for it: it is named apart, never in the fix (as `../playbooks/fit.ts` does).
   const lackingTools = catalogue === undefined ? [] : duties.missingJobs.map((job) => ({ job, tools: jobLackingTools(catalogue, job, allowed) }));
   const fixableJobs = lackingTools.filter((m) => m.tools.length > 0);
+  const openTracker = open.filter((i) => i.subject === "tracker");
   const agentNote = noteText({
     action: input.action,
     open,
@@ -471,6 +634,9 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
     noRepo,
     unreadableRepo,
     ownerGrant,
+    trackerOwner: openTracker.some((i) => i.tracker !== undefined && i.tracker.status !== "no_source"),
+    trackerNotConnected: openTracker.some((i) => i.tracker?.status === "not_connected"),
+    trackerNoSource: openTracker.some((i) => i.tracker?.status === "no_source"),
     legacy: duties.legacy,
     fixTools: permissions?.fixTools ?? [],
     fixPrefixes: permissions?.fixPrefixes ?? [],
@@ -492,6 +658,11 @@ interface NoteParts {
   readonly noRepo: boolean;
   readonly unreadableRepo: boolean;
   readonly ownerGrant: boolean;
+  /** A ticket duty's tracker the member can't read (or that isn't connected): the owner's step, ticked on the held card. */
+  readonly trackerOwner: boolean;
+  readonly trackerNotConnected: boolean;
+  /** A ticket duty states no source. */
+  readonly trackerNoSource: boolean;
   readonly legacy: boolean;
   /** The Claude tools and shell prefixes (exact names) a charter change can add to close a declared job need. */
   readonly fixTools: readonly string[];
@@ -547,6 +718,20 @@ function noteText(p: NoteParts): string {
   }
   if (p.unreadableRepo) sentences.push("Ask the owner to check that the kernel can read the workspace named above.");
   if (p.ownerGrant) sentences.push("Connector access is the owner's own step, in Team: tell the owner what is needed; it is never a change you draft.");
+  if (p.trackerOwner) {
+    sentences.push(
+      "ClickUp and Jira access is the owner's own step, never a change you draft (a charter's connectors may only propose GitHub): tell the owner the member can't read that tracker's tickets yet; " +
+        "the owner can tick the access on the held card, and it is granted when they approve.",
+    );
+  }
+  if (p.trackerNotConnected) sentences.push("A tracker that is not connected can't be granted: the owner connects it on Integrations first, which is their step too.");
+  if (p.trackerNoSource) {
+    sentences.push(
+      p.action === "create"
+        ? "A ticket duty names no source: draft the charter again with that duty's source set to github, clickup or jira (your proposal for the owner to change; it grants nothing)."
+        : "A ticket duty names no source, and an update never changes duties: only the owner changes them, so propose no change to it; tell the owner.",
+    );
+  }
   if (p.legacy) sentences.push("A duty that names no job was written before duties named their jobs; only the owner changes duties, so propose no change to it.");
   return sentences.join(" ");
 }
@@ -579,7 +764,9 @@ function shortestDutyLine(duty: Charter["duties"][number], n: number, actual: st
  * for its shortest job label), and, unless the tools change (a request can
  * grant no kernel tool, so no job line), each prerequisite line: a connector
  * line as it is (the grant and the tools stay), the code jobs' workspace line
- * at its shortest ready form (`shortestWorkspaceLine`).
+ * at its shortest ready form (`shortestWorkspaceLine`). A ticket duty's tracker
+ * line (`subject: "tracker"`) is the same whatever the request sets, so it is
+ * always counted as it is.
  */
 export function readinessFloorLines(charter: Charter, catalogue: ToolCatalogue | undefined, actual: ReadinessResult, sets: ReadinessFloorSets): string[] {
   if (!sets.tools && !sets.workspaces) return [...actual.lines];
@@ -589,7 +776,8 @@ export function readinessFloorLines(charter: Charter, catalogue: ToolCatalogue |
     const real = duties[i]?.line ?? "";
     lines.push(sets.tools ? shortestDutyLine(duty, i + 1, real, catalogue) : real);
   }
-  if (sets.tools) return lines;
+  // A ticket duty's tracker line depends on the duty, the grant and the connection, never on the tools: it stays as it is.
+  if (sets.tools) return [...lines, ...actual.items.filter((i) => i.subject === "tracker").map((i) => i.line)];
   for (const it of actual.items) {
     if (it.subject === "duty") continue;
     lines.push(it.subject === "workspace" && it.jobs !== undefined ? shortestWorkspaceLine(it.jobs) : it.line);
@@ -616,9 +804,18 @@ export function openFlagsSentence(readiness: ReadinessResult): string {
  */
 export function wrightDutyRefusal(charter: Charter): string | undefined {
   const i = charter.duties.findIndex((d) => typeof d === "string");
-  if (i < 0) return undefined;
+  if (i >= 0) {
+    return (
+      `duties.${i}: write each duty as {"text": "<the duty>", "jobs": [<the catalogue job ids that do it>], "source": "github" | "clickup" | "jira" | "none"} ` +
+      "([] for a duty that needs no kernel tool), so the kernel can check that the charter grants every job a duty needs"
+    );
+  }
+  // The tracker is stated on every duty, never left to a tag the drafter may skip: an unstated one would let a ticket
+  // duty with no kernel job pass as needing nothing, and the owner would never be told the member can't read its tickets.
+  const unstated = charter.duties.findIndex((d) => typeof d !== "string" && d.source === undefined);
+  if (unstated < 0) return undefined;
   return (
-    `duties.${i}: write each duty as {"text": "<the duty>", "jobs": [<the catalogue job ids that do it>]} ` +
-    "([] for a duty that needs no kernel tool), so the kernel can check that the charter grants every job a duty needs"
+    `duties.${unstated}: state the duty's "source": the tracker it works tickets from ("github" for GitHub Issues, "clickup" or "jira"), ` +
+    'whether it does so through a kernel job or only by reading and commenting through the member\'s connector access, or "none" when it works no tickets'
   );
 }

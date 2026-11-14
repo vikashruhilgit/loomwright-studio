@@ -175,7 +175,7 @@ function reviewerCharter(): Record<string, unknown> {
     avatar: { shape: "crab", hue: "crew-teal" },
     persona: "A careful reviewer who comments on pull requests.",
     // Wright's create names each duty's jobs (phase 8 item 18b); this reviewer is granted no kernel tool, so none.
-    duties: [{ text: "Review the pull requests and leave review comments.", jobs: [] }],
+    duties: [{ text: "Review the pull requests and leave review comments.", jobs: [], source: "none" }],
     boundaries: ["Never push code, and never open, edit, approve or close a pull request or issue."],
     model: REVIEWER_MODEL,
     permission_mode: "default",

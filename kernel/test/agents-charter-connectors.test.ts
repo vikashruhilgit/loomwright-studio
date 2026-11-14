@@ -82,7 +82,7 @@ function charter(extra: Record<string, unknown> = {}): Record<string, unknown> {
     avatar: { shape: "crab", hue: "crew-teal" },
     persona: "A careful reviewer who comments on pull requests.",
     // A duty entry, as Wright's create drafts it (the reviewer needs no kernel tool).
-    duties: [{ text: "Review the pull requests the owner sends and comment on them.", jobs: [] }],
+    duties: [{ text: "Review the pull requests the owner sends and comment on them.", jobs: [], source: "none" }],
     boundaries: ["Never push code."],
     model: "claude-sonnet-5",
     permission_mode: "default",

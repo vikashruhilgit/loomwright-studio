@@ -204,6 +204,39 @@ describe("AC3: a missing declared need is flagged in plain words", () => {
   });
 });
 
+describe("item 21b: a ticket duty's tracker line is its own finding, not a job need", () => {
+  const TICKETS = (source?: "github" | "clickup" | "jira") =>
+    crew([{ text: "Work the owner's tickets", jobs: ["automate_tickets"], ...(source === undefined ? {} : { source }) } as { text: string; jobs: ToolJob[] }], ["automate_tickets"], { tools: ["Read"] });
+
+  it("is no job need: the job's declared needs and the permission lines are unchanged, and the tracker line has no raw tool, prefix or Claude tool name", () => {
+    const withSource = readiness(TICKETS("clickup"), GITHUB_READ);
+    const without = readiness(TICKETS(), GITHUB_READ);
+    expect(permissionLines(withSource)).toEqual(permissionLines(without));
+    expect(withSource.items.filter((i) => i.subject === "permission")).toEqual(without.items.filter((i) => i.subject === "permission"));
+    const tracker = withSource.lines.filter((l) => l.includes("tickets yet"));
+    expect(tracker).toHaveLength(1);
+    for (const line of [...tracker, ...without.lines.filter((l) => l.includes("which tracker"))]) expect(line).not.toMatch(RAW);
+  });
+
+  it("readinessFloorLines keeps it as it is when a request sets the tools, so the floor is still a lower bound and counts the line", () => {
+    const charter = TICKETS("clickup");
+    const actual = readiness(charter, GITHUB_READ);
+    const line = actual.items.find((i) => i.subject === "tracker")?.line ?? "";
+    expect(line).not.toBe("");
+    const total = (lines: readonly string[]) => lines.join("\n").length;
+    for (const sets of [
+      { tools: false, workspaces: false },
+      { tools: false, workspaces: true },
+      { tools: true, workspaces: false },
+      { tools: true, workspaces: true },
+    ]) {
+      const floor = readinessFloorLines(charter, CATALOGUE, actual, sets);
+      expect(floor, JSON.stringify(sets)).toContain(line);
+      expect(total(floor), JSON.stringify(sets)).toBeLessThanOrEqual(total(actual.lines));
+    }
+  });
+});
+
 describe("AC3: readinessFloorLines stays a lower bound of the real lines", () => {
   it("is never longer than the real block for a request to the tools or the workspaces", () => {
     const charter = crew([{ text: "Triage PR comments", jobs: ["triage_pr_comments"] }], ["triage_pr_comments"], { tools: ["Read"] });

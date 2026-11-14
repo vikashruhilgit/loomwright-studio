@@ -29,7 +29,9 @@ import type { ApiServer } from "../src/api/index.js";
 import { MAX_SETTINGS_BYTES } from "../src/brain/settings.js";
 import { agentCountedTokens, localDay } from "../src/budget/internal.js";
 import { runCli } from "../src/cli/index.js";
-import { PHASE1_RESERVED, mergeContributions } from "../src/features/index.js";
+import { buildToolCatalogue } from "../src/features/catalogue.js";
+import { LOOMWRIGHT_COMMAND_NEEDS } from "../src/features/job-needs.js";
+import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { count, events, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
 import { stubProvider, unexpectedAbandon } from "./session-fakes.js";
@@ -865,7 +867,9 @@ describe("studio agents list | show (AC8)", () => {
     expect(r.stdout).toContain(`  memory: ${paths.memoryDir}\n    role.md: ${join(paths.memoryDir, "role.md")}\n    preferences.md: ${join(paths.memoryDir, "preferences.md")}\n    people.md: ${join(paths.memoryDir, "people.md")} (missing)\n`);
     expect(r.stdout.endsWith("  persona:\n    Mason reviews code carefully.\n    It explains each finding plainly.\n  duties:\n    - Review the pull requests the owner sends.\n    - Summarise each review in three lines.\n  boundaries:\n    - Never push code.\n")).toBe(true);
     const json = JSON.parse((await studio("agents", "show", "mason", "--json")).stdout) as Record<string, unknown>;
-    expect(Object.keys(json)).toEqual(["agent", "settings", "never", "workspaces", "memory", "charter"]);
+    expect(Object.keys(json)).toEqual(["agent", "settings", "never", "workspaces", "memory", "charter", "jobs", "tracker_access"]);
+    // This server was given no catalogue: the tools are not grouped (null), never a guessed grouping.
+    expect(json.jobs).toBeNull();
     expect(json.settings).toEqual({ file: paths.settings, content: JSON.parse(readFileSync(paths.settings, "utf8")), error: null });
     expect(json.charter).toEqual({ persona: charter().persona, duties: charter().duties, boundaries: charter().boundaries });
     expect((await studio("agents", "show", "nobody")).stderr).toBe('studio: no agent nobody shown: not_found: no crew member nobody\n');
@@ -879,5 +883,141 @@ describe("studio agents list | show (AC8)", () => {
     const json = JSON.parse((await studio("agents", "show", "mason", "--json")).stdout) as { charter: { duties: unknown } };
     expect(json.charter.duties).toEqual(["Review the pull requests the owner sends.", "Summarise each review in three lines."]);
     expect(renderRoleMd(validated(charter("mason", { duties })))).toContain("## Duties\n\n- Review the pull requests the owner sends.\n- Summarise each review in three lines.\n");
+  });
+});
+
+// Item 21b: `GET /agents/:id` answers `jobs`, the member's granted kernel tools grouped by catalogue job
+// (`jobGroups`), from the catalogue the API server was given.
+describe("show: the granted tools as catalogue jobs (item 21b)", () => {
+  const K = "mcp__kernel__";
+  const catalogue = buildToolCatalogue(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools, LOOMWRIGHT_COMMAND_NEEDS);
+  let withCatalogue: ApiServer;
+
+  beforeEach(async () => {
+    withCatalogue = await startApiServer(
+      {
+        store: env.store,
+        sessions: { stopAll: async () => [], abandonSession: unexpectedAbandon },
+        loop: { start: () => {}, stop: async () => {} },
+        authProviders: [stubProvider()],
+        token: TOKEN,
+        routes: mergeContributions([agentsContribution], PHASE1_RESERVED).routes,
+        toolCatalogue: catalogue,
+      },
+      { now: env.now },
+    );
+  });
+  afterEach(async () => {
+    await withCatalogue.close();
+  });
+
+  async function showJobs(id: string): Promise<unknown> {
+    const res = await fetch(`http://127.0.0.1:${withCatalogue.port}/agents/${id}`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { jobs?: unknown }).jobs;
+  }
+
+  const tools = (...names: string[]): Record<string, unknown> => ({
+    tool_policy: { allowedTools: ["Read", ...names.map((n) => `${K}${n}`)], allowedBashPrefixes: ["git diff"], never: [] },
+  });
+
+  it("groups by job in the held card's order, the tools the catalogue does not list last, and leaves Claude tools to the enforced list", async () => {
+    expect(create(charter("mason", tools("kernel_task_list", "kernel_github_pr_comments", "kernel_automate_prepare", "kernel_github_pr_get", "kernel_made_up"))).ok).toBe(true);
+    expect(await showJobs("mason")).toEqual([
+      { job: "automate_tickets", label: "Hand tickets to /automate", tools: ["kernel_automate_prepare"] },
+      { job: "read_pr", label: "Read a PR", tools: ["kernel_github_pr_get", "kernel_github_pr_comments"] },
+      { job: "general", label: "General", tools: ["kernel_task_list"] },
+      { job: null, label: "Other tools", tools: ["kernel_made_up"] },
+    ]);
+  });
+
+  it("a member with no kernel tool has no job group (an empty list, not null: the file was read)", async () => {
+    expect(create().ok).toBe(true);
+    expect(await showJobs("mason")).toEqual([]);
+  });
+
+  it("a settings file the kernel refused answers no jobs (null), and the settings error as before", async () => {
+    expect(create(charter("mason", tools("kernel_task_list"))).ok).toBe(true);
+    writeFileSync(agentFilePaths(env.dataDir, "mason").settings, "{not json");
+    const res = await fetch(`http://127.0.0.1:${withCatalogue.port}/agents/mason`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    const body = (await res.json()) as { jobs: unknown; never: unknown; settings: { error: unknown } };
+    expect(body.jobs).toBeNull();
+    expect(body.never).toBeNull();
+    expect(body.settings.error).not.toBeNull();
+  });
+});
+
+// Item 21b: `GET /agents/:id` answers `tracker_access`, one entry per ticket duty, from the readiness check the held card uses.
+describe("show: whether each ticket duty's tracker can be read (item 21b)", () => {
+  /** The ClickUp tools a connection lists: two of the "read tickets" capability, one comment tool, one no capability names. */
+  const LISTED = ["clickup_filter_tasks", "clickup_get_task", "clickup_create_comment", "clickup_unheard_of"];
+  const READ = ["clickup_filter_tasks", "clickup_get_task"];
+
+  const ticketDuty = (source?: string) => ({ text: "Work the owner's tickets", jobs: ["automate_tickets"], ...(source === undefined ? {} : { source }) });
+
+  function connect(kind: "clickup" | "jira" = "clickup", status = "connected", tools: readonly string[] = LISTED): void {
+    const stored = tools.map((name) => ({ name, proxy: `kernel_mcp_w_${kind}_${name}`, read_only: false, description: "", schema: "{}" }));
+    env.store.prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES (?, 'https://mcp.example.test/mcp', ?, ?)").run(kind, status, JSON.stringify(stored));
+  }
+
+  async function access(id = "mason"): Promise<unknown> {
+    const res = await api("GET", `/agents/${id}`);
+    expect(res.status).toBe(200);
+    return res.body.tracker_access;
+  }
+
+  async function grant(value: string): Promise<void> {
+    expect((await api("POST", "/agents/mason/set", { field: "connectors", value })).status).toBe(200);
+  }
+
+  it("a member with no ticket duty has none (an empty list, not null: the file was read), and a bare-line duty is never a ticket duty", async () => {
+    expect(create().ok).toBe(true);
+    expect(await access()).toEqual([]);
+  });
+
+  it("an ungranted ClickUp ticket duty is no_access, in words, with the source it states; nothing is granted by showing it", async () => {
+    connect();
+    expect(create(charter("mason", { duties: [ticketDuty("clickup")] })).ok).toBe(true);
+    const before = readFileSync(agentFilePaths(env.dataDir, "mason").settings, "utf8");
+    expect(await access()).toEqual([
+      { duty: "Work the owner's tickets", source: "clickup", status: "no_access", line: "Mason can't read ClickUp tickets yet: it has no ClickUp access" },
+    ]);
+    expect(readFileSync(agentFilePaths(env.dataDir, "mason").settings, "utf8")).toBe(before);
+  });
+
+  it("is granted once the member holds every listed tool of the read capability, and part of it is still no_access", async () => {
+    connect();
+    expect(create(charter("mason", { duties: [ticketDuty("clickup")] })).ok).toBe(true);
+    await grant("clickup:clickup_filter_tasks");
+    expect(await access()).toEqual([
+      { duty: "Work the owner's tickets", source: "clickup", status: "no_access", line: "Mason can't read ClickUp tickets yet: it has only part of the ClickUp access to read them" },
+    ]);
+    await grant(`clickup:${READ.join(",")}`);
+    expect(await access()).toEqual([{ duty: "Work the owner's tickets", source: "clickup", status: "granted", line: "Mason can read ClickUp tickets" }]);
+  });
+
+  it("a tracker that is not connected (no row, or one that is expired) is not_connected, whatever the member holds", async () => {
+    expect(create(charter("mason", { duties: [ticketDuty("clickup"), ticketDuty("jira")] })).ok).toBe(true);
+    expect(((await access()) as { status: string }[]).map((a) => a.status)).toEqual(["not_connected", "not_connected"]);
+    connect("clickup", "expired");
+    expect(((await access()) as { status: string }[]).map((a) => a.status)).toEqual(["not_connected", "not_connected"]);
+  });
+
+  it("a ticket duty that states no source reads no_source with a null source (a charter written before item 21b)", async () => {
+    expect(create(charter("mason", { duties: [ticketDuty()] })).ok).toBe(true);
+    expect(await access()).toEqual([{ duty: "Work the owner's tickets", source: null, status: "no_source", line: "duty 1 doesn't say which tracker it reads" }]);
+  });
+
+  it("GitHub Issues are read through the member's GitHub grant", async () => {
+    expect(create(charter("mason", { duties: [ticketDuty("github")] })).ok).toBe(true);
+    expect(((await access()) as { status: string }[]).map((a) => a.status)).toEqual(["no_access"]);
+    await grant("github");
+    expect(((await access()) as { status: string }[]).map((a) => a.status)).toEqual(["granted"]);
+  });
+
+  it("a settings file the kernel refused answers null: the grant is unknown, never \"no access\"", async () => {
+    expect(create(charter("mason", { duties: [ticketDuty("clickup")] })).ok).toBe(true);
+    writeFileSync(agentFilePaths(env.dataDir, "mason").settings, "{not json");
+    expect(await access()).toBeNull();
   });
 });

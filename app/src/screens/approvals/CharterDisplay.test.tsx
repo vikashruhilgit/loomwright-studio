@@ -8,9 +8,10 @@
 // update whose display has the kernel's plain block.
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Approval, StudioBridge } from "../../api/contract";
+import type { Approval, McpCapability, StudioBridge } from "../../api/contract";
 import { createCommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
+import { CHOOSE_ACCESS, CONNECT_TRACKER } from "../chat/CharterCard";
 import { ApprovalsScreen } from "./ApprovalsScreen";
 import { ADDS, ADDS_TOOLS, CharterDisplay, JOBS_HEADING, KEEPS, RAW_SUMMARY, READINESS_HEADING, READINESS_STATUS_LABELS, SHOW_DETAILS } from "./CharterDisplay";
 import { printable } from "./printable";
@@ -458,8 +459,9 @@ function approval(id: number, tool: string, display: string | undefined, overrid
   };
 }
 
-async function mount(approvals: Approval[]): Promise<void> {
+async function mount(approvals: Approval[], extra?: (fake: ReturnType<typeof fakeBridge>) => void): Promise<ReturnType<typeof fakeBridge>> {
   const fake = fakeBridge();
+  extra?.(fake);
   fake.route("GET /status", () => ok({ kernel: { version: "0", uptime_s: 1, pid: 1 } }));
   fake.route("GET /approvals", () => ok({ approvals }));
   fake.route("GET /approvals/grants", () => ok({ grants: [] }));
@@ -469,6 +471,7 @@ async function mount(approvals: Approval[]): Promise<void> {
   (window as unknown as { api?: StudioBridge }).api = fake.bridge;
   render(<ApprovalsScreen registry={createCommandRegistry()} />);
   await waitFor(() => expect(screen.getByTestId("approval-detail")).toBeTruthy());
+  return fake;
 }
 
 const CREATE = `${K}kernel_agent_create`;
@@ -534,5 +537,70 @@ describe("the Approvals screen's charter card", () => {
     fireEvent.keyDown(document.body, { key: "j" });
     await waitFor(() => expect(screen.getByTestId("approval-detail").dataset.approvalId).toBe("2"));
     expect((screen.getByTestId("charter-raw") as HTMLDetailsElement).open).toBe(false);
+  });
+});
+
+// ---- Phase 8 item 21b: a ticket duty's tracker, ticked on the Approvals screen ---------------------------
+
+const TRACKER_CAPABILITIES: readonly McpCapability[] = [
+  { id: "read", label: "Read tickets", changes: false, tools: ["clickup_get_task", "clickup_filter_tasks"] },
+  { id: "delete", label: "Delete tickets", changes: true, tools: ["clickup_delete_task"] },
+];
+
+function trackerDisplay(line: string): string {
+  return ['Create crew member mason ("Mason", crab crew-teal), proposed by Wright', "readiness: checked by the kernel before you see it", `${CHARTER_READINESS_FLAG_PREFIX}${line}`, "job: Hand tickets to /automate", "  - Hand tickets to Loomwright's /automate.", "enforced: never: none; tools: Read; bash prefixes: none"].join("\n");
+}
+
+const NO_ACCESS = "duty 1: Mason can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)";
+
+function connectors(fake: ReturnType<typeof fakeBridge>, capabilities: readonly McpCapability[] | null = TRACKER_CAPABILITIES): void {
+  fake.route("GET /connectors", () =>
+    ok({
+      connectors: [],
+      mcp_connections: [{ kind: "clickup", server_url: null, status: "connected", granted_tools: ["clickup_get_task", "clickup_filter_tasks", "clickup_delete_task"], capabilities, other_tools: capabilities === null ? null : [], token_expiry: null }],
+    }),
+  );
+}
+
+describe("item 21b on the Approvals screen: a ticket duty's tracker", () => {
+  it("AC14: the flagged tracker line offers Choose access, opening the capabilities with nothing ticked; Allow once with no tick posts {decision: once} only", async () => {
+    const fake = await mount([approval(1, CREATE, trackerDisplay(NO_ACCESS))], connectors);
+    const card = screen.getByTestId("approval-display");
+    expect(within(card).getByTestId("charter-readiness").textContent).toContain("Mason can't read ClickUp tickets yet");
+    fireEvent.click(within(card).getByRole("button", { name: CHOOSE_ACCESS }));
+    const panel = await within(card).findByTestId("charter-tracker-panel");
+    await within(panel).findByText("Read tickets");
+    for (const box of within(panel).getAllByRole("checkbox")) expect((box as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /Allow once/ }));
+    await waitFor(() => expect(fake.requestsTo("POST /approvals/:id/approve")).toHaveLength(1));
+    expect(fake.requestsTo("POST /approvals/:id/approve")[0]?.req.body).toEqual({ decision: "once" });
+  });
+
+  it("AC15: Allow once with ticks posts owner_grant naming the ticked capability's tools, however the decision is made (the A key too)", async () => {
+    const fake = await mount([approval(1, CREATE, trackerDisplay(NO_ACCESS))], connectors);
+    const card = screen.getByTestId("approval-display");
+    fireEvent.click(within(card).getByRole("button", { name: CHOOSE_ACCESS }));
+    const panel = await within(card).findByTestId("charter-tracker-panel");
+    await within(panel).findByText("Read tickets");
+    fireEvent.click(within(panel).getByRole("checkbox", { name: /Read tickets/ }));
+    expect(within(panel).getByTestId("charter-tracker-clickup-read-state").textContent).toBe("granted");
+    fireEvent.keyDown(document.body, { key: "a" });
+    await waitFor(() => expect(fake.requestsTo("POST /approvals/:id/approve")).toHaveLength(1));
+    expect(fake.requestsTo("POST /approvals/:id/approve")[0]?.req.body).toEqual({ decision: "once", owner_grant: { kind: "clickup", tools: ["clickup_get_task", "clickup_filter_tasks"] } });
+  });
+
+  it("AC18: a tracker that isn't connected offers Connect to Integrations and no Choose access", async () => {
+    await mount([approval(1, CREATE, trackerDisplay("duty 1: ClickUp isn't connected on Integrations, so Mason can't read its tickets yet (connect it there first; only you can grant access)"))], connectors);
+    const card = screen.getByTestId("approval-display");
+    expect(within(card).queryByRole("button", { name: CHOOSE_ACCESS })).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: CONNECT_TRACKER }));
+    expect(window.location.hash).toBe("#/integrations");
+  });
+
+  it("a held charter with no tracker line shows no fix at all", async () => {
+    await mount([approval(1, CREATE, WALK_DISPLAY)], connectors);
+    const card = screen.getByTestId("approval-display");
+    expect(within(card).queryByRole("button", { name: CHOOSE_ACCESS })).toBeNull();
+    expect(within(card).queryByRole("button", { name: CONNECT_TRACKER })).toBeNull();
   });
 });

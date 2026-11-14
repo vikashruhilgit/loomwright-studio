@@ -44,6 +44,8 @@ import {
   mergeApproval,
   requestApproval,
   reviewApproval,
+  trackerCharterApproval,
+  trackerConnectorsRoutes,
 } from "./fixtures/approvals";
 import type { ApprovalsKernel, ApprovalsKernelInit } from "./fixtures/approvals";
 
@@ -234,6 +236,39 @@ test("AC1b + AC2: a charter create's detail; A sends one approve once; the appli
   await page.keyboard.press("a");
   await page.waitForTimeout(300);
   expect(postsTo(kernel, "/approve")).toHaveLength(1);
+});
+
+test("item 21b: a held ticket-working create flags the missing ClickUp access in words; ticking Read tickets and pressing Allow once posts one approve with owner_grant", async () => {
+  const { kernel, fixture: started } = await startKernel({ approvals: [trackerCharterApproval(8)] }, trackerConnectorsRoutes());
+  const page = await openWith(started);
+  const detail = page.getByTestId("approval-detail");
+  await expect(detail.getByTestId("charter-readiness")).toContainText("Ticket Runner can't read ClickUp tickets yet: it has no ClickUp access");
+  await detail.getByRole("button", { name: "Choose access" }).click();
+  const panel = detail.getByTestId("charter-tracker-panel");
+  await expect(panel.getByText("Read tickets")).toBeVisible();
+  // Nothing is ticked for the owner, and no raw tool name shows until its Tool names expander opens.
+  await expect(panel.getByRole("checkbox", { checked: true })).toHaveCount(0);
+  await expect(panel.getByTestId("charter-tracker-clickup-delete-changes")).toHaveText("changes things");
+  await expect(panel.getByText("clickup_get_task")).toBeHidden();
+  await panel.getByRole("checkbox", { name: /Read tickets/ }).check();
+  await expect(panel.getByTestId("charter-tracker-clickup-read-state")).toHaveText("granted");
+  // Focus is in the checkbox, where the A shortcut stands down (a form control is never a shortcut target): the button decides.
+  await detail.getByRole("button", { name: /Allow once/ }).click();
+  await expect(detail.getByTestId("approval-outcome")).toBeVisible();
+  const approves = postsTo(kernel, "/approve");
+  expect(approves).toHaveLength(1);
+  expect(JSON.stringify(approves[0]?.body)).toBe('{"decision":"once","owner_grant":{"kind":"clickup","tools":["clickup_get_task","clickup_filter_tasks"]}}');
+});
+
+test("item 21b: approving the same held create without a tick posts {decision: once} only", async () => {
+  const { kernel, fixture: started } = await startKernel({ approvals: [trackerCharterApproval(8)] }, trackerConnectorsRoutes());
+  const page = await openWith(started);
+  await expect(page.getByTestId("approval-detail").getByTestId("charter-readiness")).toContainText("can't read ClickUp tickets yet");
+  await page.keyboard.press("a");
+  await expect(page.getByTestId("approval-outcome")).toBeVisible();
+  const approves = postsTo(kernel, "/approve");
+  expect(approves).toHaveLength(1);
+  expect(JSON.stringify(approves[0]?.body)).toBe('{"decision":"once"}');
 });
 
 test("AC3: ⇧A with no playbook is disabled with the kernel's reason and sends nothing; a 409 shows the kernel's message and stays pending", async () => {

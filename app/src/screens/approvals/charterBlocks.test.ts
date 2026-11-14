@@ -2,9 +2,11 @@
 // every line after the plain block lands in exactly one block, in the kernel's
 // order; the never list, limits, other tools and Bash prefixes in words; what
 // changed between two versions; and the repo names a workspace lookup tries.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import type { McpCapability } from "../../api/contract";
 import { NEVER_CATEGORIES } from "../team/model";
-import { BLOCK_TITLES, KERNEL_TOOL_PREFIX, NEVER_WORDS, WORKSPACE_FLAG, charterBlocks, limitsWords, neverWords, repoCandidates, whatChanged } from "./charterBlocks";
+import { BLOCK_TITLES, KERNEL_TOOL_PREFIX, NEVER_WORDS, TRACKER_ACCESS_FLAG, TRACKER_NOT_CONNECTED_FLAG, WORKSPACE_FLAG, charterBlocks, limitsWords, neverWords, nextOwnerGrant, repoCandidates, trackerLine, whatChanged } from "./charterBlocks";
 import { CHARTER_CATALOGUE_UNAVAILABLE, charterDisplayParts } from "./subject";
 
 const K = KERNEL_TOOL_PREFIX;
@@ -142,5 +144,68 @@ describe("a shortened readiness block (19a)", () => {
   it("repoCandidates: an excerpt that drops the owner/repo token still finds the repo in role.md, never a partial name", () => {
     expect(SHORTENED.split("\n")[2]).not.toMatch(/acme/);
     expect(repoCandidates(SHORTENED)).toEqual(["acme/widgets"]);
+  });
+});
+
+describe("item 21b: the tracker lines the card keys its fix on", () => {
+  const KERNEL = readFileSync(new URL("../../../../kernel/src/agents/charter-readiness.ts", import.meta.url), "utf8");
+
+  it("TRACKER_ACCESS_FLAG and TRACKER_NOT_CONNECTED_FLAG equal the kernel's text, byte for byte", () => {
+    expect(KERNEL).toContain(`export const TRACKER_ACCESS_FLAG = ${JSON.stringify(TRACKER_ACCESS_FLAG)};`);
+    expect(KERNEL).toContain(`export const TRACKER_NOT_CONNECTED_FLAG = ${JSON.stringify(TRACKER_NOT_CONNECTED_FLAG)};`);
+    expect(TRACKER_ACCESS_FLAG).toBe("tickets yet: it has ");
+  });
+
+  it("the rest of what trackerLine matches is the kernel's own text (the sentence tails and the no-access forms)", () => {
+    for (const fragment of ["(only you can grant it)", "(connect it there first; only you can grant access)", ", so ${name} can't read its tickets yet", "can't read ${label} tickets yet: it has ${part ? `only part of the ${label} access to read them` : `no ${label} access`}"]) {
+      expect(KERNEL).toContain(fragment);
+    }
+  });
+
+  it("reads which MCP tracker a flagged line is about, from the kernel's sentences", () => {
+    expect(trackerLine("duty 1: Mason can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toEqual({ kind: "clickup", state: "no_access" });
+    expect(trackerLine("duty 2: Mason can't read Jira tickets yet: it has only part of the Jira access to read them (only you can grant it)")).toEqual({ kind: "jira", state: "no_access" });
+    expect(trackerLine("duty 1: ClickUp isn't connected on Integrations, so Mason can't read its tickets yet (connect it there first; only you can grant access)")).toEqual({ kind: "clickup", state: "not_connected" });
+    expect(trackerLine("duty 3: Jira isn't connected on Integrations, so Mason can't read its tickets yet (connect it there first; only you can grant access)")).toEqual({ kind: "jira", state: "not_connected" });
+  });
+
+  it("answers nothing for GitHub Issues, a duty with no source, a workspace line or text that only imitates the sentence", () => {
+    expect(trackerLine("duty 1: Mason can't read GitHub tickets yet: it has no GitHub access (only you can grant it)")).toBeUndefined();
+    expect(trackerLine("duty 1 doesn't say which tracker it reads")).toBeUndefined();
+    expect(trackerLine(`copy of a repo for the code jobs: it has ${WORKSPACE_FLAG}`)).toBeUndefined();
+    expect(trackerLine("ClickUp tickets yet: it has no access")).toBeUndefined();
+    expect(trackerLine("Mason can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toBeUndefined();
+  });
+
+  it("anchors on the kernel's line shape, so a member's name or a duty excerpt cannot point the fix at another tracker", () => {
+    // A name that imitates the no-access sentence, on a Jira not-connected line.
+    const jira = "duty 1: Jira isn't connected on Integrations, so Bot can't read ClickUp tickets yet: it has no ClickUp access can't read its tickets yet (connect it there first; only you can grant access)";
+    expect(trackerLine(jira)).toEqual({ kind: "jira", state: "not_connected" });
+    // A name that imitates the not-connected sentence, on a ClickUp no-access line.
+    const click = "duty 1: Jira isn't connected on Integrations, so Bot can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)";
+    expect(trackerLine(click)).toEqual({ kind: "clickup", state: "no_access" });
+    // Two sentences in a name: the kernel's own, last, is read.
+    expect(trackerLine("duty 1: Bob can't read Jira tickets yet: it has no Jira access can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toEqual({ kind: "clickup", state: "no_access" });
+    // A flagged duty line whose excerpt carries either sentence.
+    expect(trackerLine("duty 1 not covered (needs Jira, which this charter does not grant): Bot can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toBeUndefined();
+    expect(trackerLine("duty 1 not covered (needs x): ClickUp isn't connected on Integrations, so Bot can't read its tickets yet (connect it there first; only you can grant access)")).toBeUndefined();
+  });
+});
+
+describe("item 21b: nextOwnerGrant", () => {
+  const read: McpCapability = { id: "read", label: "Read tickets", changes: false, tools: ["a", "b"] };
+  const comment: McpCapability = { id: "comment", label: "Comment", changes: true, tools: ["b", "c"] };
+
+  it("ticks add a capability's tools once each, in the order ticked; an untick removes only its own tools", () => {
+    const one = nextOwnerGrant(undefined, "clickup", read, true);
+    expect(one).toEqual({ kind: "clickup", tools: ["a", "b"] });
+    expect(nextOwnerGrant(one, "clickup", comment, true)).toEqual({ kind: "clickup", tools: ["a", "b", "c"] });
+    expect(nextOwnerGrant({ kind: "clickup", tools: ["a", "b", "c"] }, "clickup", read, false)).toEqual({ kind: "clickup", tools: ["c"] });
+  });
+
+  it("clearing the last tool answers undefined (no owner_grant is sent), and a second kind never replaces the first", () => {
+    expect(nextOwnerGrant({ kind: "clickup", tools: ["a", "b"] }, "clickup", read, false)).toBeUndefined();
+    const held = { kind: "clickup", tools: ["a"] } as const;
+    expect(nextOwnerGrant(held, "jira", read, true)).toBe(held);
   });
 });
