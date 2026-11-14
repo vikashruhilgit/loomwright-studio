@@ -137,6 +137,32 @@ function tokensLine(agent: RosterEntry): string {
 /** The collapsed section's title: the raw kernel tool names, apart from the job labels above it. */
 export const RAW_TOOL_NAMES_SUMMARY = "Kernel tool names, as enforced";
 
+/** The heading over the ticket duties' tracker access that is still open (item 21b). */
+export const TRACKER_OPEN_HEADING = "Ticket access still open";
+
+/**
+ * A ticket duty's missing tracker access, named as open (item 21b, AC16): every `tracker_access` entry
+ * whose `status` is not `granted`, in the kernel's own words (`line`), read from the same check the held
+ * charter card used. Nothing when the kernel sent none (an older kernel), the settings file was refused
+ * (`null`: the grant is unknown, never "open") or every ticket duty can read its tracker.
+ */
+function TrackerOpen({ access }: { readonly access: AgentDetailResponse["tracker_access"] }) {
+  const open = (access ?? []).filter((entry) => entry.status !== "granted");
+  if (open.length === 0) return null;
+  return (
+    <div className="team-insp-sub" data-testid="team-tracker-open">
+      <span className="team-insp-subhead">{TRACKER_OPEN_HEADING}</span>
+      <ul className="team-insp-list">
+        {open.map((entry, i) => (
+          <li key={i} data-testid="team-tracker-open-line" data-status={entry.status}>
+            {entry.line}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 /** The line when the kernel sent no `jobs` (an older kernel, or no catalogue): the raw names stay in the collapsed section. */
 const JOBS_UNAVAILABLE = "The plain list of jobs is unavailable. The kernel's own tool names are below.";
 
@@ -443,6 +469,7 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
           </Section>
           <Section title="Duties">
             {duties === null ? <p className="team-insp-empty">{CHARTER_UNREAD}</p> : <List items={duties} empty="None stated" />}
+            {ok === undefined ? null : <TrackerOpen access={ok.tracker_access} />}
           </Section>
           <Section title="Boundaries" note="guidance, not enforced" testId="team-guidance">
             {boundaries === null ? (
