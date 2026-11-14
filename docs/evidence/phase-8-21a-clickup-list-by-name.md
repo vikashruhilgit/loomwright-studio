@@ -205,10 +205,36 @@ Verdict: PASS for Validation 1
 
 The run's output (fenced), recorded by whoever ran it:
 
+Run on 2026-11-14 between 09:57 and 10:06 local time (macOS 26.6.2, Node v24.11.1) by Claude, driving the app at the owner's request. It ran against the packaged app (`npm run package`, `release/mac-arm64/Loomwright Studio.app`, opened through LaunchServices with `open`, as a Finder double-click does) and the kernel installed as the launchd service (`service install`, pid 15533), both built from this PR's head `140076a6`. The installed kernel's `dist/triggers/sources/clickup-tasks.js` and `dist/integrations/mcp/trackers.js` carry `clickup_get_list`.
+
+- **Step 2:** `mcp_connections` row 1, `clickup`, `connected`, 58 granted tools; `clickup_get_list` and `clickup_filter_tasks` present.
+- **Step 3:** the first ask was refused before any draft: Ticket Runner (`ticket-runner-20c`) was off and held no ClickUp grant. At the owner's word, Claude ticked `clickup_get_list` and `clickup_filter_tasks` in Team → Ticket Runner's inspector and pressed Turn on (events 21825-21827). Asked again, Wright updated the owner's existing playbook 9 (Ticket Runner's ClickUp playbook from item 20c, whose stored list was the name) rather than drafting a new one. Its `kernel_playbook_update` call carried the name, not an ID: `"filters":{"list":"Loomwright Studio","tags":["studio-sandbox"]}` (Wright's session 145 transcript). The interval stayed at playbook 9's stored 300 seconds and the dedupe key at its proposed `playbook.id,item.id`.
+- **Step 4:** the kernel stored the ID. Event 21852 `trigger_updated` for trigger 18: `previous_spec` `"list":"Loomwright Studio"`, `spec` `"list":"901422761392"`, `by: agent`; `studio playbooks show 9` reads `filters":{"list":"901422761392","tags":["studio-sandbox"]}`, version 2.
+- **Step 5:** dry run 187 listed the task, under the owner's key, as `would run`.
+- **Step 7 (optional):** not run.
+
 ```text
-(not run yet)
+playbook #9 clickup-tickets-to-prs-on-studio-sandbox-ticket, version 2 (draft, not enabled), agent ticket-runner-20c
+  trigger #18 poll: {"source":"clickup.tasks","filters":{"list":"901422761392","tags":["studio-sandbox"]},"interval_seconds":300}
+  dedupe key: playbook.id,item.id (proposed)
+
+kernel_playbook_update input (Wright, session 145):
+  {"id":9,"changes":{"trigger":{"kind":"poll","poll":{"source":"clickup.tasks","filters":{"list":"Loomwright Studio","tags":["studio-sandbox"]},"interval_seconds":300}}}}
+
+playbook_runs id 187: kind dry_run, status done, playbook 9 version 2, session 146, tokens 103932,
+  2026-11-14T04:35:10.796Z -> 2026-11-14T04:35:44.317Z
+  poll.items:
+    ref      clickup:86bd2djuq
+    title    Add a README to studio-sandbox
+    revision 2026-11-12T15:32:37.366Z
+    would    run
+    dedupe   {"playbook.id":9,"item.id":"clickup:86bd2djuq"}
+  no source_error, no mcp_tool_error
+  refused: Ask for a merge (run shell commands); Ask for a merge (work with pull requests on GitHub)
 ```
+
+Seen during the walk, outside this item: dry run 187's review session reported that `kernel_automate_prepare` and `kernel_automate_state` were not available to it and that `kernel_loomwright_capabilities` was refused `tool_not_allowed`, so it did not act on the ticket. The poll preview this item is about was complete. The two `refused` lines are the merge job's D44 crew route, as in item 20c's walk.
 
 Owner's result (filled in from the owner's report, only from the observed run):
 
-Verdict: (not run yet)
+Verdict: PASS for Validation 2
