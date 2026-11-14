@@ -7,7 +7,7 @@
 // (no SDK launch, no model); the `connectors` row is seeded raw, as the poll
 // tests do.
 import { readFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContributedTool } from "../src/features/index.js";
 import { formatPlaybook } from "../src/playbooks/drafts.js";
 import { getPlaybook, mirrorPath, playbooksContribution, setPlaybookPolicy } from "../src/playbooks/index.js";
@@ -15,6 +15,25 @@ import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { count, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
+
+// Phase 8 item 21c: the kernel's ClickUp reader is replaced by a counting one, so a test sees every
+// `clickup_get_list` call a drafting tool makes. Only `createMcpTicketReader` is replaced; the rest of
+// `trackers.js` is real, and the GitHub-poll cases below never call the reader.
+const reader = vi.hoisted(() => ({
+  calls: [] as { tool: string; args: Record<string, unknown> }[],
+  /** The answer to call number `n` (1-based); every test sets its own. */
+  answer: (_n: number): { ok: true; text: string } | { ok: false; error: string } => ({ ok: false, error: "mcp_unreachable" }),
+}));
+
+vi.mock("../src/integrations/mcp/trackers.js", async (importActual) => ({
+  ...(await importActual<typeof import("../src/integrations/mcp/trackers.js")>()),
+  createMcpTicketReader: () => ({
+    call: async (_store: unknown, _kind: string, tool: string, args: Record<string, unknown>) => {
+      reader.calls.push({ tool, args });
+      return reader.answer(reader.calls.length);
+    },
+  }),
+}));
 
 const NOW = "2026-10-28T10:00:00.000Z";
 const REPO = "vikashruhilgit/studio-sandbox";
@@ -25,6 +44,8 @@ let env: LoopEnv;
 let keyN = 0;
 
 beforeEach(() => {
+  reader.calls.length = 0;
+  reader.answer = () => ({ ok: false, error: "mcp_unreachable" });
   env = loopEnv(NOW);
   env.store.prepare("INSERT INTO connectors (kind, status, reachable_repos_json) VALUES ('github', 'connected', ?)").run(JSON.stringify([REPO]));
 });
@@ -257,5 +278,200 @@ describe("target_repo through the drafting tools (phase 8 item 20h, AC1)", () =>
       expect(description, name).toContain("never from ticket, PR or comment text");
     }
     expect(tool("kernel_playbook_update").description).toContain("jobs, target_repo, trigger");
+  });
+});
+
+describe("a repeated create or update never repeats the ClickUp lookup (phase 8 item 21c)", () => {
+  const RECORDED = JSON.parse(readFileSync(new URL("./fixtures/mcp-trackers/clickup-lookup-responses.json", import.meta.url), "utf8")) as {
+    get_list_one: { id: string; name: string };
+  };
+  const NAME = RECORDED.get_list_one.name;
+  const LIST_ID = RECORDED.get_list_one.id;
+  // The store refuses a clickup.tasks poll without a connected ClickUp connector (the reader itself is mocked).
+  beforeEach(() => {
+    env.store
+      .prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES ('clickup', 'https://mcp.example.test/mcp', 'connected', ?)")
+      .run(JSON.stringify([{ name: "clickup_get_list", proxy: "kernel_mcp_r_clickup_clickup_get_list", read_only: true, description: "", schema: "{}" }]));
+  });
+  const OTHER_NAME = "Another list";
+  const clickup = (filters: Record<string, unknown>) => ({ kind: "poll", poll: { source: "clickup.tasks", filters, interval_seconds: 300 } });
+  const answerFirstOnly = (): void => {
+    reader.answer = (n) => (n === 1 ? { ok: true, text: JSON.stringify(RECORDED.get_list_one) } : { ok: false, error: "mcp_timeout" });
+  };
+  const stepRow = (tool: string, key: string): { status: string; failure_reason: string | null } | undefined =>
+    env.store.prepare("SELECT status, failure_reason FROM work_steps WHERE key = ?").get(`${tool}:session-1:${key}`) as { status: string; failure_reason: string | null } | undefined;
+  const stepCount = (): number => count(env.store, "SELECT count(*) FROM work_steps");
+  const version = (id: number): number | undefined => getPlaybook(env.store, id)?.version;
+  const storedFilters = (): unknown => (JSON.parse((triggerRows() as { spec_json: string }[])[0]?.spec_json ?? "null") as { filters: unknown }).filters;
+
+  it("AC1: a create with a list name, repeated under the same key, returns the first result with one lookup and one playbook", async () => {
+    answerFirstOnly();
+    const args = { idempotency_key: "k1", trigger: clickup({ list: NAME }) };
+    const first = await create(args);
+    const created = value<Created>(first);
+    expect(storedFilters()).toEqual({ list: LIST_ID });
+    expect(reader.calls).toEqual([{ tool: "clickup_get_list", args: { list_name: NAME } }]);
+
+    const repeat = await create(args);
+    expect(repeat).toEqual(first);
+    expect(reader.calls).toHaveLength(1);
+    expect(count(env.store, "SELECT count(*) FROM playbooks")).toBe(1);
+    expect(created.id).toBe(1);
+  });
+
+  it("AC2: an update to a list-name poll, repeated under the same key, returns the first result with one lookup and no new version", async () => {
+    answerFirstOnly();
+    const created = value<Created>(await create());
+    const args = { id: created.id, changes: { trigger: clickup({ list: NAME }) }, idempotency_key: "k2" };
+    const first = await call("kernel_playbook_update", args);
+    expect(value<{ version: number }>(first).version).toBe(2);
+    expect(reader.calls).toHaveLength(1);
+
+    const repeat = await call("kernel_playbook_update", args);
+    expect(repeat).toEqual(first);
+    expect(reader.calls).toHaveLength(1);
+    expect(version(created.id)).toBe(2);
+    expect(storedFilters()).toEqual({ list: LIST_ID });
+  });
+
+  it("AC3: a list given as an ID never calls the reader, on a create or an update, and a repeat returns the first result", async () => {
+    const args = { idempotency_key: "k3", trigger: clickup({ list: LIST_ID }) };
+    const first = await create(args);
+    const created = value<Created>(first);
+    expect(await create(args)).toEqual(first);
+    const upArgs = { id: created.id, changes: { trigger: clickup({ space: "9010000000002" }) }, idempotency_key: "k3u" };
+    const upFirst = await call("kernel_playbook_update", upArgs);
+    expect(value<{ version: number }>(upFirst).version).toBe(2);
+    expect(await call("kernel_playbook_update", upArgs)).toEqual(upFirst);
+    expect(version(created.id)).toBe(2);
+    expect(reader.calls).toHaveLength(0);
+  });
+
+  it("AC3: a refused write with no lookup records nothing, and a later call under the same key runs again", async () => {
+    const args = { idempotency_key: "k3r", trigger: clickup({ list: LIST_ID }), mode: "live" };
+    expect(errorText(await create(args))).toContain("live_mode_owner_only");
+    nothingWritten();
+    expect(stepCount()).toBe(0);
+    const later = value<Created>(await create({ ...args, mode: "draft" }));
+    expect(later.id).toBe(1);
+
+    setPlaybookPolicy(env.store, { id: later.id, field: "mode", value: "draft" }, env.now());
+    const owned = version(later.id) as number;
+    const upArgs = { id: later.id, changes: { trigger: clickup({ list: LIST_ID }), mode: "draft" }, idempotency_key: "k3ur" };
+    expect(errorText(await call("kernel_playbook_update", upArgs))).toContain("mode: the owner set this value");
+    expect(stepRow("kernel_playbook_update", "k3ur")).toBeUndefined();
+    expect(value<{ version: number }>(await call("kernel_playbook_update", { ...upArgs, changes: { name: "Renamed" } })).version).toBe(owned + 1);
+    expect(reader.calls).toHaveLength(0);
+  });
+
+  it("AC4: the same key with other arguments returns the first result, makes no lookup for them and writes nothing new", async () => {
+    answerFirstOnly();
+    const first = await create({ idempotency_key: "k4", trigger: clickup({ list: NAME }) });
+    const created = value<Created>(first);
+    const before = { triggers: triggerRows(), versions: count(env.store, "SELECT count(*) FROM playbook_versions") };
+    expect(await create({ idempotency_key: "k4", name: "Other name", trigger: clickup({ list: OTHER_NAME }) })).toEqual(first);
+    expect(reader.calls).toHaveLength(1);
+    expect(count(env.store, "SELECT count(*) FROM playbooks")).toBe(1);
+    expect({ triggers: triggerRows(), versions: count(env.store, "SELECT count(*) FROM playbook_versions") }).toEqual(before);
+
+    reader.answer = (n) => (n === 2 ? { ok: true, text: JSON.stringify(RECORDED.get_list_one) } : { ok: false, error: "mcp_timeout" });
+    const upFirst = await call("kernel_playbook_update", { id: created.id, changes: { trigger: clickup({ list: NAME }), name: "Renamed" }, idempotency_key: "k4u" });
+    expect(value<{ version: number }>(upFirst).version).toBe(2);
+    const callsAfterFirstUpdate = reader.calls.length;
+    const afterUpdate = { triggers: triggerRows(), playbook: getPlaybook(env.store, created.id) };
+    expect(await call("kernel_playbook_update", { id: created.id, changes: { trigger: clickup({ list: OTHER_NAME }), name: "Third name" }, idempotency_key: "k4u" })).toEqual(upFirst);
+    expect(reader.calls).toHaveLength(callsAfterFirstUpdate);
+    expect({ triggers: triggerRows(), playbook: getPlaybook(env.store, created.id) }).toEqual(afterUpdate);
+  });
+
+  const FAILURES: [string, () => void, Record<string, unknown>, string][] = [
+    ["a list nothing has (mcp_tool_error)", () => (reader.answer = () => ({ ok: false, error: "mcp_tool_error" })), { list: NAME }, "could not be looked up: mcp_tool_error"],
+    ["an unreachable reader (mcp_timeout)", () => (reader.answer = () => ({ ok: false, error: "mcp_timeout" })), { list: NAME }, "could not be looked up: mcp_timeout"],
+    ["an answer naming another list", () => (reader.answer = () => ({ ok: true, text: JSON.stringify({ ...RECORDED.get_list_one, name: OTHER_NAME }) })), { list: NAME }, "matches no ClickUp list (0 matches)"],
+    ["a space name", () => undefined, { space: "Some space" }, "filters.space \"Some space\" could not be looked up: tool_unavailable"],
+  ];
+
+  describe.each(FAILURES)("AC5: a failed lookup (%s) releases the key", (_label, fail, filters, text) => {
+    const succeed = (): void => {
+      reader.answer = () => ({ ok: true, text: JSON.stringify(RECORDED.get_list_one) });
+    };
+
+    it("a create is refused, leaves no row and no work step, and the same key runs again", async () => {
+      fail();
+      const args = { idempotency_key: "k5", trigger: clickup(filters) };
+      const refusal = errorText(await create(args));
+      expect(refusal).toContain("kernel_playbook_create: ");
+      expect(refusal).toContain(text);
+      nothingWritten();
+      expect(stepCount()).toBe(0);
+      // A call the lookup made is made again by the same key (a space name makes none).
+      const calls = reader.calls.length;
+      expect(errorText(await create(args))).toBe(refusal);
+      expect(reader.calls).toHaveLength(calls * 2);
+      expect(stepCount()).toBe(0);
+
+      succeed();
+      const ok = await create({ idempotency_key: "k5", trigger: clickup({ list: NAME }) });
+      expect(value<Created>(ok).id).toBe(1);
+    });
+
+    it("an update is refused with the playbook unchanged, and the same key runs again", async () => {
+      const created = value<Created>(await create());
+      const before = { triggers: triggerRows(), playbook: getPlaybook(env.store, created.id), steps: stepCount() };
+      fail();
+      const args = { id: created.id, changes: { trigger: clickup(filters) }, idempotency_key: "k5u" };
+      const refusal = errorText(await call("kernel_playbook_update", args));
+      expect(refusal).toContain("kernel_playbook_update: ");
+      expect(refusal).toContain(text);
+      expect({ triggers: triggerRows(), playbook: getPlaybook(env.store, created.id), steps: stepCount() }).toEqual(before);
+      expect(stepRow("kernel_playbook_update", "k5u")).toBeUndefined();
+
+      succeed();
+      expect(value<{ version: number }>(await call("kernel_playbook_update", { ...args, changes: { trigger: clickup({ list: NAME }) } })).version).toBe(2);
+    });
+  });
+
+  it("AC5: a failed lookup is called again by the same key (the reader sees both calls) and then succeeds when it answers", async () => {
+    const args = { idempotency_key: "k5b", trigger: clickup({ list: NAME }) };
+    reader.answer = () => ({ ok: false, error: "mcp_timeout" });
+    expect(errorText(await create(args))).toContain("mcp_timeout");
+    expect(reader.calls).toHaveLength(1);
+    reader.answer = () => ({ ok: true, text: JSON.stringify(RECORDED.get_list_one) });
+    expect(value<Created>(await create(args)).id).toBe(1);
+    expect(reader.calls).toHaveLength(2);
+  });
+
+  it("AC6: a write refused after a lookup is recorded failed:error, nothing is written, and a repeat is refused without a lookup", async () => {
+    reader.answer = () => ({ ok: true, text: JSON.stringify(RECORDED.get_list_one) });
+    const args = { idempotency_key: "k6", trigger: clickup({ list: NAME }), mode: "live" };
+    expect(errorText(await create(args))).toContain("live_mode_owner_only");
+    nothingWritten();
+    expect(stepRow("kernel_playbook_create", "k6")).toEqual({ status: "failed", failure_reason: "error" });
+    expect(reader.calls).toHaveLength(1);
+    expect(errorText(await create(args))).toContain("already failed (failed:error); use a new key to try again");
+    expect(reader.calls).toHaveLength(1);
+    nothingWritten();
+
+    const created = value<Created>(await create({ trigger: clickup({ list: LIST_ID }) }));
+    setPlaybookPolicy(env.store, { id: created.id, field: "mode", value: "draft" }, env.now());
+    const upArgs = { id: created.id, changes: { trigger: clickup({ list: NAME }), mode: "draft" }, idempotency_key: "k6u" };
+    const callsBefore = reader.calls.length;
+    const owned = version(created.id);
+    const triggers = triggerRows();
+    expect(errorText(await call("kernel_playbook_update", upArgs))).toContain("mode: the owner set this value");
+    expect(reader.calls).toHaveLength(callsBefore + 1);
+    expect(stepRow("kernel_playbook_update", "k6u")).toEqual({ status: "failed", failure_reason: "error" });
+    expect(errorText(await call("kernel_playbook_update", upArgs))).toContain("already failed (failed:error); use a new key to try again");
+    expect(reader.calls).toHaveLength(callsBefore + 1);
+    expect(version(created.id)).toBe(owned);
+    expect(triggerRows()).toEqual(triggers);
+  });
+
+  it("AC7: a step left started by a crash is interrupted, not re-run: no lookup and no playbook", async () => {
+    reader.answer = () => ({ ok: true, text: JSON.stringify(RECORDED.get_list_one) });
+    env.store.prepare("INSERT INTO work_steps (key, status) VALUES (?, 'started')").run("kernel_playbook_create:session-1:k7");
+    expect(errorText(await create({ idempotency_key: "k7", trigger: clickup({ list: NAME }) }))).toContain("was interrupted by a crash and is not re-runnable");
+    expect(reader.calls).toHaveLength(0);
+    nothingWritten();
   });
 });
