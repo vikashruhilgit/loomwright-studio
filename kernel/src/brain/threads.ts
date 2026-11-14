@@ -172,6 +172,24 @@ export function recordMessageThread(
     .run(params.messageId, params.threadId, params.continues, params.references.length === 0 ? null : JSON.stringify(params.references), iso, iso);
 }
 
+/**
+ * The row an approval decision's message continues (phase 8 item 21f): the
+ * newest `brain_messages` row of `agent` that approval `approvalId`'s
+ * requesting session answered, with that row's thread; undefined when the
+ * approval has no requesting session or that session answered no row of
+ * `agent` (a playbook run's session, for example). The decision then reaches
+ * the agent in the conversation that asked for it, so the owner's words there
+ * (such as "only the crew member, no playbook") are in its context. Reads the
+ * approvals table by SQL: this module never imports the approvals module.
+ */
+export function approvalContinuation(store: Store, approvalId: number, agent: string): { readonly continues: number; readonly threadId: number } | undefined {
+  const session = store.prepare<[number], number | null>("SELECT requesting_session FROM approvals WHERE id = ?").pluck().get(approvalId);
+  if (typeof session !== "number") return undefined;
+  const row = store.prepare<[number, string], number>("SELECT id FROM brain_messages WHERE session_id = ? AND agent = ? ORDER BY id DESC LIMIT 1").pluck().get(session, agent);
+  if (typeof row !== "number") return undefined;
+  return { continues: row, threadId: threadIdOf(store, row) };
+}
+
 /** Record how message `messageId`'s session continued its thread. */
 export function setContinuation(store: Store, messageId: number, continuation: Continuation, at: Date): void {
   store.prepare("UPDATE brain_message_threads SET continuation = ?, updated_at = ? WHERE message_id = ?").run(continuation, at.toISOString(), messageId);

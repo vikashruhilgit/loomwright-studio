@@ -52,7 +52,12 @@
 // (`continuation`). A resume whose SDK conversation turns out gone
 // (`conversation_gone`) is replayed once through the loop (`queueReplay`);
 // a history past its bound fails the row `history_too_large: …`. A message
-// with no thread data takes exactly the path above. A summary request (a row
+// with no thread data takes exactly the path above. An approval's decision
+// (`approval:<id>`, item 21f) is given thread data at step a when its
+// approval's requesting session answered a row of the same agent
+// (`approvalContinuation`): it continues that row, so the agent reads the
+// decision in the conversation that asked for it. A history past its bound
+// never fails such a row: it starts fresh, as it did before. A summary request (a row
 // `POST /threads/:agent/:thread/summarize` marked, `summaryRequestOf`) is such
 // a continuation; when it ends `replied`, its reply is also written to the
 // thread's summary file (`writeSummaryReply`, exclusive create), and a file
@@ -93,7 +98,19 @@ import { cutChars, ensureMemoryFiles, wrightMemoryDir } from "./memory.js";
 import { FINAL_MESSAGE_STATUSES, ensureBrainMessage, messageFieldsOf, messageSourceOf, updateBrainMessage } from "./messages.js";
 import type { BrainMessageRow, BrainMessageStatus } from "./messages.js";
 import { readWrightSettings } from "./settings.js";
-import { continuationPlan, endedConversationGone, getMessageThread, isContinuationRefusal, queueReplay, replayRowOf, setContinuation, summaryRequestOf, writeSummaryReply } from "./threads.js";
+import {
+  approvalContinuation,
+  continuationPlan,
+  endedConversationGone,
+  getMessageThread,
+  isContinuationRefusal,
+  queueReplay,
+  recordMessageThread,
+  replayRowOf,
+  setContinuation,
+  summaryRequestOf,
+  writeSummaryReply,
+} from "./threads.js";
 import type { Continuation } from "./threads.js";
 
 export interface BrainHandlerDeps {
@@ -322,6 +339,12 @@ function crewSession(store: Store, agent: string, fail: (detail: string) => void
   };
 }
 
+/** The approval id of an `approval:<id>` source, else undefined. */
+function approvalIdOf(source: string): number | undefined {
+  const m = /^approval:([1-9]\d*)$/.exec(source);
+  return m === null ? undefined : Number(m[1]);
+}
+
 /** The brain's `message` handler (see the module comment). `deps` replace the clock, zone and Loomwright reader in tests. */
 export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
   const now = deps.now ?? (() => new Date());
@@ -343,6 +366,12 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
     const fields = messageFieldsOf(store, event.payload);
     const row = replayOf ?? ensureBrainMessage(store, { queueId: event.id, agent, source: messageSourceOf(event.payload), text, ...fields }, now());
     if (FINAL_MESSAGE_STATUSES.includes(row.status)) return;
+    // An approval's decision continues the conversation that asked for it (item 21f), recorded once.
+    const approvalId = approvalIdOf(row.source);
+    if (approvalId !== undefined && replayOf === undefined && getMessageThread(store, row.id) === undefined) {
+      const asked = approvalContinuation(store, approvalId, agent);
+      if (asked !== undefined && asked.continues < row.id) recordMessageThread(store, { messageId: row.id, threadId: asked.threadId, continues: asked.continues, references: [] }, now());
+    }
     // A redelivery that found the row `running` with its session still live
     // writes nothing: that session's listener writes the reply (only from
     // `running`). The caller still throws or returns as it would. A
@@ -399,7 +428,9 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
 
     // c. The context (a continuation's: its plan, read now; a history past its bound fails the row).
     const thread = getMessageThread(store, row.id);
-    const plan = thread === undefined ? undefined : continuationPlan(store, row, thread, replayOf !== undefined);
+    let plan = thread === undefined ? undefined : continuationPlan(store, row, thread, replayOf !== undefined);
+    // An approval's decision is never lost to its thread: a history past its bound starts it fresh, as before item 21f.
+    if (approvalId !== undefined && plan !== undefined && !plan.ok) plan = undefined;
     if (plan !== undefined && !plan.ok) {
       fail(plan.detail);
       return;
@@ -427,9 +458,14 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
               if (!isContinuationRefusal(err)) throw err;
             }
           }
-          if (!plan.replay.ok) return { refused: plan.replay.detail };
-          handle = await sessions.startSession({ ...base, prompt: contextOf({ history: plan.replay.histories }) });
-          return { session_id: handle.id, continuation: "replayed" as const };
+          if (plan.replay.ok) {
+            handle = await sessions.startSession({ ...base, prompt: contextOf({ history: plan.replay.histories }) });
+            return { session_id: handle.id, continuation: "replayed" as const };
+          }
+          if (approvalId === undefined) return { refused: plan.replay.detail };
+          // An approval's decision whose resume was refused and whose replay is past its bound: a fresh start (below).
+          handle = await sessions.startSession({ ...base, prompt: contextOf(refs) });
+          return { session_id: handle.id };
         }
         const resumeId = interruptedAgentSession(store, agent, event.taskId);
         handle =

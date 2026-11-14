@@ -38,7 +38,7 @@ import {
   wrightDutyRefusal,
 } from "../src/agents/charter-readiness.js";
 import type { ReadinessGrant, ReadinessResult, TrackerEnv } from "../src/agents/charter-readiness.js";
-import { AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME } from "../src/agents/charter-tools.js";
+import { AFTER_MEMBER_APPROVAL, AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME } from "../src/agents/charter-tools.js";
 import { CHARTER_JSON_SCHEMA, TICKET_SOURCES } from "../src/agents/charter-files.js";
 import { agentSettingsPath, createAgent, getAgent, readAgentSettings, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
@@ -319,7 +319,7 @@ describe("AC1 and AC4: everything covered and ready, nothing flagged, no note", 
       "  ready: GitHub access for Read a PR: proposed in this charter",
     ]);
     h.decide(1);
-    expect(h.applied()).toBe("The kernel created crew member dev (Dev) on approval 1.");
+    expect(h.applied()).toBe(`The kernel created crew member dev (Dev) on approval 1. ${AFTER_MEMBER_APPROVAL}`);
   });
 
   it("AC4: a duty entry with jobs: [] is covered with no tool, whatever the charter grants", () => {
@@ -532,7 +532,7 @@ describe("AC8: an approval with flags still open names them in the applied sente
     expect(h.applied()).toBe(
       "The kernel created crew member dev (Dev) on approval 1." +
         `${PROCEED}duty 2 is not covered (needs Triage PR comments); duty 3 is not covered (needs Ask for a merge); ` +
-        "no copy of a repo to work in (for Hand tickets to /automate); GitHub write access for Hand tickets to /automate: the owner's step in Team; duty 1 names no ticket source.",
+        `no copy of a repo to work in (for Hand tickets to /automate); GitHub write access for Hand tickets to /automate: the owner's step in Team; duty 1 names no ticket source. ${AFTER_MEMBER_APPROVAL}`,
     );
   });
 

@@ -770,3 +770,18 @@ describe("crewPlaybookPrompt", () => {
     expect(() => crewPlaybookPrompt({ ...input, dataDir, agent: "wright" })).toThrow(TypeError);
   });
 });
+
+// ---- Item 21f: a crew member's playbook and its dry run come only on the owner's ask ----
+
+describe("item 21f: the playbook tools say a member's playbook and a dry run wait for the owner's ask", () => {
+  it("kernel_playbook_create and kernel_playbook_dry_run carry the rule in their descriptions", () => {
+    const tools = playbooksContribution.tools ?? [];
+    const description = (name: string): string => tools.find((t) => t.name === name)?.description ?? "";
+    expect(description("kernel_playbook_create")).toContain(
+      "Draft a crew member's playbook only when the owner asked for one: when the owner asked only for the member, its approval is no ask for a playbook.",
+    );
+    expect(description("kernel_playbook_dry_run")).toContain(
+      "Call it only when the owner asked for the dry run (or for the playbook to be turned on): it starts a session and spends the owner's tokens, so after a draft offer it instead of starting it.",
+    );
+  });
+});

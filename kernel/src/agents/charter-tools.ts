@@ -121,6 +121,15 @@ import { AVATAR_HUES, AVATAR_SHAPES } from "./types.js";
 import type { AgentPart } from "./types.js";
 
 export const AGENT_CREATE_TOOL_NAME = "kernel_agent_create";
+
+/**
+ * What Wright does once a member's approval is decided (phase 8 item 21f): a
+ * playbook only on the owner's ask, a dry run never unasked. In the create's
+ * description and its applied sentence, so an install whose `role.md`
+ * predates the template's rule still reads it where it acts.
+ */
+export const AFTER_MEMBER_APPROVAL =
+  "Draft its playbook only if the owner asked for one, and run no dry run the owner did not ask for: a dry run spends the owner's tokens, so offer it instead.";
 export const AGENT_UPDATE_TOOL_NAME = "kernel_agent_update";
 export const AGENT_LIST_TOOL_NAME = "kernel_agent_list";
 
@@ -470,7 +479,7 @@ function createOnApproval(a: CreateArgs, ctx: { store: Store; now: () => Date; a
   const open = checked.ok ? openFlagsSentence(createReadiness(checked.charter, ctx.catalogue, store, approval.ownerGrant)) : "";
   const granting = granted === undefined ? "" : ` The owner granted ${CONNECTOR_LABELS[granted.plan.change.kind]} access with this approval.`;
   return {
-    applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.${granting}${open}`,
+    applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.${granting}${open} ${AFTER_MEMBER_APPROVAL}`,
     // No file is written before the commit: the row and the grant's record (`agent_settings_set`, above) are the truth,
     // committed together. ensureAgentFiles then writes every absent file, the settings file with the recorded grant
     // laid over the charter's (`recordedConnectors`). A write error here is ignored by the decision, and the next
@@ -502,6 +511,7 @@ const createTool = defineTool({
     "ClickUp and Jira access is never in a charter and never yours to propose: when a ticket duty's tracker is one of them, the kernel flags that the member can't read its tickets yet, and the owner ticks the access on the held card, granted when they approve; tell the owner so. " +
     "The kernel always holds this call for the owner, showing the role.md and settings file it would write and what it enforces; end your turn. " +
     "The owner's approval creates the member: the kernel applies it itself and tells you what it did in a new message; do not repeat the call. " +
+    `${AFTER_MEMBER_APPROVAL} ` +
     `Refused (nothing held) with one of: ${CHARTER_TOOL_REFUSALS.join(", ")}. Use a new idempotency_key for each request to the owner.`,
   shape: {
     // Not `z.record`: the Agent SDK's bundled serialiser throws on a record, which empties `tools/list`; and a record rebuilds
