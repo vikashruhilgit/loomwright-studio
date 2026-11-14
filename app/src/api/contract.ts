@@ -453,9 +453,22 @@ export interface ApprovalsResponse {
   readonly approvals: readonly Approval[];
 }
 
-/** `POST /approvals/:id/approve`. `always` only for a rail approval from a playbook session. */
+/**
+ * `POST /approvals/:id/approve`. `always` only for a rail approval from a playbook session. `owner_grant` is
+ * the owner's own tracker grant, ticked on a held crew create or update (item 21b): only with `once`, a tool
+ * list the kernel checks against that connection's stored list and applies in the same decision, as the owner's
+ * (a tool it does not list, or any other approval, is refused `invalid_body` / `invalid_approval` and nothing
+ * is decided). Absent when nothing was ticked.
+ */
 export interface ApproveBody {
   readonly decision: "once" | "always";
+  readonly owner_grant?: OwnerGrant;
+}
+
+/** The tracker tools the owner ticks on a held card: one MCP kind and the server's own tool names its connection lists. */
+export interface OwnerGrant {
+  readonly kind: McpConnectionKind;
+  readonly tools: readonly string[];
 }
 
 /** Approve and deny both answer the approval after the decision. */
@@ -652,6 +665,26 @@ export interface AgentDetailResponse {
    * kernel has no catalogue; absent from an older kernel's answer.
    */
   readonly jobs?: readonly AgentJobGroup[] | null;
+  /**
+   * Whether each of the member's ticket duties can read its tracker's tickets (item 21b): one entry per ticket duty,
+   * from the same check the held charter card uses. `[]` when it has none, `null` when the settings file was refused
+   * (its grant is unknown); absent from an older kernel's answer.
+   */
+  readonly tracker_access?: readonly TrackerAccess[] | null;
+}
+
+/** `TrackerAccess.status`: `granted`; `no_access` (connected, and the member lacks the read access); `not_connected`; `no_source` (the duty names no tracker). A closed list the kernel owns (`TRACKER_STATUSES`). */
+export type TrackerAccessStatus = "granted" | "no_access" | "not_connected" | "no_source";
+
+/** One ticket duty's tracker, and whether the member can read it. */
+export interface TrackerAccess {
+  /** The duty's text. */
+  readonly duty: string;
+  /** The tracker the duty states; `null` when it states none. `github` is GitHub Issues. */
+  readonly source: ConnectorKind | null;
+  readonly status: TrackerAccessStatus;
+  /** The finding in plain words: "Ticket Runner can't read ClickUp tickets yet: it has no ClickUp access". */
+  readonly line: string;
 }
 
 /** One catalogue job of a member's granted kernel tools. */

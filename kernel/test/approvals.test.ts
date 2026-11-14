@@ -2041,3 +2041,186 @@ describe("the approvals contribution", () => {
     }
   });
 });
+
+// Item 21b: the owner's own tracker grant rides on `POST /approvals/:id/approve` as `owner_grant`, for a held crew
+// create or update only; the kernel checks every tool against the connection's stored list before it decides anything.
+describe("owner_grant on approve (item 21b)", () => {
+  const TOKEN = "0123456789abcdef".repeat(4);
+  const CREATE_TOOL = "mcp__kernel__kernel_agent_create";
+  const UPDATE_TOOL = "mcp__kernel__kernel_agent_update";
+  const LISTED = ["clickup_filter_tasks", "clickup_get_task", "clickup_create_comment"];
+  let env: LoopEnv;
+  let server: ApiServer;
+  let calls: AppliedApproval[];
+
+  /** A server whose applier records the approval it was given (the real appliers are pinned in `agents-charter-tools.test.ts`). */
+  async function serve(applier: boolean): Promise<ApiServer> {
+    const approvalApplier: ApprovalApplier = (_tool, _input, approval) => {
+      calls.push(approval);
+      return { applied: "The kernel applied it." };
+    };
+    return startApiServer(
+      {
+        store: env.store,
+        sessions: { stopAll: async () => [], abandonSession: unexpectedAbandon },
+        loop: { start: () => {}, stop: async () => {} },
+        authProviders: [stubProvider()],
+        token: TOKEN,
+        routes: mergeContributions([approvalsContribution]).routes,
+        ...(applier ? { approvalApplier } : {}),
+      },
+      { now: env.now },
+    );
+  }
+
+  beforeEach(async () => {
+    env = loopEnv();
+    calls = [];
+    server = await serve(true);
+    const stored = LISTED.map((name) => ({ name, proxy: `kernel_mcp_w_clickup_${name}`, read_only: false, description: "", schema: "{}" }));
+    env.store.prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES ('clickup', 'https://mcp.example.test/mcp', 'connected', ?)").run(JSON.stringify(stored));
+  });
+  afterEach(async () => {
+    await server.close();
+    env.cleanup();
+  });
+
+  const approve = async (id: number, body: unknown, on: ApiServer = server) => {
+    const res = await fetch(`http://127.0.0.1:${on.port}/approvals/${id}/approve`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  /** A held call from Wright's session: a crew create by default. */
+  function held(tool = CREATE_TOOL): number {
+    const sessionId = Number(env.store.prepare("INSERT INTO sessions (agent, status) VALUES ('wright', 'running')").run().lastInsertRowid);
+    return requestApproval(env.store, { agent: "wright", sessionId, action: tool.replace("mcp__kernel__", ""), payload: { tool, input: { idempotency_key: "k1" } }, source: "rail" }, env.now()).id;
+  }
+  const written = () => [count(env.store, "SELECT count(*) FROM events"), count(env.store, "SELECT count(*) FROM event_queue")];
+  const GRANT = { kind: "clickup", tools: ["clickup_filter_tasks", "clickup_get_task"] };
+
+  it.each([CREATE_TOOL, UPDATE_TOOL])("a once on a held %s carries the owner's grant to the kernel's applier, deduplicated, and records it on the decision", async (tool) => {
+    const id = held(tool);
+    const res = await approve(id, { decision: "once", owner_grant: { kind: "clickup", tools: [...GRANT.tools, GRANT.tools[0]] } });
+    expect(res.status).toBe(200);
+    expect(calls).toEqual([expect.objectContaining({ id, agent: "wright", ownerGrant: GRANT })]);
+    expect(getApproval(env.store, id)).toMatchObject({ status: "approved", decision: "once", decided_by: "owner" });
+    expect(events(env.store, "approval_decided").map((e) => e.payload)).toEqual([
+      expect.objectContaining({ id, decision: "once", by: "owner", applied: "The kernel applied it.", owner_grant: GRANT }),
+    ]);
+  });
+
+  it("without owner_grant the applier's approval has none and the decision records none (a decision is exactly as before)", async () => {
+    const id = held();
+    expect((await approve(id, { decision: "once" })).status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect("ownerGrant" in (calls[0] as AppliedApproval)).toBe(false);
+    expect("owner_grant" in (events(env.store, "approval_decided")[0]?.payload ?? {})).toBe(false);
+  });
+
+  it("a tool the connection does not list decides nothing: 400 invalid_approval, the approval still pending, no event, no message, the applier never called", async () => {
+    const id = held();
+    const before = written();
+    const res = await approve(id, { decision: "once", owner_grant: { kind: "clickup", tools: ["clickup_filter_tasks", "clickup_delete_task"] } });
+    expect(res).toEqual({ status: 400, body: { error: "invalid_approval", message: 'the clickup connection does not list the tool "clickup_delete_task", so it can\'t be granted' } });
+    expect(getApproval(env.store, id)?.status).toBe("pending");
+    expect(getApproval(env.store, id)?.decided_by).toBeNull();
+    expect(written()).toEqual(before);
+    expect(calls).toEqual([]);
+  });
+
+  it("a connection with no row lists no tool: a grant for it is refused, nothing decided", async () => {
+    const id = held();
+    const before = written();
+    const res = await approve(id, { decision: "once", owner_grant: { kind: "jira", tools: ["searchJiraIssuesUsingJql"] } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid_approval");
+    expect(getApproval(env.store, id)?.status).toBe("pending");
+    expect(written()).toEqual(before);
+  });
+
+  it.each([
+    ["a kind that is not an MCP tracker (github)", { kind: "github", tools: ["x"] }],
+    ["an unknown kind", { kind: "trello", tools: ["x"] }],
+    ["no tools", { kind: "clickup", tools: [] }],
+    ["tools that are not a list", { kind: "clickup", tools: "clickup_get_task" }],
+    ["a tool that is not a name", { kind: "clickup", tools: ["clickup_get_task", 7] }],
+    ["a blank tool name", { kind: "clickup", tools: [""] }],
+    ["more tools than a grant can hold", { kind: "clickup", tools: Array.from({ length: 101 }, (_, i) => `t${i}`) }],
+    ["an extra key (a level)", { kind: "clickup", tools: ["clickup_get_task"], level: "write" }],
+    ["a missing kind", { tools: ["clickup_get_task"] }],
+    ["null", null],
+    ["a list", [GRANT]],
+    ["a string", "clickup"],
+  ])("a malformed owner_grant (%s) is 400 invalid_body and writes nothing", async (_name, owner_grant) => {
+    const id = held();
+    const before = written();
+    const res = await approve(id, { decision: "once", owner_grant });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("invalid_body");
+    expect(String(res.body.message)).toContain("owner_grant must be");
+    expect(getApproval(env.store, id)?.status).toBe("pending");
+    expect(written()).toEqual(before);
+    expect(calls).toEqual([]);
+  });
+
+  it("an approval that is not a crew create or update takes no owner_grant (invalid_approval, nothing decided)", async () => {
+    const id = held("mcp__kernel__kernel_playbook_enable");
+    const pushSession = Number(env.store.prepare("INSERT INTO sessions (agent, status) VALUES ('wright', 'running')").run().lastInsertRowid);
+    const push = requestApproval(env.store, { agent: "wright", sessionId: pushSession, action: "git push", payload: { tool: "Bash", command: "git push" }, source: "rail" }, env.now()).id;
+    const before = written();
+    for (const target of [id, push]) {
+      const res = await approve(target, { decision: "once", owner_grant: GRANT });
+      expect(res).toEqual({ status: 400, body: { error: "invalid_approval", message: "an owner_grant is only for the approval of a crew member's creation or update" } });
+      expect(getApproval(env.store, target)?.status).toBe("pending");
+    }
+    expect(written()).toEqual(before);
+    expect(calls).toEqual([]);
+  });
+
+  it("owner_grant goes only with once: always is refused and a deny ignores it (it grants nothing)", async () => {
+    const id = held();
+    const before = written();
+    const always = await approve(id, { decision: "always", owner_grant: GRANT });
+    expect(always.status).toBe(409);
+    expect(getApproval(env.store, id)?.status).toBe("pending");
+    expect(written()).toEqual(before);
+    const denied = await fetch(`http://127.0.0.1:${server.port}/approvals/${id}/deny`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ owner_grant: GRANT }),
+    });
+    expect(denied.status).toBe(200);
+    expect(getApproval(env.store, id)).toMatchObject({ status: "denied", decision: "deny" });
+    expect(calls).toEqual([]);
+    expect("owner_grant" in (events(env.store, "approval_decided")[0]?.payload ?? {})).toBe(false);
+  });
+
+  it("with no kernel applier nothing would apply the grant, so it is refused rather than silently dropped", async () => {
+    const bare = await serve(false);
+    try {
+      const id = held();
+      const before = written();
+      const res = await approve(id, { decision: "once", owner_grant: GRANT }, bare);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("invalid_approval");
+      expect(getApproval(env.store, id)?.status).toBe("pending");
+      expect(written()).toEqual(before);
+    } finally {
+      await bare.close();
+    }
+  });
+
+  it("a refused apply records no owner_grant on the decision (nothing was granted)", async () => {
+    const refusing = approvalApplierOf(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools);
+    const id = held();
+    // The held input is not a charter, so the shipped applier refuses it: the grant must not read as applied.
+    const decided = decideApproval(env.store, { id, decision: "once", by: "owner", ownerGrant: { kind: "clickup", tools: ["clickup_get_task"] } }, env.now(), refusing);
+    expect(decided.status).toBe("approved");
+    const payload = events(env.store, "approval_decided")[0]?.payload as Record<string, unknown>;
+    expect(payload.apply_refused).toBe("invalid_input");
+    expect("owner_grant" in payload).toBe(false);
+  });
+});

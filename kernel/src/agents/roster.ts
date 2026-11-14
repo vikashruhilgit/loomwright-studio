@@ -4,7 +4,7 @@
 // `agents` contribution.
 //
 //   routes  GET  /agents               {agents}: Wright first, then every member by id
-//           GET  /agents/:id           {agent, settings, never, workspaces, memory, charter, jobs}
+//           GET  /agents/:id           {agent, settings, never, workspaces, memory, charter, jobs, tracker_access}
 //           POST /agents               body: a charter; the owner's create (`createAgent`)
 //           POST /agents/:id/rename    body {display_name}
 //           POST /agents/:id/set       body {field, value}: one scalar setting, or the connectors grant, in the file
@@ -46,7 +46,8 @@ import { basename, dirname, join } from "node:path";
 import { payloadText, shown } from "../approvals/cli.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
 import { agentCountedTokens, localDay } from "../budget/internal.js";
-import { jobGroups } from "../features/catalogue.js";
+import { isToolJob, jobGroups } from "../features/catalogue.js";
+import type { ToolJob } from "../features/catalogue.js";
 import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
@@ -61,7 +62,10 @@ import {
   effortSchema,
   modelSchema,
 } from "./charter-files.js";
-import type { AgentAuditKind } from "./charter-files.js";
+import { TICKET_SOURCES } from "./charter-files.js";
+import type { AgentAuditKind, CharterDuty, TicketSource } from "./charter-files.js";
+import { trackerReadiness } from "./charter-readiness.js";
+import { trackerEnvOf } from "./charter-tools.js";
 import { getAgent, listAgents } from "./registry.js";
 import type { AgentRow } from "./registry.js";
 import { agentSettingsPath, mergeConnectorsGrant, parseMcpGrantValue, readAgentSettings } from "./settings.js";
@@ -261,6 +265,43 @@ function charterProse(row: AgentRow): { persona: unknown; duties: unknown; bound
   }
 }
 
+/**
+ * The member's ticket duties from its stored charter, as the readiness check reads a duty: each duty entry's text,
+ * the jobs of it the catalogue knows and its `source` when it is a tracker the kernel knows (anything else reads as
+ * stating none). A bare line, or anything that is not an entry, names no job and is left out. Lenient on purpose:
+ * `charter_json` was validated when it was stored, and a later change to a rule must not hide a flag from the owner.
+ */
+function dutiesOf(row: AgentRow): CharterDuty[] {
+  try {
+    const c = JSON.parse(row.charter_json) as unknown;
+    if (!isBodyObject(c) || !Array.isArray(c.duties)) return [];
+    return c.duties.flatMap((duty): CharterDuty[] => {
+      if (!isBodyObject(duty) || typeof duty.text !== "string" || !Array.isArray(duty.jobs)) return [];
+      const jobs = duty.jobs.filter((j): j is ToolJob => isToolJob(j));
+      const source = (TICKET_SOURCES as readonly unknown[]).includes(duty.source) ? (duty.source as TicketSource) : undefined;
+      return [{ text: duty.text, jobs, ...(source === undefined ? {} : { source }) }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether each of the member's ticket duties can read its tracker's tickets, in words: one entry per ticket duty
+ * (`{duty, source, status, line}`; `source` null when the duty states none), computed by the readiness check the
+ * held card uses (`trackerReadiness`), never a second rule, over the member's stored grant and the connections
+ * as they are now. `[]` for a member with no ticket duty.
+ */
+function trackerAccessOf(store: Store, row: AgentRow, settings: unknown): unknown[] {
+  const raw = isBodyObject(settings) ? settings.connectors : undefined;
+  const items = trackerReadiness({
+    charter: { display_name: row.display_name, duties: dutiesOf(row) },
+    grant: { kind: "stored", raw },
+    trackers: trackerEnvOf(store),
+  });
+  return items.flatMap((i) => (i.tracker === undefined ? [] : [{ duty: i.tracker.duty, source: i.tracker.source, status: i.tracker.status, line: i.tracker.sentence }]));
+}
+
 async function show(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
   const row = memberOf(req, "its settings are");
   if (!isRow(row)) return row;
@@ -268,13 +309,14 @@ async function show(req: ContributedRouteRequest): Promise<ContributedRouteRespo
   const homeDir = homedir();
   const read = readAgentSettings(dataDir, row.id, { homeDir });
   const paths = agentFilePaths(dataDir, row.id);
+  const content = settingsContent(paths.settings);
   return {
     status: 200,
     body: {
       agent: memberEntry(req.store, row, req.now(), homeDir),
       settings: {
         file: paths.settings,
-        content: settingsContent(paths.settings),
+        content,
         error: read.ok ? null : { error: read.error, ...("field" in read ? { field: read.field } : {}), message: read.message },
       },
       never: read.ok ? [...(read.settings.never ?? [])] : null,
@@ -284,6 +326,8 @@ async function show(req: ContributedRouteRequest): Promise<ContributedRouteRespo
       // The granted kernel tools grouped by catalogue job, as the held charter card groups them (`jobGroups`): null when the file was refused
       // (nothing is enforced to show) or the composition gave no catalogue, never a guessed grouping.
       jobs: read.ok && req.catalogue !== undefined ? jobGroups(read.settings.policy.allowedTools, req.catalogue) : null,
+      // Each ticket duty's tracker and whether the member can read it (item 21b): null when the file was refused (its grant is unknown).
+      tracker_access: read.ok ? trackerAccessOf(req.store, row, content) : null,
     },
   };
 }

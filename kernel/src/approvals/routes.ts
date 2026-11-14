@@ -2,7 +2,9 @@
 // every route): what `studio approvals` / `approve` / `deny` call.
 //
 //   GET  /approvals[?all=1]           {approvals: [...]}: pending first (oldest first); all=1 adds decided ones (newest first)
-//   POST /approvals/:id/approve       body {decision: "once" | "always"}; "always" only for a rail approval from a playbook session
+//   POST /approvals/:id/approve       body {decision: "once" | "always", owner_grant?: {kind: "jira" | "clickup", tools: [...]}};
+//                                     "always" only for a rail approval from a playbook session; owner_grant only with "once", for
+//                                     a held kernel_agent_create / kernel_agent_update (item 21b)
 //   POST /approvals/:id/deny
 //   GET  /approvals/grants            {grants: [...]}: every standing grant not revoked (oldest first)
 //   POST /approvals/grants/:id/revoke {grant}: the grant, now revoked
@@ -11,14 +13,22 @@
 // kernel's applier (`req.approvalApplier`), so an approved kernel-applied
 // action is applied in the decision's transaction (`decideApproval`); its
 // answer's approval then carries `applied` or `apply_refused` / `apply_detail`.
-// Refusals write nothing:
-// `400 invalid_id` / `invalid_body`, `404 no_such_approval`,
+// `owner_grant` is the owner's own tracker grant, ticked on the held card: only this
+// route reads it (Wright's charter can never carry one, `charter-files.ts`), the kernel
+// checks every tool against the connection's stored tool list and applies it inside the
+// decision, recorded as the owner's. Refusals write nothing:
+// `400 invalid_id` / `invalid_body` (a malformed `decision`, or an `owner_grant` that is not
+// `{kind, tools}` of a jira or clickup tool list) / `invalid_approval` (an `owner_grant` the
+// kernel refuses: a tool the connection does not list, or an approval it can't ride on),
+// `404 no_such_approval`,
 // `409 approval_not_pending` (with the current `status`),
 // `409 always_not_supported` (with a message saying which condition failed),
 // `404 no_such_grant`, `409 grant_revoked`.
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
+import { parseConnectorsGrant } from "../agents/settings.js";
+import { isMcpKind } from "../integrations/mcp/rows.js";
 import { ApprovalError, OWNER, approvalView, decideApproval, getApproval, listApprovals, listGrants, revokeGrant } from "./store.js";
-import type { ApprovalDecision } from "./store.js";
+import type { ApprovalDecision, OwnerGrant } from "./store.js";
 
 const ID = /^[1-9]\d{0,15}$/;
 
@@ -42,14 +52,34 @@ function decisionOf(req: ContributedRouteRequest, approve: boolean): ApprovalDec
   return decision === "once" || decision === "always" ? decision : undefined;
 }
 
+/** The `owner_grant` an approve body carries: none when absent, a message when it is not `{kind, tools}` of a jira or clickup tool list. */
+function ownerGrantOf(body: unknown): { readonly grant?: OwnerGrant } | { readonly message: string } {
+  const raw = (body as { owner_grant?: unknown } | undefined)?.owner_grant;
+  if (raw === undefined) return {};
+  const bad = (why: string): { readonly message: string } => ({ message: `owner_grant must be {"kind": "jira" | "clickup", "tools": ["<tool>", ...]}: ${why}` });
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return bad("it is not an object");
+  const keys = Object.keys(raw);
+  if (keys.length !== 2 || !keys.includes("kind") || !keys.includes("tools")) return bad("it takes exactly kind and tools");
+  const { kind, tools } = raw as { kind: unknown; tools: unknown };
+  if (!isMcpKind(kind)) return bad("kind is not an MCP tracker");
+  // The settings reader's own rule for a kind's tool list (non-empty, bounded, named), so a tick that passes here is a grant the file can hold.
+  const read = parseConnectorsGrant({ [kind]: tools });
+  if (!read.ok) return bad(read.message);
+  return { grant: { kind, tools: read.grant.mcp[kind] ?? [] } };
+}
+
 function decide(approve: boolean): (req: ContributedRouteRequest) => Promise<ContributedRouteResponse> {
   return async (req) => {
     const id = idOf(req);
     if (id === undefined) return { status: 400, body: { error: "invalid_id" } };
     const decision = decisionOf(req, approve);
     if (decision === undefined) return { status: 400, body: { error: "invalid_body", message: 'approve needs {"decision": "once"} or {"decision": "always"}' } };
+    // Only an approve reads an owner_grant; a malformed one decides nothing.
+    const owner = approve ? ownerGrantOf(req.body) : {};
+    if ("message" in owner) return { status: 400, body: { error: "invalid_body", message: owner.message } };
     try {
-      return { status: 200, body: { approval: approvalView(req.store, decideApproval(req.store, { id, decision, by: OWNER }, req.now(), req.approvalApplier)) } };
+      const input = { id, decision, by: OWNER, ...(owner.grant === undefined ? {} : { ownerGrant: owner.grant }) };
+      return { status: 200, body: { approval: approvalView(req.store, decideApproval(req.store, input, req.now(), req.approvalApplier)) } };
     } catch (err) {
       if (!(err instanceof ApprovalError)) throw err;
       if (err.code === "no_such_approval") return { status: 404, body: { error: "no_such_approval" } };

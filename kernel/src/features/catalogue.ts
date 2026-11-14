@@ -58,6 +58,14 @@ export interface JobNeedsDeclaration {
    * tools (`requiresConnector` / `requiresConnectorLevel`), read from the catalogue.
    */
   readonly workspace: boolean;
+  /**
+   * The job works tickets from a tracker the duty names (a duty entry's `source`: GitHub Issues, ClickUp or
+   * Jira, `TICKET_SOURCES` in `../agents/charter-files.ts`). Declared once, on the one ticket job, never one per
+   * tracker. The charter readiness check reads it through `jobNeedsTicketSource`: a ticket duty states its
+   * source (data, never a grant) and the check says in words whether the member can read that tracker's tickets.
+   * A readiness item, not a playbook fit gap, so `NeedsGapKind` (`./job-needs.ts`) is unchanged.
+   */
+  readonly ticketSource: boolean;
   readonly loomwrightCommands: readonly string[];
 }
 
@@ -74,6 +82,7 @@ function needs(declared: Partial<JobNeedsDeclaration> = {}): JobNeedsDeclaration
     bashPrefixes: Object.freeze([...(declared.bashPrefixes ?? [])]),
     connectors: Object.freeze([...(declared.connectors ?? [])]),
     workspace: declared.workspace ?? false,
+    ticketSource: declared.ticketSource ?? false,
     loomwrightCommands: Object.freeze([...(declared.loomwrightCommands ?? [])]),
   });
 }
@@ -88,7 +97,7 @@ function needs(declared: Partial<JobNeedsDeclaration> = {}): JobNeedsDeclaration
  */
 export const TOOL_JOB_DEFINITIONS = Object.freeze({
   // D44: the kernel starts `/loomwright:automate` under its own frozen policy, so the job needs no Claude tool or shell prefix.
-  automate_tickets: Object.freeze({ label: "Hand tickets to /automate", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:automate"] }) }),
+  automate_tickets: Object.freeze({ label: "Hand tickets to /automate", needs: needs({ workspace: true, ticketSource: true, loomwrightCommands: ["/loomwright:automate"] }) }),
   // D44-open: the crew session runs `/loomwright:review-pr` itself (the kernel does not launch this route yet).
   triage_pr_comments: Object.freeze({ label: "Triage PR comments", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:review-pr"] }) }),
   // D44-open: the crew session runs `/loomwright:automate --merge-parked` itself.
@@ -122,6 +131,11 @@ export type ToolJob = keyof typeof TOOL_JOBS;
 /** Whether job `job` works in a copy of a repo (`JobNeedsDeclaration.workspace`). */
 export function jobNeedsWorkspace(job: ToolJob): boolean {
   return TOOL_JOB_DEFINITIONS[job].needs.workspace;
+}
+
+/** Whether job `job` works tickets from a tracker its duty names (`JobNeedsDeclaration.ticketSource`). */
+export function jobNeedsTicketSource(job: ToolJob): boolean {
+  return TOOL_JOB_DEFINITIONS[job].needs.ticketSource;
 }
 
 /** Every job id, in `TOOL_JOBS` order. Frozen. */
