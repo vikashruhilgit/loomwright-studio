@@ -65,6 +65,17 @@
 // an apply with findings still open names them in its applied sentence. Wright's
 // create is refused `invalid_input` for a bare-string duty (a duty names its jobs).
 //
+// A ticket duty states its source (`DutyEntry.source`: GitHub Issues, ClickUp or Jira), Wright's proposal and
+// never a grant; the readiness check says in words whether the member can read that tracker's tickets, from the
+// trackers `trackerEnvOf` reads out of the store (item 21b). The owner's approval may carry their own tracker
+// grant (`AppliedApproval.ownerGrant`, from `owner_grant` on the approve route, already checked against the
+// connection's stored tool list): both appliers lay it over the member's `connectors` through the one merge
+// (`mergeConnectorsGrant`), record it as the owner's (`agent_settings_set`, `by: "owner"`), and count it as held
+// when they name what is still open, so Wright is told the truth. A create writes the settings file with the
+// grant after the commit through `ensureAgentFiles`, which lays the recorded grant (`agent_settings_set`, committed
+// with the decision) over the charter's settings, so a failed or never-run write is healed from the record and never
+// leaves a file behind with no member; an update folds it into the one file write it already makes.
+//
 // The `studio` CLI loads this module through `./index.ts`, so it imports only
 // types, zod, `node:*`, the feature seam and its tool catalogue, `../loop/internal.js`,
 // `../brain/settings.js`, `../approvals/store.js` (a constant),
@@ -73,16 +84,18 @@
 // imports `../automate/checkout.js`, `../features/job-needs.js` and `../protected-paths.js`): never the Agent SDK,
 // the session manager or `kernel.ts` (`kernel/test/feature-seams.test.ts`).
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import { MAX_APPROVAL_DISPLAY } from "../approvals/store.js";
-import type { AppliedApproval, ApprovalApplyOutcome } from "../approvals/store.js";
+import type { AppliedApproval, ApprovalApplyOutcome, OwnerGrant } from "../approvals/store.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
-import { jobDisplayLines } from "../features/catalogue.js";
+import { CONNECTOR_LABELS, jobDisplayLines } from "../features/catalogue.js";
 import type { ToolCatalogue } from "../features/catalogue.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedToolContext } from "../features/contribution.js";
+import { MCP_KINDS, isUsableMcpStatus, mcpRow, storedToolsOf } from "../integrations/mcp/rows.js";
+import { TRACKER_READ_CAPABILITY, trackerCapabilities } from "../integrations/mcp/trackers.js";
 import { NO_REF, appendEvent } from "../loop/internal.js";
 import { NEVER_CATEGORIES } from "../sessions/policy.js";
 import type { AllowedPermissionMode, HeldToolVerdict } from "../sessions/types.js";
@@ -99,10 +112,11 @@ import {
 } from "./charter-files.js";
 import type { AgentAuditKind, Charter } from "./charter-files.js";
 import { charterReadiness, openFlagsSentence, readinessFloorLines, wrightDutyRefusal } from "./charter-readiness.js";
-import type { ReadinessResult } from "./charter-readiness.js";
+import type { ReadinessResult, TrackerConnectionState, TrackerEnv } from "./charter-readiness.js";
 import { getAgent, listAgents } from "./registry.js";
 import type { AgentRow } from "./registry.js";
-import { agentSettingsPath, readAgentSettings } from "./settings.js";
+import { agentSettingsPath, mergeConnectorsGrant, parseConnectorsGrant, readAgentSettings } from "./settings.js";
+import type { ConnectorsGrantChange } from "./settings.js";
 import { AVATAR_HUES, AVATAR_SHAPES } from "./types.js";
 import type { AgentPart } from "./types.js";
 
@@ -303,9 +317,83 @@ function charterIdText(charter: Record<string, unknown>): string {
   return typeof id === "string" ? id.slice(0, 64) : "(no id)";
 }
 
-/** A create's readiness: the charter's own duties, tools and workspaces, and the connectors it proposes. */
-function createReadiness(charter: Charter, catalogue: ToolCatalogue | undefined, dataDir: string): ReadinessResult {
-  return charterReadiness({ action: "create", charter, catalogue, grant: { kind: "proposed", connectors: charter.connectors ?? [] }, dataDir });
+/**
+ * The MCP trackers as the readiness check needs them, read from the store (the check itself never reads it): per
+ * kind, whether the connection is in use and which of the tools it lists are the "read tickets" capability
+ * (`MCP_TRACKER_CAPABILITIES`). A row that can't be read is not connected: fail closed, never "ready". Reads only.
+ */
+export function trackerEnvOf(store: Store): TrackerEnv {
+  const state = (kind: (typeof MCP_KINDS)[number]): TrackerConnectionState => {
+    try {
+      const row = mcpRow(store, kind);
+      if (row === undefined || !isUsableMcpStatus(row.status)) return { connected: false, readTools: [] };
+      const listed = storedToolsOf(row.granted_tools).map((t) => t.name);
+      const read = trackerCapabilities(kind, listed)?.capabilities.find((c) => c.id === TRACKER_READ_CAPABILITY);
+      return { connected: true, readTools: read?.tools ?? [] };
+    } catch {
+      return { connected: false, readTools: [] };
+    }
+  };
+  return { jira: state("jira"), clickup: state("clickup") };
+}
+
+/**
+ * A create's readiness: the charter's own duties, tools and workspaces, the connectors it proposes, and (a
+ * ticket duty) the trackers as `trackerEnvOf` read them. `ownerGrant` is the tools the owner ticked with this
+ * approval, counted as held; only the apply passes it (the hold has none yet), after which the same check
+ * says what is still open.
+ */
+function createReadiness(charter: Charter, catalogue: ToolCatalogue | undefined, store: Store, ownerGrant?: OwnerGrant): ReadinessResult {
+  return charterReadiness({
+    action: "create",
+    charter,
+    catalogue,
+    grant: { kind: "proposed", connectors: charter.connectors ?? [] },
+    dataDir: store.dataDir,
+    trackers: trackerEnvOf(store),
+    ...(ownerGrant === undefined ? {} : { ownerGrant }),
+  });
+}
+
+// ---- The owner's tracker grant, ticked on the held card ----------------------------
+
+/** What applying an owner's grant to a member's `connectors` value comes to. */
+interface GrantPlan {
+  /** The change to `connectors` (the kind's tools: what the member holds, then the ticked ones). */
+  readonly change: ConnectorsGrantChange;
+  /** The `connectors` value before (null when none) and after: what the audit event records. */
+  readonly old: unknown;
+  readonly next: unknown;
+}
+
+/**
+ * The owner's `grant` laid over the member's current `connectors` value (`currentRaw`: the file's, or a create's
+ * proposal): that kind's tools are what it already held plus the ticked ones, so a tick never takes a tool
+ * away, and `mergeConnectorsGrant` (the one merge every grant change uses) replaces only that kind's key. Refused
+ * `invalid_input` when the current grant can't be read or the result would not be a valid grant (the file could
+ * not hold it). Pure: nothing is written, so a refusal here writes nothing.
+ */
+function planOwnerGrant(grant: OwnerGrant, currentRaw: unknown): GrantPlan | Refused {
+  const read = currentRaw === undefined || currentRaw === null ? undefined : parseConnectorsGrant(currentRaw);
+  if (read !== undefined && !read.ok) return refused("invalid_input", `the member's connectors grant can't be read, so the owner's grant was not applied: ${read.message}`);
+  const held = read?.ok === true ? (read.grant.mcp[grant.kind] ?? []) : [];
+  const change: ConnectorsGrantChange = { kind: grant.kind, tools: [...new Set([...held, ...grant.tools])] };
+  const next = mergeConnectorsGrant(currentRaw, change);
+  const check = parseConnectorsGrant(next);
+  if (!check.ok) return refused("invalid_input", `the ${grant.kind} grant would not be a valid grant (${check.message})`);
+  return { change, old: currentRaw ?? null, next };
+}
+
+/** The settings file's text with its `connectors` replaced by `next` (`text` is a file this part rendered: valid JSON). */
+function withConnectors(text: string, next: unknown): string {
+  const file = JSON.parse(text) as Body;
+  file.connectors = next;
+  return `${JSON.stringify(file, null, 2)}\n`;
+}
+
+/** The audit event of an owner's grant (the `set` verb's `agent_settings_set`, naming who granted it and the approval it rode on). */
+function recordOwnerGrant(store: Store, id: string, plan: GrantPlan, approvalId: number, at: string): void {
+  appendEvent(store, "agent_settings_set" satisfies AgentAuditKind, NO_REF, { id, field: "connectors", old: plan.old, new: plan.next, by: "owner", approval_id: approvalId }, at);
 }
 
 /**
@@ -331,7 +419,7 @@ function createBeforeHold(a: CreateArgs, ctx: ContributedToolContext): HeldToolV
   if (getAgent(ctx.store, checked.charter.id) !== undefined) {
     return holdRefusal(AGENT_CREATE_TOOL_NAME, refused("id_taken", `a crew member with id ${checked.charter.id} exists, active or off (an id is never reused)`));
   }
-  const readiness = createReadiness(checked.charter, ctx.catalogue, ctx.store.dataDir);
+  const readiness = createReadiness(checked.charter, ctx.catalogue, ctx.store);
   const tooLong = displayFitRefusal(CREATE_HEAD_TEXT, createHead(checked.charter, ctx.catalogue, readiness.lines), CREATE_ASK_LESS);
   if (tooLong !== undefined) return holdRefusal(AGENT_CREATE_TOOL_NAME, tooLong);
   return heldVerdict(createDisplay(checked.charter, ctx.catalogue, readiness.lines), readiness, checked.charter.id);
@@ -363,15 +451,34 @@ function createOnApproval(a: CreateArgs, ctx: { store: Store; now: () => Date; a
   const notCreated = (r: Refused): ApprovalApplyOutcome => ({ refused: r.refused, text: `The kernel did not create crew member ${id}: ${r.refused} (${oneLine(r.message)}).` });
   const lead = leadRefusal(approval.agent);
   if (lead !== undefined) return notCreated(lead);
+  // The owner's tick is planned before anything is written: a refusal here leaves no row behind (an applier's refusal is not rolled back).
+  const checked = validateCharter(a.charter, { dataDir: store.dataDir });
+  let granted: { readonly plan: GrantPlan; readonly settings: string } | undefined;
+  if (approval.ownerGrant !== undefined && checked.ok) {
+    const plan = planOwnerGrant(approval.ownerGrant, checked.charter.connectors);
+    if (isRefused(plan)) return notCreated(plan);
+    // The file the member starts with: the charter's own settings, its `connectors` the proposal with the owner's tools merged in.
+    const settings = withConnectors(renderAgentSettingsJson(checked.charter), plan.next);
+    if (Buffer.byteLength(settings) > MAX_SETTINGS_BYTES) return notCreated(refused("invalid_input", `the settings file would be over ${MAX_SETTINGS_BYTES} bytes with the owner's grant`));
+    granted = { plan, settings };
+  }
   const r = createAgent(store, store.dataDir, a.charter, { by: "wright", approvalId: approval.id, deferFiles: true }, ctx.now());
   if (!r.ok) return notCreated(refused(CREATE_REFUSAL_TOKENS[r.error], r.message));
   const created = r.agent.id;
-  const checked = validateCharter(a.charter, { dataDir: store.dataDir });
-  const open = checked.ok ? openFlagsSentence(createReadiness(checked.charter, ctx.catalogue, store.dataDir)) : "";
+  if (granted !== undefined) recordOwnerGrant(store, created, granted.plan, approval.id, ctx.now().toISOString());
+  // Read after the owner's tools are counted as held: what the owner did not tick stays named as open (AC15, AC16).
+  const open = checked.ok ? openFlagsSentence(createReadiness(checked.charter, ctx.catalogue, store, approval.ownerGrant)) : "";
+  const granting = granted === undefined ? "" : ` The owner granted ${CONNECTOR_LABELS[granted.plan.change.kind]} access with this approval.`;
   return {
-    applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.${open}`,
-    // A write error is thrown and ignored by the decision: the row stays, and the next ensureAgentFiles writes the files.
-    after: () => void ensureAgentFiles(store, store.dataDir, created),
+    applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.${granting}${open}`,
+    // No file is written before the commit: the row and the grant's record (`agent_settings_set`, above) are the truth,
+    // committed together. ensureAgentFiles then writes every absent file, the settings file with the recorded grant
+    // laid over the charter's (`recordedConnectors`). A write error here is ignored by the decision, and the next
+    // ensureAgentFiles (before every crew message) writes the same file from the same record, so the grant is never lost
+    // and a crash never leaves a file behind with no member (phase 8 item 21b review).
+    after: () => {
+      void ensureAgentFiles(store, store.dataDir, created);
+    },
   };
 }
 
@@ -385,12 +492,14 @@ const createTool = defineTool({
   job: "manage_crew",
   description:
     "Ask the owner to create a crew member from a charter you draft from the owner's words: {id, display_name, avatar: {shape, hue}, persona, duties, boundaries, model, effort?, permission_mode, tool_policy: {allowedTools, allowedBashPrefixes, never}, limits?: {tokens_per_day?, sessions_at_once?, delegation_depth?}, workspaces, connectors?: [\"github\"]}. " +
-    "Write each duty as {\"text\": \"<the duty>\", \"jobs\": [<the catalogue job ids that do it>]} ([] when it needs no kernel tool), and grant every tool of each job a duty names; a duty written as a bare line is refused. " +
+    "Write each duty as {\"text\": \"<the duty>\", \"jobs\": [<the catalogue job ids that do it>], \"source\": \"github\" | \"clickup\" | \"jira\" | \"none\"} ([] when it needs no kernel tool), and grant every tool of each job a duty names; a duty written as a bare line, or with no source, is refused. " +
+    "source is the tracker the duty works tickets from, from the owner's words, whether it works them through a kernel job (such as automate_tickets) or only reads and comments on them through the member's connector access (which needs no job: never name a job for that); \"none\" when it works no tickets. It is your proposal, shown on the held card for the owner to change, and it grants nothing; the kernel then says whether the member can read that tracker's tickets. " +
     "Before the owner sees it, the kernel checks that every duty's jobs are granted and every granted job has what it needs (a workspace that is a git checkout with a GitHub remote for a code job, a connector grant, the Claude tools and shell commands its work needs); anything open is shown to the owner and told to you after the held reason, with the fix to propose: say it to the owner. " +
     "When the owner asks for a crew member, draft it straight into the held approval with this call and refine it with an update (kernel_agent_update, once the member exists); never leave a proposal only in chat text. " +
     "Every value the owner did not state is your proposal: say so to the owner. Put each \"never …\" the owner said into both the prose boundaries and the enforced tool_policy.never (only never is enforced; boundaries are guidance). " +
     "Propose limits and limits.delegation_depth, and never let the owner think they are already set: an unset limit is no limit. " +
     "connectors is your proposal of the GitHub grant, never a default: say so to the owner; it takes effect only if the owner approves this call, and no later update changes it. " +
+    "ClickUp and Jira access is never in a charter and never yours to propose: when a ticket duty's tracker is one of them, the kernel flags that the member can't read its tickets yet, and the owner ticks the access on the held card, granted when they approve; tell the owner so. " +
     "The kernel always holds this call for the owner, showing the role.md and settings file it would write and what it enforces; end your turn. " +
     "The owner's approval creates the member: the kernel applies it itself and tells you what it did in a new message; do not repeat the call. " +
     `Refused (nothing held) with one of: ${CHARTER_TOOL_REFUSALS.join(", ")}. Use a new idempotency_key for each request to the owner.`,
@@ -793,8 +902,16 @@ function updateFitRefusal(m: Merged, display: string, catalogue: ToolCatalogue |
  * result's tools and workspaces) and the member's stored connectors grant
  * (an update never changes it).
  */
-function updateReadiness(m: Omit<Merged, "sha256">, catalogue: ToolCatalogue | undefined, dataDir: string): ReadinessResult {
-  return charterReadiness({ action: "update", charter: m.charter, catalogue, grant: { kind: "stored", raw: m.connectorsRaw }, dataDir });
+function updateReadiness(m: Omit<Merged, "sha256">, catalogue: ToolCatalogue | undefined, store: Store, ownerGrant?: OwnerGrant): ReadinessResult {
+  return charterReadiness({
+    action: "update",
+    charter: m.charter,
+    catalogue,
+    grant: { kind: "stored", raw: m.connectorsRaw },
+    dataDir: store.dataDir,
+    trackers: trackerEnvOf(store),
+    ...(ownerGrant === undefined ? {} : { ownerGrant }),
+  });
 }
 
 function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolVerdict {
@@ -802,7 +919,7 @@ function updateBeforeHold(a: UpdateArgs, ctx: ContributedToolContext): HeldToolV
   if (refusal !== undefined) return holdRefusal(AGENT_UPDATE_TOOL_NAME, refusal);
   const update = updateOf(ctx.store, a);
   if (isRefused(update)) return holdRefusal(AGENT_UPDATE_TOOL_NAME, update);
-  const readiness = updateReadiness(update, ctx.catalogue, ctx.store.dataDir);
+  const readiness = updateReadiness(update, ctx.catalogue, ctx.store);
   const display = updateDisplay(update, ctx.catalogue, readiness.lines);
   // The readiness lines, the job lines, the field lines and the enforced line are all the owner must see: the whole display fits, or nothing is held.
   const tooLong = updateFitRefusal(update, display, ctx.catalogue, readiness);
@@ -886,14 +1003,21 @@ function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; a
   if (isRefused(merged)) return notUpdated(merged);
   if (merged.changes.length === 0) return notUpdated(refused("invalid_input", "changes changes nothing: every named value equals the current one"));
 
-  const fields = merged.changes.map((c) => c.field);
+  // The owner's tick (item 21b), laid over the member's stored grant: planned before any write, so a refusal leaves nothing behind.
+  const plan = approval.ownerGrant === undefined ? undefined : planOwnerGrant(approval.ownerGrant, merged.connectorsRaw);
+  if (plan !== undefined && isRefused(plan)) return notUpdated(plan);
+  const text = plan === undefined ? merged.text : withConnectors(merged.text, plan.next);
+  if (Buffer.byteLength(text) > MAX_SETTINGS_BYTES) return notUpdated(refused("invalid_input", `the settings file would be over ${MAX_SETTINGS_BYTES} bytes with the owner's grant`));
+  const grantChanged = text !== merged.text;
+  const fields = [...merged.changes.map((c) => c.field), ...(grantChanged ? ["connectors"] : [])];
   // Read before the write: the workspaces and grant it checks are the merged result's, and the file's old bytes are still in place.
-  const open = openFlagsSentence(updateReadiness(merged, ctx.catalogue, store.dataDir));
+  // The owner's tools count as held, so only what the owner did not tick stays open (AC15, AC16).
+  const open = openFlagsSentence(updateReadiness(merged, ctx.catalogue, store, approval.ownerGrant));
   const at = ctx.now().toISOString();
   const rowChanged = merged.displayName !== row.display_name || merged.avatar.shape !== row.avatar_shape || merged.avatar.hue !== row.avatar_hue;
   // A temporary sibling, then a rename over the file (atomic on one file system): a reader sees the old file or the new one.
-  const temp = merged.fileChanged ? join(dirname(file), `.${basename(file)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`) : null;
-  if (temp !== null) writeFileSync(temp, merged.text, { flag: "wx", mode: 0o600 });
+  const temp = merged.fileChanged || grantChanged ? join(dirname(file), `.${basename(file)}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`) : null;
+  if (temp !== null) writeFileSync(temp, text, { flag: "wx", mode: 0o600 });
   try {
     store.transaction(() => {
       // Re-read just before the rename: an owner's hand edit since the hash wins.
@@ -904,6 +1028,7 @@ function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; a
           .run(merged.displayName, merged.avatar.shape, merged.avatar.hue, at, row.id);
       }
       appendEvent(store, "agent_updated" satisfies AgentAuditKind, NO_REF, { id: row.id, fields, approval_id: approval.id, by: "kernel" }, at);
+      if (plan !== undefined && grantChanged) recordOwnerGrant(store, row.id, plan, approval.id, at);
       if (temp !== null) renameSync(temp, file);
     });
   } catch (err) {
@@ -917,7 +1042,8 @@ function updateOnApproval(a: UpdateArgs, ctx: { store: Store; now: () => Date; a
     if (err instanceof ConcurrentEditError) return notUpdated(refused("config_changed", `${file} changed while it was being updated; nothing was written`));
     throw err;
   }
-  return { applied: `The kernel updated crew member ${row.id} on approval ${approval.id}: ${fields.join(", ")}.${open}` };
+  const granting = plan === undefined || !grantChanged ? "" : ` The owner granted ${CONNECTOR_LABELS[plan.change.kind]} access with this approval.`;
+  return { applied: `The kernel updated crew member ${row.id} on approval ${approval.id}: ${fields.join(", ")}.${granting}${open}` };
 }
 
 const updateTool = defineTool({

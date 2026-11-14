@@ -20,7 +20,10 @@
 // - A held charter create or update whose display has the kernel's plain block
 //   (the granted kernel tools by job) is drawn by `CharterDisplay`: that block
 //   first, the raw lines beneath in "Kernel tool names, as enforced". Any
-//   other display is the escaped `<pre>` as always.
+//   other display is the escaped `<pre>` as always. On a pending one, a ticket
+//   duty's tracker the member can't read yet (phase 8 item 21b) offers Choose access:
+//   the tracker's capabilities in words, whose ticks ride on Allow once as
+//   `owner_grant` (the same panel as Chat's card; nothing is ticked for the owner).
 // - Decisions: Allow once (A), Always for this playbook (⇧A) and Deny (D),
 //   each a registered command (so the ⌘K palette lists it). After a decision:
 //   the kernel's applied or refused line, then the message the agent gets
@@ -41,6 +44,9 @@ import type {
   ApprovalsResponse,
   BrainMessage,
   Grant,
+  McpCapability,
+  McpConnectionKind,
+  OwnerGrant,
   PlaybookListing,
   RevokeGrantResponse,
   SessionSummary,
@@ -58,10 +64,12 @@ import { liveStoreFor, useResource } from "../../store/react";
 import type { ResourceError } from "../../store/store";
 import { alwaysRefusalFor, kernelWillLine, playbookText } from "./kernel-mirror";
 import { CharterAsk } from "../chat/CharterAsk";
+import { TrackerPanel, trackerFix } from "../chat/CharterCard";
 import { CharterDisplay } from "./CharterDisplay";
+import { nextOwnerGrant, trackerLine } from "./charterBlocks";
 import { MergeApprovalCard } from "./MergeApprovalCard";
 import { payloadText, printable } from "./printable";
-import { IN_CHAT, MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, charterDisplayParts, isCharterApproval, isMergeApproval, mergeApprovalOf } from "./subject";
+import { IN_CHAT, MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, approvalSubject, charterDisplayParts, isCharterApproval, isMergeApproval, mergeApprovalOf } from "./subject";
 import "./approvals.css";
 
 export { MERGE_ALWAYS_REFUSED };
@@ -227,6 +235,19 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
   const [notices, setNotices] = useState<ReadonlyMap<number, Notice>>(new Map());
   /** The decision in flight: which approval and which of its three buttons, so only that one shows busy. */
   const [busy, setBusy] = useState<InFlightDecision | null>(null);
+  /** The tracker access the owner ticked on a held crew charter, by approval: sent as `owner_grant` with Allow once. */
+  const [ownerGrants, setOwnerGrants] = useState<ReadonlyMap<number, OwnerGrant>>(new Map());
+  const ownerGrantsRef = useRef(ownerGrants);
+  ownerGrantsRef.current = ownerGrants;
+  const tickCapability = useCallback((id: number, kind: McpConnectionKind, capability: McpCapability, on: boolean) => {
+    setOwnerGrants((current) => {
+      const next = new Map(current);
+      const grant = nextOwnerGrant(current.get(id), kind, capability, on);
+      if (grant === undefined) next.delete(id);
+      else next.set(id, grant);
+      return next;
+    });
+  }, []);
   const [revokeTarget, setRevokeTarget] = useState<Grant | null>(null);
   /** The grants with a revoke in flight. Each grant's revoke is independent; only a second one for the same grant waits. */
   const [revokeBusy, setRevokeBusy] = useState<ReadonlySet<number>>(new Set());
@@ -345,10 +366,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
       }
       inFlight.current.add(approval.id);
       setBusy({ id: approval.id, decision });
+      const ownerGrant = decision === "once" && isCharterApproval(approval) ? ownerGrantsRef.current.get(approval.id) : undefined;
       const req: ApiRequest =
         decision === "deny"
           ? { method: "POST", path: "/approvals/:id/deny", params: { id: approval.id } }
-          : { method: "POST", path: "/approvals/:id/approve", params: { id: approval.id }, body: { decision } };
+          : { method: "POST", path: "/approvals/:id/approve", params: { id: approval.id }, body: ownerGrant === undefined ? { decision } : { decision, owner_grant: ownerGrant } };
       const result = await send<ApprovalDecisionResponse>(api, req);
       inFlight.current.delete(approval.id);
       if (!mounted.current) return;
@@ -698,6 +720,8 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
               notice={notices.get(selected.id)}
               busyDecision={busy?.id === selected.id ? busy.decision : undefined}
               disabled={busy !== null || dialogOpen}
+              ownerGrant={ownerGrants.get(selected.id)}
+              onTick={(kind, capability, on) => tickCapability(selected.id, kind, capability, on)}
               onDecide={(decision) => void decide(selected, decision)}
             />
           )}
@@ -727,6 +751,9 @@ interface ApprovalDetailProps {
   /** The decision on this approval that is in flight: only its button shows busy. */
   readonly busyDecision: Decision | undefined;
   readonly disabled: boolean;
+  /** What the owner ticked on this held charter, sent with Allow once. */
+  readonly ownerGrant: OwnerGrant | undefined;
+  readonly onTick: (kind: McpConnectionKind, capability: McpCapability, on: boolean) => void;
   readonly onDecide: (decision: Decision) => void;
 }
 
@@ -758,8 +785,15 @@ function keepFocus(target: HTMLElement | null, scope: HTMLElement | null): void 
   if (focused === null || focused === document.body || (scope !== null && scope.contains(focused) && focused !== target)) target.focus();
 }
 
-function ApprovalDetail({ api, focusLost, approval: a, sessions, playbooks, message, messagesError, notice, busyDecision, disabled, onDecide }: ApprovalDetailProps) {
+/** The member a held charter is about, for the tracker panel's words. */
+function charterMember(a: Approval): string {
+  const subject = approvalSubject(a);
+  return subject?.kind === "member" ? subject.id : "the crew member";
+}
+
+function ApprovalDetail({ api, focusLost, approval: a, sessions, playbooks, message, messagesError, notice, busyDecision, disabled, ownerGrant, onTick, onDecide }: ApprovalDetailProps) {
   const titleId = useId();
+  const [trackerOpen, setTrackerOpen] = useState<McpConnectionKind | null>(null);
   const reasonId = useId();
   const willLine = kernelWillLine(a);
   const link = approvalLink(a, playbooks);
@@ -831,7 +865,29 @@ function ApprovalDetail({ api, focusLost, approval: a, sessions, playbooks, mess
       {a.display === undefined ? null : charter !== undefined ? (
         // Keyed by approval, so the details' open state never carries over to another approval. A pending one carries
         // the Ask or change box (phase 8 item 18d), posting into the thread Wright drafted it in.
-        <CharterDisplay key={a.id} parts={charter} display={a.display}>
+        <CharterDisplay
+          key={a.id}
+          parts={charter}
+          display={a.display}
+          readinessFix={
+            pending
+              ? (line) => (line.status === "flagged" ? trackerFix(trackerLine(line.text), trackerOpen === trackerLine(line.text)?.kind, (kind) => setTrackerOpen((open) => (open === kind ? null : kind))) : null)
+              : undefined
+          }
+          afterReadiness={
+            pending && trackerOpen !== null ? (
+              <TrackerPanel
+                api={api}
+                kind={trackerOpen}
+                member={charterMember(a)}
+                grant={ownerGrant}
+                onToggle={onTick}
+                verb="Allow once"
+                disabled={disabled}
+              />
+            ) : null
+          }
+        >
           {pending ? <CharterAsk api={api} approval={a} linkToThread /> : null}
         </CharterDisplay>
       ) : (

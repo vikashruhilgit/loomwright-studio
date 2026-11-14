@@ -13,7 +13,9 @@
 // /connectors`) and a screenshot pair of the connected and not-connected states
 // (`connectors-connected`, `connectors-not-connected`). Phase 8 item 20: a crew
 // member's GitHub level None, Read or Write (and Write's line, `connectors-write`)
-// and Wright's Grant GitHub / Revoke, through `POST /agents/:id/set`. Run `npm run build` first.
+// and Wright's Grant GitHub / Revoke, through `POST /agents/:id/set`. Phase 8 item 21b: the
+// permissions as catalogue job labels above a collapsed "Kernel tool names, as enforced", and a
+// tracker grant as capabilities in words (`capabilities` screenshot pair). Run `npm run build` first.
 //
 // Loading cannot be held open by the fixture (a `FixtureRoute` answers
 // synchronously), so that one state is the real `App` in a gallery window
@@ -37,7 +39,7 @@ import { APP_DIR, launchApp, launchGallery } from "./electron-harness";
 import type { Gallery } from "./electron-harness";
 import { appEnv, cannedStatus, startFixtureKernel, unreachableDataDir } from "./fixture-kernel";
 import type { FixtureKernel } from "./fixture-kernel";
-import { MASON_APPROVAL, MASON_CHARTER, MASON_NEVER, MASON_TOOL_POLICY, REVIEWER_NEW, REVIEWER_OLD, TEAM_DATA_DIR, WRIGHT_RUNNING, teamFixture } from "./fixtures/team";
+import { CLICKUP_CAPABILITIES, MASON_APPROVAL, MASON_CHARTER, MASON_NEVER, MASON_TOOL_POLICY, REVIEWER_NEW, REVIEWER_OLD, TEAM_DATA_DIR, WRIGHT_RUNNING, teamFixture } from "./fixtures/team";
 import type { TeamFixture } from "./fixtures/team";
 
 const EVIDENCE_DIR = fileURLToPath(new URL("../../docs/evidence/phase-5-polish/team/", import.meta.url));
@@ -333,6 +335,12 @@ test("AC3: the reviewer's inspector shows its enforced permissions apart from it
 
   const enforced = inspector.getByTestId("team-enforced");
   await expect(enforced.getByRole("heading", { level: 3 })).toHaveText("Permissions · enforced by the kernel");
+  // Jobs first: the catalogue's label, and no raw kernel tool name until the owner opens the collapsed section.
+  await expect(enforced.getByTestId("team-enforced-jobs")).toHaveText("Notify the owner");
+  await expect(enforced.getByTestId("team-enforced-tools")).toBeHidden();
+  await expect(enforced.getByText("mcp__kernel__kernel_notify_owner")).toBeHidden();
+  await enforced.getByText("Kernel tool names, as enforced", { exact: true }).click();
+  await expect(enforced.getByTestId("team-enforced-tools")).toBeVisible();
   const items = (testId: string) => enforced.getByTestId(testId).getByRole("listitem");
   await expect(enforced.getByTestId("team-enforced-tools")).toContainText("Allowed tools");
   await expect(items("team-enforced-tools")).toHaveText([...MASON_TOOL_POLICY.allowedTools]);
@@ -749,4 +757,45 @@ test("phase 6 item 08: with GitHub not connected the granted row says so, and a 
   fixture?.appendEvent(team.event("connector_status", { connector_id: 1, kind: "github", status: "connected" }));
   await expect(row.getByTestId("team-connector-state")).toHaveText("connected");
   expect(reads()).toBeGreaterThan(before);
+});
+
+test("phase 8 item 21b: the owner reads a member's permissions as jobs and grants ClickUp by capability, never seeing a raw tool name above the collapsed section", async ({}, testInfo) => {
+  const team = teamFixture({ connector: "connected", tracker: true, clickupHeld: ["clickup_filter_tasks", "clickup_oddity"] });
+  const page = await openTeam(team);
+  await card(page, "Mason").click();
+  const inspector = page.getByTestId("team-inspector");
+  await expect(inspector.getByRole("heading", { name: "Mason", level: 2 })).toBeVisible();
+  const row = inspector.getByTestId("team-insp-connectors");
+  const caps = row.getByTestId("team-connector-mcp-clickup-capabilities");
+  const state = (id: string) => caps.getByTestId(`team-connector-mcp-clickup-capabilities-${id}-state`);
+
+  // Capabilities in words, each with its state; the writing ones are marked; the raw per-tool list is not shown.
+  for (const capability of CLICKUP_CAPABILITIES) await expect(caps.getByRole("checkbox", { name: capability.label, exact: true })).toBeVisible();
+  await expect(state("read")).toHaveText("partly granted (1 of 2)");
+  await expect(state("comment")).toHaveText("not granted");
+  await expect(state("delete")).toHaveText("not granted");
+  await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-create-changes")).toHaveText("changes things");
+  await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-read-changes")).toHaveCount(0);
+  await expect(row.getByTestId("team-connector-mcp-clickup-tools")).toHaveCount(0);
+  await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-other")).toContainText("clickup_oddity");
+  // Other tools are listed but folded under a line in words: no raw name shows until the owner opens it (21b Validation 2).
+  await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-other-summary")).toBeVisible();
+  await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-other-summary")).not.toContainText("clickup_");
+  await expect(caps.getByText("clickup_oddity", { exact: true })).toBeHidden();
+  // A raw name is one expand away.
+  await expect(caps.getByText("clickup_get_task", { exact: true })).toBeHidden();
+  await caps.getByTestId("team-connector-mcp-clickup-capabilities-read").getByText("Tool names", { exact: true }).click();
+  await expect(caps.getByText("clickup_get_task", { exact: true })).toBeVisible();
+  await showInInspector(page, row);
+  await screenshots(page, "capabilities", testInfo);
+
+  // Tick the partly granted capability: the whole next set is posted, the notice names the capability, the row follows the feed.
+  // A click, not `check()`: the box is the feed's to change, so Playwright's own "state changed" test would fail.
+  await caps.getByRole("checkbox", { name: "Read tickets", exact: true }).click();
+  await expect(inspector.getByTestId("team-insp-notice")).toHaveText("ClickUp: Read tickets granted to Mason.");
+  await expect(state("read")).toHaveText("granted");
+  expect(team.sets).toEqual([{ id: "mason", body: { field: "connectors", value: "clickup:clickup_filter_tasks,clickup_oddity,clickup_get_task" } }]);
+  // A capability tick never grants the other tool or a capability the owner did not tick.
+  await expect(state("create")).toHaveText("not granted");
+  await expect(state("delete")).toHaveText("not granted");
 });
