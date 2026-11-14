@@ -1427,6 +1427,29 @@ describe("a ticket duty's tracker (item 21b)", () => {
     expect(count(h.store, "SELECT count(*) FROM events WHERE kind = 'agent_created'")).toBe(1);
   });
 
+  it("a settings write that fails takes the whole apply back: no member, no grant recorded, no sentence saying it was granted (21b review of 475f1425)", async () => {
+    const h = await bootManager(SHIPPED_TOOLS);
+    connect(h.store);
+    await h.wright.gate(CREATE, { charter: ticketCharter(), idempotency_key: "c1" });
+    // The settings folder is read-only: only the write of the new file throws (EACCES), as a full disk would; every check before it reads.
+    const folder = dirname(agentSettingsPath(dataDir, "mason"));
+    mkdirSync(folder, { recursive: true });
+    chmodSync(folder, 0o500);
+    try {
+      h.decide(1, { kind: "clickup", tools: READ });
+    } finally {
+      chmodSync(folder, 0o700);
+    }
+    expect(getAgent(h.store, "mason")).toBeUndefined();
+    const decided = events(h.store, "approval_decided")[0]?.payload;
+    expect(decided).toMatchObject({ apply_refused: "apply_error" });
+    expect(decided?.applied).toBeUndefined();
+    expect(decided?.owner_grant).toBeUndefined();
+    expect(events(h.store, "agent_settings_set")).toEqual([]);
+    expect(count(h.store, "SELECT count(*) FROM events WHERE kind = 'agent_created'")).toBe(0);
+    expect(existsSync(agentSettingsPath(dataDir, "mason"))).toBe(false);
+  });
+
   it("with no tick the member is created with no grant and the applied sentence names the missing access as open", async () => {
     const h = await bootManager(SHIPPED_TOOLS);
     connect(h.store);

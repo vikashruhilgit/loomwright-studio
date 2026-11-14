@@ -72,8 +72,9 @@
 // connection's stored tool list): both appliers lay it over the member's `connectors` through the one merge
 // (`mergeConnectorsGrant`), record it as the owner's (`agent_settings_set`, `by: "owner"`), and count it as held
 // when they name what is still open, so Wright is told the truth. A create writes the settings file with the
-// grant in it first (`writeSettingsOnce`, exclusive create) and the other files after (`ensureAgentFiles`); an
-// update folds it into the one file write it already makes.
+// grant in it as the apply's last step, inside the decision's transaction (`writeNewSettings`, exclusive create: a
+// failure rolls the apply back, so no record ever claims a grant the file lacks), and the other files after
+// (`ensureAgentFiles`, which rebuilds them from the charter); an update folds it into the one file write it already makes.
 //
 // The `studio` CLI loads this module through `./index.ts`, so it imports only
 // types, zod, `node:*`, the feature seam and its tool catalogue, `../loop/internal.js`,
@@ -468,27 +469,29 @@ function createOnApproval(a: CreateArgs, ctx: { store: Store; now: () => Date; a
   // Read after the owner's tools are counted as held: what the owner did not tick stays named as open (AC15, AC16).
   const open = checked.ok ? openFlagsSentence(createReadiness(checked.charter, ctx.catalogue, store, approval.ownerGrant)) : "";
   const granting = granted === undefined ? "" : ` The owner granted ${CONNECTOR_LABELS[granted.plan.change.kind]} access with this approval.`;
+  // The owner's grant lives only in the settings file (the charter never carries it, so ensureAgentFiles could never
+  // rebuild it), so that file is written here, the apply's last step, inside the decision's transaction: a write that
+  // fails throws, the apply's savepoint rolls back the row, the grant's record and this sentence, and the decision says
+  // apply_error. Never in `after`, where a failure is ignored once the decision says the grant was applied.
+  if (granted !== undefined) writeNewSettings(store.dataDir, created, granted.settings);
   return {
     applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.${granting}${open}`,
-    // A write error is thrown and ignored by the decision: the row stays, and the next ensureAgentFiles writes the files.
+    // A write error here is ignored by the decision: the row stays, and the next ensureAgentFiles writes the files still absent
+    // (every one of them rebuilt from the charter; the settings file with a grant is already written above).
     after: () => {
-      // The owner's grant is in the settings file the member starts with, written first (exclusive create: a file already there is never overwritten);
-      // ensureAgentFiles then writes every file still absent, role.md naming the grant the file holds.
-      if (granted !== undefined) writeSettingsOnce(store.dataDir, created, granted.settings);
       void ensureAgentFiles(store, store.dataDir, created);
     },
   };
 }
 
-/** Write a new member's settings file `text` only when nothing is there (exclusive create, mode 0600, folders 0700): never an overwrite. */
-function writeSettingsOnce(dataDir: string, id: string, text: string): void {
+/**
+ * Write a new member's settings file `text` (exclusive create, mode 0600, folders 0700). A file already there is an
+ * error, never kept: the owner's grant would silently not be in the file the member runs with.
+ */
+function writeNewSettings(dataDir: string, id: string, text: string): void {
   const file = agentSettingsPath(dataDir, id);
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-  try {
-    writeFileSync(file, text, { flag: "wx", mode: 0o600 });
-  } catch (err) {
-    if ((err as { code?: unknown }).code !== "EEXIST") throw err;
-  }
+  writeFileSync(file, text, { flag: "wx", mode: 0o600 });
 }
 
 /** The handler's one answer: the kernel applies the call on approval; a call that reached the handler did nothing. */
