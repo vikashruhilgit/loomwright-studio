@@ -6,12 +6,12 @@
 // Every kernel string is fake data; the clipboard and folder picker are stubs.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApiResult, Approval, SavedWorkspace, ThreadFigures } from "../../api/contract";
+import type { ApiResult, Approval, McpCapability, McpConnection, SavedWorkspace, ThreadFigures } from "../../api/contract";
 import { ok } from "../../store/fake-bridge";
 import { COPY_ALL, COPY_FAILED, SHOW_DETAILS, copiedLine, totalLine } from "../approvals/CharterDisplay";
 import { printable } from "../approvals/printable";
 import { ASK_LABEL, CLONE_NOT_BUILT, NOT_LOADED, READ_FAILED, WORKSPACE_SENT, WorkspaceQuestion, askText, cloneText, folderText } from "./CharterAsk";
-import { CHOOSE_WORKSPACE, REPLACED_BY, VERSIONS_FAILED, olderVersions } from "./CharterCard";
+import { CHOOSE_ACCESS, CHOOSE_WORKSPACE, CONNECT_TRACKER, CapabilityList, REPLACED_BY, VERSIONS_FAILED, olderVersions } from "./CharterCard";
 import { rememberSummarized } from "./continuity";
 import { T0, approval, eventFrame, kit, message, renderChat, resetChat, thread } from "./testkit";
 import type { Kit } from "./testkit";
@@ -338,6 +338,161 @@ describe("Chat's charter card", () => {
     await press(c, "Deny");
     await waitFor(() => expect(within(c).getByRole("alert").textContent).toBe("approval 9 was already decided (already_decided)"));
     expect(k.posted("POST /approvals/:id/deny")).toHaveLength(1);
+  });
+});
+
+// ---- Phase 8 item 21b: a ticket duty's tracker, ticked on the held card ----------------------------------------
+
+const TRACKER_NO_ACCESS = "duty 1: Mason can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)";
+const TRACKER_NOT_CONNECTED = "duty 1: ClickUp isn't connected on Integrations, so Mason can't read its tickets yet (connect it there first; only you can grant access)";
+const TRACKER_NO_SOURCE = "duty 1 doesn't say which tracker it reads";
+
+const CAPABILITIES: readonly McpCapability[] = [
+  { id: "read", label: "Read tickets", changes: false, tools: ["clickup_get_task", "clickup_filter_tasks"] },
+  { id: "comment", label: "Comment on tickets", changes: true, tools: ["clickup_create_task_comment"] },
+  { id: "delete", label: "Delete tickets", changes: true, tools: ["clickup_delete_task"] },
+];
+
+function clickup(extra: Partial<McpConnection> = {}): McpConnection {
+  return {
+    kind: "clickup",
+    server_url: "https://mcp.clickup.example/mcp",
+    status: "connected",
+    granted_tools: [...CAPABILITIES.flatMap((c) => c.tools), "clickup_oddity"],
+    capabilities: CAPABILITIES,
+    other_tools: ["clickup_oddity"],
+    token_expiry: null,
+    ...extra,
+  };
+}
+
+/** A create display whose readiness block also carries one tracker line, flagged as the kernel flags it. */
+function trackerDisplay(line: string): string {
+  return createDisplay({ workspaces: ["/Users/me/code/widgets"] }).replace("  covered: duty 1", `  flagged: ${line}\n  covered: duty 1`);
+}
+
+function trackerKit(line: string, connection: McpConnection | undefined = clickup()): Kit {
+  const k = charterKit([charter(9, trackerDisplay(line))]);
+  k.fake.route("GET /connectors", () => ok({ connectors: [], mcp_connections: connection === undefined ? [] : [connection] }));
+  return k;
+}
+
+describe("item 21b: a ticket duty's tracker on the held card", () => {
+  it("re-exports the Team inspector's CapabilityList, the one list the card reuses", () => {
+    expect(typeof CapabilityList).toBe("function");
+  });
+
+  it("AC14: a flagged no-access line offers Choose access; opening it shows the capabilities in words with nothing ticked and no raw tool name outside the expanders", async () => {
+    await renderChat(trackerKit(TRACKER_NO_ACCESS));
+    const c = await card();
+    expect(within(c).getByTestId("charter-readiness").textContent).toContain("Mason can't read ClickUp tickets yet: it has no ClickUp access");
+    expect(within(c).queryByTestId("charter-tracker-panel")).toBeNull();
+    await press(c, CHOOSE_ACCESS);
+    const panel = await within(c).findByTestId("charter-tracker-panel");
+    expect(await within(panel).findByText("Read tickets")).toBeTruthy();
+    for (const id of ["read", "comment", "delete"]) expect(within(panel).getByTestId(`charter-tracker-clickup-${id}-state`).textContent).toBe("not granted");
+    expect(within(panel).getByTestId("charter-tracker-clickup-comment-changes").textContent).toBe("changes things");
+    for (const box of within(panel).getAllByRole("checkbox")) expect((box as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("AC15: Create with ticks posts owner_grant naming exactly the ticked capabilities' tools; the ticks are the owner's, nothing else is added", async () => {
+    const k = trackerKit(TRACKER_NO_ACCESS);
+    await renderChat(k);
+    const c = await card();
+    await press(c, CHOOSE_ACCESS);
+    const panel = await within(c).findByTestId("charter-tracker-panel");
+    await within(panel).findByText("Read tickets");
+    await act(async () => {
+      fireEvent.click(within(panel).getByRole("checkbox", { name: /Read tickets/ }));
+    });
+    expect(within(panel).getByTestId("charter-tracker-clickup-read-state").textContent).toBe("granted");
+    await press(c, "Create");
+    await waitFor(() => expect(k.posted("POST /approvals/:id/approve")).toHaveLength(1));
+    expect(k.posted("POST /approvals/:id/approve")[0]).toMatchObject({ params: { id: 9 }, body: { decision: "once", owner_grant: { kind: "clickup", tools: ["clickup_get_task", "clickup_filter_tasks"] } } });
+    // Nothing is granted by a tick on the card: no settings write is sent from here.
+    expect(k.posted("POST /agents/:id/set")).toHaveLength(0);
+  });
+
+  it("AC16: Create without a tick posts {decision: once} only, and unticking everything takes the owner_grant back out", async () => {
+    const k = trackerKit(TRACKER_NO_ACCESS);
+    await renderChat(k);
+    const c = await card();
+    await press(c, CHOOSE_ACCESS);
+    const panel = await within(c).findByTestId("charter-tracker-panel");
+    await within(panel).findByText("Read tickets");
+    const read = within(panel).getByRole("checkbox", { name: /Read tickets/ });
+    await act(async () => {
+      fireEvent.click(read);
+    });
+    await act(async () => {
+      fireEvent.click(read);
+    });
+    await press(c, "Create");
+    await waitFor(() => expect(k.posted("POST /approvals/:id/approve")).toHaveLength(1));
+    expect(k.posted("POST /approvals/:id/approve")[0]?.body).toEqual({ decision: "once" });
+  });
+
+  it("an approve the kernel refuses shows its words and keeps the ticks", async () => {
+    const k = trackerKit(TRACKER_NO_ACCESS);
+    k.state.posts["POST /approvals/:id/approve"] = () => ({ ok: false, status: 400, body: { error: "invalid_approval", message: "clickup_get_task is not in ClickUp's tool list" } });
+    await renderChat(k);
+    const c = await card();
+    await press(c, CHOOSE_ACCESS);
+    const panel = await within(c).findByTestId("charter-tracker-panel");
+    await within(panel).findByText("Read tickets");
+    await act(async () => {
+      fireEvent.click(within(panel).getByRole("checkbox", { name: /Read tickets/ }));
+    });
+    await press(c, "Create");
+    await waitFor(() => expect(within(c).getByRole("alert").textContent).toBe("clickup_get_task is not in ClickUp's tool list (invalid_approval)"));
+    expect(within(panel).getByTestId("charter-tracker-clickup-read-state").textContent).toBe("granted");
+  });
+
+  it("AC18: a tracker that isn't connected offers Connect (to Integrations) and no capability list; Create still approves, granting nothing", async () => {
+    const k = trackerKit(TRACKER_NOT_CONNECTED);
+    await renderChat(k);
+    const c = await card();
+    expect(within(c).queryByRole("button", { name: CHOOSE_ACCESS })).toBeNull();
+    await press(c, CONNECT_TRACKER);
+    expect(window.location.hash).toBe("#/integrations");
+    expect(within(c).queryByTestId("charter-tracker-panel")).toBeNull();
+    await press(c, "Create");
+    await waitFor(() => expect(k.posted("POST /approvals/:id/approve")).toHaveLength(1));
+    expect(k.posted("POST /approvals/:id/approve")[0]?.body).toEqual({ decision: "once" });
+  });
+
+  it("AC12 (card): a connection that answers no capabilities says the plain list is unavailable and offers no tick", async () => {
+    await renderChat(trackerKit(TRACKER_NO_ACCESS, clickup({ capabilities: null, other_tools: null })));
+    const c = await card();
+    await press(c, CHOOSE_ACCESS);
+    expect((await within(c).findByTestId("charter-tracker-plain-unavailable")).textContent).toContain("unavailable");
+    expect(within(c).queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
+  it("a failed read of the connection says so and leaves Create working", async () => {
+    const k = trackerKit(TRACKER_NO_ACCESS);
+    k.fake.route("GET /connectors", () => ({ ok: false, status: 500, body: { error: "boom" } }));
+    await renderChat(k);
+    const c = await card();
+    await press(c, CHOOSE_ACCESS);
+    expect((await within(c).findByRole("alert")).textContent).toContain("Couldn't read the ClickUp connection");
+    expect(within(c).queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
+  it("AC17: a duty that names no tracker has no fix on its line (Wright is asked to propose one)", async () => {
+    await renderChat(trackerKit(TRACKER_NO_SOURCE));
+    const c = await card();
+    expect(within(c).getByTestId("charter-readiness").textContent).toContain("doesn't say which tracker it reads");
+    expect(within(c).queryByRole("button", { name: CHOOSE_ACCESS })).toBeNull();
+    expect(within(c).queryByRole("button", { name: CONNECT_TRACKER })).toBeNull();
+  });
+
+  it("the member's name cannot make a line about another tracker: the kernel's own sentence, last on the line, is the one read", async () => {
+    const k = trackerKit("duty 1: Mason can't read Jira tickets yet: it has no Jira access can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)");
+    await renderChat(k);
+    const c = await card();
+    await press(c, CHOOSE_ACCESS);
+    expect((await within(c).findByTestId("charter-tracker-panel")).getAttribute("data-kind")).toBe("clickup");
   });
 });
 

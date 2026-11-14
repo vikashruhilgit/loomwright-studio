@@ -602,9 +602,9 @@ describe("a contribution composed from outside (AC4)", () => {
       body: JSON.stringify({ a: 1 }),
     });
     expect(res.status).toBe(200);
-    // The kernel passes the kill switch's and the status's read-only views, the API server's POST queue, its session manager and its kernel-applied actions' applier on every contributed route request.
+    // The kernel passes the kill switch's and the status's read-only views, the API server's POST queue, its session manager, its kernel-applied actions' applier and its tool catalogue on every contributed route request.
     expect(await res.json()).toEqual({
-      keys: ["params", "query", "body", "store", "now", "killSwitch", "status", "serialized", "origin", "sessions", "approvalApplier"],
+      keys: ["params", "query", "body", "store", "now", "killSwitch", "status", "serialized", "origin", "sessions", "approvalApplier", "catalogue"],
       applier: "function",
       at: "2026-10-15T08:00:00.000Z",
       notifications: 0,
@@ -612,6 +612,8 @@ describe("a contribution composed from outside (AC4)", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.store).toBe(kernel.store);
     expect(seen[0]?.sessions).toBe(kernel.sessions);
+    // The catalogue the tools' drafting descriptions carry: `GET /agents/:id` groups a member's tools by job with it.
+    expect(seen[0]?.catalogue?.jobs.length).toBeGreaterThan(0);
     expect(seen[0]?.killSwitch?.state()).toEqual({ engaged: false, since: null });
     expect({ ...seen[0]?.params }).toEqual({ id: "7" });
     expect({ ...seen[0]?.query }).toEqual({ q: "1" });
@@ -1084,6 +1086,8 @@ describe("the route seam carries the API's store and clock", () => {
       expect(typeof seen[0]?.serialized).toBe("function");
       // An API server given no applier adds no key for one.
       expect(seen[0]).not.toHaveProperty("approvalApplier");
+      // Nor, given no catalogue, a `catalogue` key.
+      expect(seen[0]).not.toHaveProperty("catalogue");
       // Nor, given no session manager, a `sessions` key (its phase 1 `sessions` Pick is never passed on).
       expect(seen[0]).not.toHaveProperty("sessions");
     } finally {

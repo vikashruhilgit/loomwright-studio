@@ -60,7 +60,8 @@ import { isUsableMcpStatus, mcpRow, mcpRows, storedToolsOf } from "./rows.js";
 import type { McpKind, McpRow } from "./rows.js";
 import { planProxyTools } from "./tools.js";
 import type { McpDropCounts } from "./tools.js";
-import { MCP_TRACKERS } from "./trackers.js";
+import { MCP_TRACKERS, trackerCapabilities } from "./trackers.js";
+import type { McpCapabilityView } from "./trackers.js";
 
 /** How long before the access token expires the connector renews it: the safety kernel's, fixed. */
 export const MCP_REFRESH_AHEAD_MS = 5 * 60 * 1000;
@@ -157,16 +158,35 @@ export interface McpConnectionView {
   readonly server_url: string | null;
   readonly status: ConnectorStatus;
   readonly granted_tools: readonly string[];
+  /** The listed tools in the owner's words (`trackerCapabilities`); `null` when the tool list cannot be read, so the app falls back to `granted_tools`. */
+  readonly capabilities: readonly McpCapabilityView[] | null;
+  /** The listed tools no capability names (named, never granted by a capability tick); `null` with `capabilities`. */
+  readonly other_tools: readonly string[] | null;
   readonly token_expiry: string | null;
+}
+
+/** The names of the tools a row's stored list holds, or `null` when the list is absent or not a JSON array (`storedToolsOf` reads that as no tool, which would pass for "nothing listed"). */
+function listedToolNames(text: string | null): string[] | null {
+  if (text === null) return null;
+  try {
+    if (!Array.isArray(JSON.parse(text))) return null;
+  } catch {
+    return null;
+  }
+  return storedToolsOf(text).map((t) => t.name);
 }
 
 /** `row` as the contract's `McpConnection`. */
 export function mcpConnectionView(row: McpRow): McpConnectionView {
+  const listed = listedToolNames(row.granted_tools);
+  const words = listed === null ? null : trackerCapabilities(row.kind, listed);
   return {
     kind: row.kind,
     server_url: row.server_url,
     status: row.status,
     granted_tools: storedToolsOf(row.granted_tools).map((t) => t.name),
+    capabilities: words === null ? null : words.capabilities,
+    other_tools: words === null ? null : words.other_tools,
     token_expiry: row.token_expiry,
   };
 }
