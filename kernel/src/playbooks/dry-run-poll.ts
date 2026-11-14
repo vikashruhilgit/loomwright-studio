@@ -28,6 +28,15 @@
 // returned, and the dry run still counts (the enable stays possible: a real
 // run parks at run time instead, item 05).
 //
+// One reason is decided AFTER the fetch, by the caller (`./dry-run.ts`), not
+// here: `owner_step_open` (phase 8 item 21e). A crew member's playbook whose fit
+// (`./fit.ts`) has an owner step open (a connector grant only the owner can
+// give) would have its real run refused, not parked, so a review session could
+// not act either. The poll above still ran and its items are kept (unlike the
+// reasons above, which have none): `withOwnerStepOpen` turns the plan that
+// picked an item to review into the one that reviews nothing and names the
+// owner's step. It takes the steps as strings, so this module never reads the fit.
+//
 // The session reviews the first `would run` item, or the first item when every
 // item would skip; the item reaches the prompt only wrapped as untrusted data
 // (`itemPromptBlock`, invariant 3). Zero items, or a dedupe spec that cannot be
@@ -60,8 +69,11 @@ import { doneWithKey, evaluateDedupeKey } from "./runs.js";
 import { PlaybookError } from "./store.js";
 import type { PlaybookRow } from "./store.js";
 
-/** Why a poll preview is incomplete (closed here, defined once): no session started, the enable is still possible. */
-export const PREVIEW_INCOMPLETE_REASONS = Object.freeze(["connector_missing", "needs_github", "rate_limited", "source_error"] as const);
+/**
+ * Why a poll preview is incomplete (closed here, defined once): no session started, the enable is still possible.
+ * `owner_step_open` is the one that keeps its items (the poll ran; the review is skipped for the owner's open grant).
+ */
+export const PREVIEW_INCOMPLETE_REASONS = Object.freeze(["connector_missing", "needs_github", "owner_step_open", "rate_limited", "source_error"] as const);
 export type PreviewIncompleteReason = (typeof PREVIEW_INCOMPLETE_REASONS)[number];
 
 /** What one polled item would do under the owner's dedupe key (closed here). */
@@ -146,6 +158,20 @@ export interface PollPreviewDeps {
 
 function incomplete(spec: PollSpec, reason: PreviewIncompleteReason, fix: string): PollPlan {
   return { poll: { spec, items: [], reviewed: null, drafts: [], preview_incomplete: { reason, fix } }, review: null };
+}
+
+/** The owner steps a summary names are kernel-made text (`fit.owner_steps`); a long list is cut here, never at the generic fix cut. */
+const OWNER_STEP_FIX_CHARS = 1_000;
+
+/**
+ * `plan` (a preview that picked an item to review) as the preview of a playbook
+ * with an owner step open (`owner_step_open`): the items stay as polled, nothing
+ * is reviewed (`review: null`, `reviewed: null`, no drafts) and `fix` is each of
+ * `ownerSteps` verbatim, in order. Pure: the caller decides there is a step.
+ */
+export function withOwnerStepOpen(plan: PollPlan, ownerSteps: readonly string[]): PollPlan {
+  const fix = ownerSteps.join(" ");
+  return { poll: { ...plan.poll, reviewed: null, drafts: [], preview_incomplete: { reason: "owner_step_open", fix } }, review: null };
 }
 
 /** The kernel host's zone, as `./drafts.ts` reads it: what the key's `date` field is evaluated in. */
@@ -402,8 +428,10 @@ function itemNoun(source: string, n: number): string {
  * validated; keys and targets are cut and flattened to one line.
  */
 export function formatPollSummary(poll: PollDryRun): string {
-  if (poll.preview_incomplete !== undefined) {
-    return `Poll preview incomplete (${poll.preview_incomplete.reason}): ${inline(poll.preview_incomplete.fix, 400)} No session started; the enable stays possible, and a real run parks until this is fixed.`;
+  const incomplete = poll.preview_incomplete;
+  // `owner_step_open` is the one incomplete preview that kept its items: it lists them, then names the owner's step.
+  if (incomplete !== undefined && incomplete.reason !== "owner_step_open") {
+    return `Poll preview incomplete (${incomplete.reason}): ${inline(incomplete.fix, 400)} No session started; the enable stays possible, and a real run parks until this is fixed.`;
   }
   if (poll.items.length === 0) return `The poll found no ${itemNoun(poll.spec.source, 0)}, so no review session started.`;
   const run = poll.items.filter((i) => i.would === "run").length;
@@ -413,6 +441,9 @@ export function formatPollSummary(poll: PollDryRun): string {
   });
   const more = poll.items.length - shown.length;
   const found = `The poll found ${poll.items.length} ${itemNoun(poll.spec.source, poll.items.length)}: ${run} would run, ${poll.items.length - run} would skip: ${shown.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`;
+  if (incomplete !== undefined) {
+    return `${found} The review was skipped, and no session started, until the owner takes this step: ${inline(incomplete.fix, OWNER_STEP_FIX_CHARS)} The enable stays possible; a real run would be refused until then.`;
+  }
   if (poll.reviewed === null) return `${found} No review session started: the dedupe key could not be evaluated.`;
   const drafted =
     poll.drafts.length === 0

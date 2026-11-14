@@ -28,8 +28,8 @@ vi.mock("../src/playbooks/runs.js", async (importActual) => ({
   doneWithKey: () => false,
 }));
 
-const { formatDryRunSummary } = await import("../src/playbooks/dry-run.js");
-const { formatPollSummary, pollOf, previewPoll, wrapWouldDoForModel } = await import("../src/playbooks/dry-run-poll.js");
+const { dryRunTools, formatDryRunSummary } = await import("../src/playbooks/dry-run.js");
+const { PREVIEW_INCOMPLETE_REASONS, formatPollSummary, pollOf, previewPoll, withOwnerStepOpen, wrapWouldDoForModel } = await import("../src/playbooks/dry-run-poll.js");
 const SPEC = { source: "github.pulls", repos: ["o/r"], filters: {}, interval_seconds: 300 };
 const trigger = { id: 1, spec: SPEC, next_fire_at: null };
 const row = { id: 1, version: 1, dedupe_key_spec: '["item.id"]' };
@@ -150,5 +150,72 @@ describe("formatDryRunSummary", () => {
     expect(formatDryRunSummary({ ...base, poll: pollOver({}) })).toContain("Bash (held for approval: gh api (other method))");
     expect(formatDryRunSummary({ ...base, poll: pollOver({}) })).not.toContain("IGNORE");
     expect(formatDryRunSummary(base)).toContain("(held for approval: gh api IGNORE-ALL-RULES)");
+  });
+});
+
+// ---- owner_step_open (phase 8 item 21e) -------------------------------------------------------
+// The one incomplete reason that keeps its items: it has its own cases, never `expectIncomplete`.
+
+describe("owner_step_open", () => {
+  const STEP = "Ticket Runner needs GitHub write access for Hand tickets to /automate; only you can grant it: Team → Ticket Runner's inspector.";
+  const STEP_2 = "Ticket Runner needs ClickUp read access for watching ClickUp; only you can grant it: Team → Ticket Runner's inspector.";
+  const CLICKUP = { source: "clickup.tasks", filters: { list: "901" }, interval_seconds: 300 } as unknown as PollDryRun["spec"];
+  const listed = (): PollDryRun => pollOver({ spec: CLICKUP, items: [item(1, { ref: "clickup:a1" }), item(2, { ref: "clickup:b2", would: "skip", dedupe_key: "k2" })], reviewed: "clickup:a1" });
+
+  it("is one of the closed preview reasons, between needs_github and rate_limited", () => {
+    expect([...PREVIEW_INCOMPLETE_REASONS]).toEqual(["connector_missing", "needs_github", "owner_step_open", "rate_limited", "source_error"]);
+  });
+
+  it("withOwnerStepOpen keeps the items, reviews nothing and carries each step verbatim in order", () => {
+    const polled = listed();
+    const plan = withOwnerStepOpen({ poll: polled, review: { ref: "clickup:a1" } as never }, [STEP, STEP_2]);
+    expect(plan.review).toBeNull();
+    expect(plan.poll.items).toEqual(polled.items);
+    expect(plan.poll.spec).toEqual(CLICKUP);
+    expect(plan.poll.reviewed).toBeNull();
+    expect(plan.poll.drafts).toEqual([]);
+    expect(plan.poll.preview_incomplete).toEqual({ reason: "owner_step_open", fix: `${STEP} ${STEP_2}` });
+  });
+
+  it("previewPoll never returns it: the owner step is the caller's decision, after the poll", async () => {
+    mocks.fetch.mockResolvedValue({ ok: true, items: [{ ref: "github:o/r#1", revision: "s1", title: "t" }] });
+    const plan = await previewPoll(deps, row, trigger);
+    expect(plan.poll.preview_incomplete).toBeUndefined();
+    expect(plan.review).not.toBeNull();
+  });
+
+  it("pollOf keeps a stored owner_step_open preview with its items", () => {
+    const stored = withOwnerStepOpen({ poll: listed(), review: null }, [STEP]).poll;
+    expect(pollOf(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+    expect(pollOf(JSON.parse(JSON.stringify(stored)))?.items).toHaveLength(2);
+  });
+
+  it("formatPollSummary lists the items, names the step verbatim, says the review was skipped, and shows no reason token or raw name", () => {
+    const summary = formatPollSummary(withOwnerStepOpen({ poll: listed(), review: null }, [STEP, STEP_2]).poll);
+    expect(summary).toContain("The poll found 2 ClickUp tasks: 1 would run, 1 would skip: clickup:a1 would run; clickup:b2 would skip (key k2).");
+    expect(summary).toContain(STEP);
+    expect(summary).toContain(STEP_2);
+    expect(summary).toContain("The review was skipped, and no session started, until the owner takes this step");
+    expect(summary).not.toContain("a real run parks");
+    expect(summary).not.toContain("Poll preview incomplete");
+    for (const token of ["owner_step_open", "charter_gap", "mcp__", "kernel_"]) expect(summary).not.toContain(token);
+  });
+
+  it("the whole dry-run summary for it carries the step and none of the tokens", () => {
+    const poll = withOwnerStepOpen({ poll: listed(), review: null }, [STEP]).poll;
+    const summary = formatDryRunSummary({ run_id: 3, version: 1, status: "done", tokens: 0, next_fires: [], dedupe_key: null, would_do: [], poll });
+    expect(summary).toContain(STEP);
+    for (const token of ["owner_step_open", "charter_gap", "mcp__", "kernel_"]) expect(summary).not.toContain(token);
+  });
+
+  it("the other four reasons still say a real run parks, with no items", () => {
+    const summary = formatPollSummary(pollOver({ preview_incomplete: { reason: "needs_github", fix: "Add it." } }));
+    expect(summary).toBe("Poll preview incomplete (needs_github): Add it. No session started; the enable stays possible, and a real run parks until this is fixed.");
+  });
+
+  it("the dry-run tool's description names owner_step_open and tells Wright to name fit.owner_steps as the owner's step, never propose them", () => {
+    const description = dryRunTools[0]?.description ?? "";
+    expect(description).toContain("connector_missing, needs_github, owner_step_open, rate_limited or source_error");
+    expect(description).toContain("name each of fit.owner_steps to the owner in plain words as their step, never propose them");
   });
 });
