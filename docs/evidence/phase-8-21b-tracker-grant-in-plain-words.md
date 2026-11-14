@@ -139,6 +139,42 @@ Tools left as **other tools** on purpose: documents, folders and lists (creating
 
 Jira is the owner's work account and is never connected or called from here, so Jira's capability list is **authored, not recorded**: the names follow Atlassian's Rovo MCP supported-tools page (the same source as `searchJiraIssuesUsingJql`, [item 07](../OPEN_QUESTIONS.md)), and are NEEDS VERIFICATION in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md). The capabilities are `read`, `comment`, `update` and `create`; Jira has no `delete` or `chat` capability because no such tool is documented. A name Atlassian's server does not list is simply never answered, and a tool it lists that no capability names is "Other tools": a wrong guess shrinks the list, it never widens a grant.
 
-## Validation
+## Validation 1
 
-The sections `## Validation 1` (the command summaries) and `## Validation 2` (the packaged-app walk) are written by the steps that run them, after the app half of this item is built. Nothing is pre-filled here.
+The static checks, run at the head that holds the app half of this item (the worktree of subtask 4, with the kernel half and the Team inspector half already merged into it), on 2026-11-14, macOS, Node v24.11.1. The summaries are what each command printed; nothing is paraphrased upward.
+
+```bash
+cd kernel && npm ci && npm test
+cd app && npm ci && npm run typecheck && npm test
+cd app && npm run build && npx playwright test e2e/approvals.spec.ts e2e/team.spec.ts e2e/chat-charter-card.spec.ts --workers=1
+bash scripts/check-docs.sh
+```
+
+```text
+kernel   npm test:  Test Files  137 passed | 2 skipped (139)   Tests  4692 passed | 16 skipped (4708)
+app      typecheck: tsc -p tsconfig.json && tsc -p tsconfig.node.json: exit 0
+app      npm test:  Test Files  106 passed (106)              Tests  3336 passed (3336)
+e2e      approvals.spec.ts + team.spec.ts + chat-charter-card.spec.ts (one run, --workers=1):  36 passed
+check-docs: OK
+```
+
+What the e2e run covers for this item, beyond the specs that were already there:
+
+- `app/e2e/approvals.spec.ts`, "item 21b": a held create of a ticket-working member (Ticket Runner) shows the readiness line "Ticket Runner can't read ClickUp tickets yet: it has no ClickUp access"; Choose access opens the capability list with nothing ticked and no raw tool name showing; ticking Read tickets and Allow once posts exactly one approve whose body is `{"decision":"once","owner_grant":{"kind":"clickup","tools":["clickup_get_task","clickup_filter_tasks"]}}`; approving the same held create without a tick posts `{"decision":"once"}` only.
+- `app/e2e/team.spec.ts`, "phase 8 item 21b": the owner reads a member's permissions as jobs and grants ClickUp by capability, with no raw tool name above the collapsed section (subtask 3's spec).
+
+Not run here: the kernel's own `owner_grant` path against a real ClickUp connection (the kernel suite pins it against stored tool lists, and the e2e uses the fixture kernel), and the packaged app (that is Validation 2).
+
+## Validation 2
+
+**Owner-closed after the PR opens.** The worker's part is this list of steps. The owner (or Claude, driving the app at the owner's request) runs them against the PR head built and running, with ClickUp connected, and records the observed output and the verdict below. Nothing here is a result, and the verdict line is written only by whoever performs the walk.
+
+1. Build the PR head and run it as in [phase 8's setup step 8](phase-8-exit-runbook.md#setup): the kernel installed as the launchd service and the packaged app opened from Finder. Record `git rev-parse HEAD`, the service's pid and `sw_vers -productVersion`. In Integrations, check ClickUp is connected.
+2. In Wright's thread, ask Wright for a crew member that works ClickUp tickets in the Loomwright Studio list. On the held card, check: the duty's source is ClickUp; a readiness row says the member can't read ClickUp tickets yet because it has no ClickUp access; Choose access opens the capability list in words ("Read tickets", "Comment on tickets", and so on) with nothing ticked; and no raw tool name shows anywhere above "Kernel tool names, as enforced" (Show full details).
+3. Tick "Read tickets" and "Comment on tickets", and press Create. Check the member is created and holds exactly those two capabilities' tools (Team, or `studio agents show <id>`), and that Wright's next message does not name the ClickUp access as open.
+4. Open the member in Team. Check PERMISSIONS reads as job labels with the raw names collapsed under "Kernel tool names, as enforced", and CONNECTORS shows ClickUp with those two capabilities granted and the rest not granted, "changes things" marked on Comment, and no "Ticket access still open" under Duties.
+5. Ask Wright for a second such member and press Create without ticking anything. Check the card (before approving), the Team inspector ("Ticket access still open" under Duties) and Wright's next message each name the missing ClickUp access as the owner's step, and that nothing was granted.
+6. Draft a ClickUp ticket playbook for the first member and dry-run it. Check it reads the list's open task tagged `studio-sandbox` (title and `clickup:<id>` ref in the preview, no `mcp_tool_error`).
+7. Optional: in Approvals, repeat step 5's held card and confirm the same Choose access row is there, and that the A shortcut stands down while a checkbox has focus (the Allow once button decides).
+
+Record, for each step, the observed output and a screenshot path; paste the dry run's output of step 6 in a fenced block.
