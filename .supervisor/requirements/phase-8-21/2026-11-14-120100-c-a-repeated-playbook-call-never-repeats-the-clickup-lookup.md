@@ -64,3 +64,8 @@ Ready for: `/launch-pad goal: ".supervisor/requirements/phase-8-21/2026-11-14-12
 kernel/src/playbooks/drafts.ts
 kernel/test/playbooks-drafts-poll.test.ts
 kernel/test/playbooks-drafts.test.ts
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-14-repeated-playbook-call-no-clickup-lookup.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
