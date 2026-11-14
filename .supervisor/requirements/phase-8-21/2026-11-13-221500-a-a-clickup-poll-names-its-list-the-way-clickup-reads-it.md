@@ -76,3 +76,14 @@ docs/OPEN_QUESTIONS.md
 docs/architecture/mcp-connectors.md
 docs/architecture/triggers.md
 docs/evidence/phase-8-21a-clickup-list-by-name.md
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-13-clickup-poll-list-by-name.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-14T04:49:52Z
+- **Brief:** .supervisor/jobs/done/2026-11-13-clickup-poll-list-by-name.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/275
