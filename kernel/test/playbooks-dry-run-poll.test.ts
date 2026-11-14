@@ -1293,6 +1293,24 @@ describe("a crew member's poll playbook with an owner step open: owner_step_open
     expect(result.summary).toContain("a real run would be refused: Hand tickets to /automate (a copy of a repo to work in)");
   });
 
+  it("an owner step open AND a refused call no grant can close (run 188's state): no session, and the summary makes one claim about the enable", async () => {
+    addMason([]);
+    const created = await draft("mason");
+    sessionMayStart = false;
+    const result = await dryRun(created.id, "d1");
+    expect(result.fit).toMatchObject({ status: "gap", owner_steps: [STEP], refused_calls: [{ kind: "workspace", closable: false }] });
+    expect(started).toEqual([]);
+    expect(result.tokens).toBe(0);
+    expect((result.poll as PollDryRun).preview_incomplete?.reason).toBe("owner_step_open");
+    expect(result.refused).toEqual(["Hand tickets to /automate (a copy of a repo to work in)"]);
+    // The refused-calls sentence owns the enable claim; the owner-step sentence never contradicts it.
+    expect(result.summary).toContain("The enable is refused (charter_gap) unless the owner enables it anyway.");
+    expect(result.summary).toContain(STEP);
+    expect(result.summary).toContain("This dry run still counts toward the enable; a real run would be refused until then.");
+    expect(result.summary).not.toContain("stays possible");
+    expect(storedOf(result.run_id).refused).toEqual(result.refused);
+  });
+
   it("AC5: the owner grants the access, so owner_steps is empty and the next dry run (a new key) runs the review", async () => {
     addMason([repo]);
     const created = await draft("mason");

@@ -208,9 +208,17 @@ describe("owner_step_open", () => {
     for (const token of ["owner_step_open", "charter_gap", "mcp__", "kernel_"]) expect(summary).not.toContain(token);
   });
 
+  it("with refused calls beside it, the whole summary never says the enable is possible: the charter_gap sentence owns that claim", () => {
+    const poll = withOwnerStepOpen({ poll: listed(), review: null }, [STEP]).poll;
+    const summary = formatDryRunSummary({ run_id: 3, version: 1, status: "done", tokens: 0, next_fires: [], dedupe_key: null, would_do: [], poll, refused: ["Ask for a merge (run shell commands)"] });
+    expect(summary).toContain("The enable is refused (charter_gap) unless the owner enables it anyway.");
+    expect(summary).toContain("This dry run still counts toward the enable; a real run would be refused until then.");
+    expect(summary).not.toContain("stays possible");
+  });
+
   it("the other four reasons still say a real run parks, with no items", () => {
     const summary = formatPollSummary(pollOver({ preview_incomplete: { reason: "needs_github", fix: "Add it." } }));
-    expect(summary).toBe("Poll preview incomplete (needs_github): Add it. No session started; the enable stays possible, and a real run parks until this is fixed.");
+    expect(summary).toBe("Poll preview incomplete (needs_github): Add it. No session started; this dry run still counts toward the enable, and a real run parks until this is fixed.");
   });
 
   it("the dry-run tool's description names owner_step_open and tells Wright to name fit.owner_steps as the owner's step, never propose them", () => {

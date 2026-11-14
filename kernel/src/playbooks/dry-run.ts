@@ -32,7 +32,7 @@
 // draft mode (`forceDraft`), so a would-be post comes back as a `dry_run`
 // draft in the result's `poll` object. Without GitHub (no connector, no grant,
 // or a failing fetch) no session starts and the preview is incomplete, still
-// stored `done` so the enable stays possible. A crew member's poll playbook
+// stored `done` so it still counts toward the enable. A crew member's poll playbook
 // whose fit has an owner step open (a connector grant only the owner can give,
 // `fit.owner_steps`) is decided after the poll, in the `checks` phase: the items
 // are still listed, but no session starts (`owner_step_open`, phase 8 item 21e),
@@ -547,8 +547,9 @@ async function finishRun(ctx: ContributedToolContext, row: PlaybookRow, trigger:
  * A poll preview that starts no session (zero items, an incomplete preview, an
  * unreadable dedupe spec, an owner step open): one `dry_run` row stored `done`
  * with no session and no tokens, never an `item_ref`, and the audit event, in
- * one transaction. It counts as a dry run (`latestDryRun`), so the enable stays
- * possible. The `fit` the decision used is stored beside the poll.
+ * one transaction. It counts as a dry run (`latestDryRun`) toward the enable,
+ * which a crew member's open charter gap can still refuse. The `fit` the
+ * decision used is stored beside the poll.
  */
 function finishWithoutSession(ctx: ContributedToolContext, row: PlaybookRow, trigger: TriggerView | null, poll: PollDryRun, fit: PlaybookFit | undefined): DryRunToolResult {
   const { store } = ctx;

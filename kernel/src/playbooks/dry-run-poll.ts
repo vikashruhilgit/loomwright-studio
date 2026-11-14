@@ -25,8 +25,10 @@
 // of a usable connection, it names the poll's filters first and the connection
 // after, from the scope and the spec's filter keys).
 // Each is a `preview_incomplete`: no session starts, the parsed spec is still
-// returned, and the dry run still counts (the enable stays possible: a real
-// run parks at run time instead, item 05).
+// returned, and the dry run still counts toward the enable (a real run parks
+// at run time instead, item 05). The summary never says the enable is allowed:
+// a crew member's open charter gap still refuses it (`charter_gap`), and the
+// refused-calls sentence beside it says so.
 //
 // One reason is decided AFTER the fetch, by the caller (`./dry-run.ts`), not
 // here: `owner_step_open` (phase 8 item 21e). A crew member's playbook whose fit
@@ -431,7 +433,7 @@ export function formatPollSummary(poll: PollDryRun): string {
   const incomplete = poll.preview_incomplete;
   // `owner_step_open` is the one incomplete preview that kept its items: it lists them, then names the owner's step.
   if (incomplete !== undefined && incomplete.reason !== "owner_step_open") {
-    return `Poll preview incomplete (${incomplete.reason}): ${inline(incomplete.fix, 400)} No session started; the enable stays possible, and a real run parks until this is fixed.`;
+    return `Poll preview incomplete (${incomplete.reason}): ${inline(incomplete.fix, 400)} No session started; this dry run still counts toward the enable, and a real run parks until this is fixed.`;
   }
   if (poll.items.length === 0) return `The poll found no ${itemNoun(poll.spec.source, 0)}, so no review session started.`;
   const run = poll.items.filter((i) => i.would === "run").length;
@@ -442,7 +444,7 @@ export function formatPollSummary(poll: PollDryRun): string {
   const more = poll.items.length - shown.length;
   const found = `The poll found ${poll.items.length} ${itemNoun(poll.spec.source, poll.items.length)}: ${run} would run, ${poll.items.length - run} would skip: ${shown.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`;
   if (incomplete !== undefined) {
-    return `${found} The review was skipped, and no session started, until the owner takes this step: ${inline(incomplete.fix, OWNER_STEP_FIX_CHARS)} The enable stays possible; a real run would be refused until then.`;
+    return `${found} The review was skipped, and no session started, until the owner takes this step: ${inline(incomplete.fix, OWNER_STEP_FIX_CHARS)} This dry run still counts toward the enable; a real run would be refused until then.`;
   }
   if (poll.reviewed === null) return `${found} No review session started: the dedupe key could not be evaluated.`;
   const drafted =
