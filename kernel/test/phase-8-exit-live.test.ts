@@ -1002,6 +1002,20 @@ function collectOutput(child: ReturnType<typeof spawn>): { waitFor(re: RegExp, t
   };
 }
 
+/** Re-reads the summary until its `result` satisfies `done`, or the deadline passes; returns the last summary read. */
+async function waitForSummaryResult(
+  path: string,
+  done: (result: unknown) => boolean,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const summary = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (done(summary.result) || Date.now() > deadline) return summary;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 describe.skipIf(LIVE)("phase 8 live: the harness reports as it runs (AC10, AC11)", () => {
   let env: LoopEnv | undefined;
   afterEach(() => {
@@ -1031,7 +1045,6 @@ describe.skipIf(LIVE)("phase 8 live: the harness reports as it runs (AC10, AC11)
           },
         },
       );
-      const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
       const output = collectOutput(child);
       let summaryPath = "";
       try {
@@ -1046,8 +1059,9 @@ describe.skipIf(LIVE)("phase 8 live: the harness reports as it runs (AC10, AC11)
         expect(Object.keys(live.checks as object)).toEqual(CHECK_NAMES);
 
         process.kill(-(child.pid as number), "SIGINT");
-        await Promise.race([exited, sleep(30_000)]);
-        const saved = JSON.parse(readFileSync(summaryPath, "utf8")) as Record<string, unknown>;
+        // Wait on the evidence asserted below, never on the outer vitest's exit: the summary is written by the fork
+        // worker, a separate process that can write it after the outer one has gone (see `onExit` in the live block).
+        const saved = await waitForSummaryResult(summaryPath, (r) => r !== "incomplete", 30_000);
         expect(saved.result).toBe("interrupted");
         expect(Object.keys(saved.checks as object)).toEqual(CHECK_NAMES);
         expect(typeof saved.interrupted_at).toBe("string");
@@ -1196,13 +1210,36 @@ describe.skipIf(!LIVE)("live phase 8 exit: tickets to PRs, merged through the ga
   const summary: Record<string, unknown> = { test: "phase-8-exit-live", result: "running", run_by: null, clicks: [], jira: "not_exercised" };
   const save = (): void => writeSummary(summaryPath, summary);
 
-  /** Ctrl-C: keep the checks seen so far, say the run was interrupted, then let the signal through. */
-  const onInterrupt = (): void => {
+  /** Keep the checks seen so far and say the run was interrupted; `afterAll` never overwrites this. */
+  const markInterrupted = (): void => {
     summary.result = "interrupted";
     summary.interrupted_at = new Date().toISOString();
     save();
     report(`phase-8-exit-live summary: ${summaryPath} (interrupted)`);
+  };
+
+  /** Ctrl-C: record the interruption, then let the signal through. */
+  const onInterrupt = (): void => {
+    markInterrupted();
     process.kill(process.pid, "SIGINT");
+  };
+
+  /**
+   * The process is exiting before `afterAll` recorded a result, so the run was cut short. `onInterrupt` alone is not
+   * enough: this block runs in a vitest fork worker, and on a Ctrl-C the whole process group gets the SIGINT. The main
+   * vitest process exits about 1 ms after its own SIGINT, which closes the worker's IPC channel. If the worker's event
+   * loop is busy at that moment (a synchronous store read, or a CPU-starved runner), it next sees the closed channel as
+   * an EPIPE, and vitest's fork worker calls `process.exit(1)` on that before Node dispatches the queued SIGINT, so
+   * `onInterrupt` never runs. `process.exit` still emits `exit`, and this synchronous write lands. A SIGKILL, or a
+   * signal with no handler, emits nothing; no listener can cover those.
+   */
+  const onExit = (): void => {
+    if (summary.finished_at !== undefined || summary.result === "interrupted") return;
+    try {
+      markInterrupted();
+    } catch {
+      // exiting anyway; the summary keeps its last saved state
+    }
   };
 
   beforeAll(() => {
@@ -1215,12 +1252,14 @@ describe.skipIf(!LIVE)("live phase 8 exit: tickets to PRs, merged through the ga
     Object.assign(summary, { date: start.at.slice(0, 10), run_start: start, sandbox: { repo }, harness_summary: summaryPath, wait_minutes: waitMs / MINUTE });
     save();
     process.once("SIGINT", onInterrupt);
+    process.once("exit", onExit);
     report(`phase-8-exit-live summary: ${summaryPath} (run start: event ${start.event_id}, ${start.at})`);
     report("phase-8-exit-live: do the walk in Loomwright Studio.app now; this harness only reads the store and never decides an approval.");
   }, 60_000);
 
   afterAll(() => {
     process.removeListener("SIGINT", onInterrupt);
+    process.removeListener("exit", onExit);
     if (start === undefined) return;
     summary.finished_at = new Date().toISOString();
     if (summary.result !== "interrupted") summary.result = last === undefined ? "failed" : runResult(last);
