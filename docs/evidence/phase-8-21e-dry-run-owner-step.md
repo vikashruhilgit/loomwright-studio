@@ -76,4 +76,6 @@ Wright's reply (studio ask), first lines:
     that: Team → Ticket Runner's inspector.
 ```
 
+Found after this run, by the PR's review of the evidence commit: run 188 is a playbook with both an owner step open and refused calls no grant can close (the merge job's D44 route), and on `516a90a2` its summary text said the enable was both refused (`charter_gap`) and possible. Wright's reply above reconciled the two correctly, but the summary the mirror shows did not. Fixed in `fa3abd3a`: the poll part now says the dry run still counts toward the enable, and the refused-calls sentence alone makes the `charter_gap` claim; a test pins that combined state. The fixed wording was checked by the tests, not by a second live walk.
+
 Verdict: PASS for Validation 2
