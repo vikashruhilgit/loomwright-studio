@@ -691,6 +691,98 @@ describe("a crew member's inspector", () => {
     expect(within(never).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["git_push", "gh_pr_create"]);
   });
 
+  describe("permissions read as jobs first (phase 8 item 21b)", () => {
+    const KERNEL_TOOLS = ["mcp__kernel__kernel_automate_hand_off", "mcp__kernel__kernel_notify_owner", "mcp__kernel__kernel_mystery"];
+    const JOBS = [
+      { job: "automate_tickets", label: "Hand tickets to /automate", tools: ["kernel_automate_hand_off"] },
+      { job: "notify_owner", label: "Notify the owner", tools: ["kernel_notify_owner"] },
+      { job: null, label: "Other tools", tools: ["kernel_mystery"] },
+    ];
+    const withJobs = (agent: RosterEntry, jobs: AgentDetailResponse["jobs"]): AgentDetailResponse => {
+      const base = detail(agent);
+      return {
+        ...base,
+        settings: { ...base.settings, content: { ...(base.settings.content as object), tool_policy: { allowedTools: ["Read", ...KERNEL_TOOLS], allowedBashPrefixes: ["git diff"] } } },
+        jobs,
+      };
+    };
+
+    it("lists the catalogue's job labels, then Other tools by name, and no raw name above the collapsed section", async () => {
+      await startTeam({ details: { mason: withJobs(MASON, JOBS), pim: detail(PIM) } });
+      const inspector = await openInspector("Mason");
+      const enforced = await within(inspector).findByTestId("team-enforced");
+      const jobs = within(enforced).getByTestId("team-enforced-jobs");
+      // The kernel's order: each job in catalogue order, the tools the catalogue does not list last.
+      expect(within(jobs).getAllByRole("listitem").map((li) => li.firstChild?.textContent)).toEqual(["Hand tickets to /automate", "Notify the owner", "Other tools", "kernel_mystery"]);
+      expect(within(within(enforced).getByTestId("team-enforced-job-other")).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["kernel_mystery"]);
+      // Everything outside the collapsed section carries no prefixed kernel tool name and no job's tool name.
+      const raw = within(enforced).getByTestId("team-enforced-raw") as HTMLDetailsElement;
+      const above = enforced.cloneNode(true) as HTMLElement;
+      above.querySelector('[data-testid="team-enforced-raw"]')?.remove();
+      expect(above.textContent).not.toContain("mcp__kernel__");
+      expect(above.textContent).not.toContain("kernel_automate_hand_off");
+      expect(above.textContent).not.toContain("kernel_notify_owner");
+      expect(raw.open).toBe(false);
+      expect(within(raw).getByText("Kernel tool names, as enforced", { selector: "summary" })).toBeTruthy();
+    });
+
+    it("the collapsed section lists exactly the allowed tools, Bash prefixes and never entries the kernel enforces, unchanged", async () => {
+      await startTeam({ details: { mason: withJobs(MASON, JOBS), pim: detail(PIM) } });
+      const inspector = await openInspector("Mason");
+      const raw = await within(inspector).findByTestId("team-enforced-raw");
+      const items = (id: string) => within(within(raw).getByTestId(id)).getAllByRole("listitem").map((li) => li.textContent);
+      expect(items("team-enforced-tools")).toEqual(["Read", ...KERNEL_TOOLS]);
+      expect(items("team-enforced-bash")).toEqual(["git diff"]);
+      expect(items("team-enforced-never")).toEqual(["git_push", "gh_pr_create"]);
+    });
+
+    it("says the plain list is unavailable when the kernel sent no jobs, and keeps the raw names in the collapsed section", async () => {
+      await startTeam({ details: { mason: withJobs(MASON, null), pim: withJobs(PIM, undefined) } });
+      let inspector = await openInspector("Mason");
+      expect((await within(inspector).findByTestId("team-enforced-jobs-unavailable")).textContent).toContain("unavailable");
+      expect(within(inspector).queryByTestId("team-enforced-jobs")).toBeNull();
+      expect(within(within(inspector).getByTestId("team-enforced-raw")).getByTestId("team-enforced-tools").textContent).toContain("mcp__kernel__kernel_notify_owner");
+      inspector = await openInspector("Pim");
+      expect(await within(inspector).findByTestId("team-enforced-jobs-unavailable")).toBeTruthy();
+    });
+
+    it("a member holding no kernel job says so, never an empty list", async () => {
+      await startTeam({ details: { mason: withJobs(MASON, []), pim: detail(PIM) } });
+      const inspector = await openInspector("Mason");
+      expect((await within(inspector).findByTestId("team-enforced-jobs-none")).textContent).toBe("No kernel jobs granted.");
+    });
+
+    it("a settings file the kernel refused shows the unreadable message and no job list, even when the kernel sent jobs", async () => {
+      const refusedMason = { ...MASON, model: null, settings_error: "settings_invalid" };
+      const base = withJobs(refusedMason, JOBS);
+      await startTeam({
+        roster: [WRIGHT, refusedMason, PIM],
+        details: { mason: { ...base, settings: { ...base.settings, error: { error: "settings_invalid", message: "unknown key" } }, never: null }, pim: detail(PIM) },
+      });
+      const inspector = await openInspector("Mason");
+      expect((await within(inspector).findByTestId("team-settings-unreadable")).textContent).toBe("settings file unreadable: unknown key");
+      expect(within(inspector).queryByTestId("team-enforced-jobs")).toBeNull();
+      expect(inspector.textContent).not.toContain("Hand tickets to /automate");
+    });
+
+    it("renders a hostile job label and tool name as text, never markup", async () => {
+      const hostile = "<img src=x onerror=alert(1)>";
+      await startTeam({ details: { mason: withJobs(MASON, [{ job: null, label: hostile, tools: [hostile] }]), pim: detail(PIM) } });
+      const inspector = await openInspector("Mason");
+      const jobs = await within(inspector).findByTestId("team-enforced-jobs");
+      expect(jobs.textContent).toContain(hostile);
+      expect(jobs.querySelector("img")).toBeNull();
+    });
+
+    it("Wright's inspector has no permissions block: read-only, grants unknown, never not granted", async () => {
+      await startTeam({ details: { mason: withJobs(MASON, JOBS), pim: detail(PIM) } });
+      const inspector = await openInspector("Wright");
+      expect(within(inspector).queryByTestId("team-enforced")).toBeNull();
+      expect(within(inspector).queryByTestId("team-enforced-jobs")).toBeNull();
+      expect(within(inspector).getByTestId("team-wright-readonly").textContent).toContain("read-only");
+    });
+  });
+
   it("shows model, limits, workspaces and the memory files as plain paths", async () => {
     await startTeam();
     const inspector = await openInspector("Mason");
