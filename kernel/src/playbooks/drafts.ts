@@ -403,6 +403,7 @@ const create = defineTool({
     `it becomes the playbook's one linked trigger, which starts no work until the playbook is enabled. dedupe_key: fields from playbook.id, playbook.version, trigger.id, trigger.scheduled_at, date, item.id, item.revision ` +
     "(item.id and item.revision are a polled item's; a fire with no item refuses a key naming them). " +
     `priority: low, normal or high. model: a model id. token_limit: tokens per day. mode: draft only in phase 6 (live is refused). merge_requirement: none, studio_approval or reviews:<N> (N a whole number of at least 1): what a PR needs before it may merge, never looser than its repo's own rule (an enable is refused if it is). ${LIMITS} ` +
+    "Draft a crew member's playbook only when the owner asked for one: when the owner asked only for the member, its approval is no ask for a playbook. " +
     "agent (optional): the id of an active crew member to draft it for; it then belongs to that member, and its dry run and every fire run as that member " +
     "(its settings, policy and never list, its memory folder and its limits). Omitted: the playbook is yours. " +
     `${JOBS_AND_FIT} ${TARGET_REPO} ` +
