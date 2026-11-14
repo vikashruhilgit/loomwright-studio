@@ -4,7 +4,7 @@
 // `agents` contribution.
 //
 //   routes  GET  /agents               {agents}: Wright first, then every member by id
-//           GET  /agents/:id           {agent, settings, never, workspaces, memory, charter}
+//           GET  /agents/:id           {agent, settings, never, workspaces, memory, charter, jobs}
 //           POST /agents               body: a charter; the owner's create (`createAgent`)
 //           POST /agents/:id/rename    body {display_name}
 //           POST /agents/:id/set       body {field, value}: one scalar setting, or the connectors grant, in the file
@@ -46,6 +46,7 @@ import { basename, dirname, join } from "node:path";
 import { payloadText, shown } from "../approvals/cli.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
 import { agentCountedTokens, localDay } from "../budget/internal.js";
+import { jobGroups } from "../features/catalogue.js";
 import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
@@ -280,6 +281,9 @@ async function show(req: ContributedRouteRequest): Promise<ContributedRouteRespo
       workspaces: read.ok ? [...(read.settings.workspaces ?? [])] : null,
       memory: { dir: paths.memoryDir, files: CREW_MEMORY_FILES.map((name, i) => ({ name, path: paths.memory[i], present: exists(paths.memory[i] as string) })) },
       charter: charterProse(row),
+      // The granted kernel tools grouped by catalogue job, as the held charter card groups them (`jobGroups`): null when the file was refused
+      // (nothing is enforced to show) or the composition gave no catalogue, never a guessed grouping.
+      jobs: read.ok && req.catalogue !== undefined ? jobGroups(read.settings.policy.allowedTools, req.catalogue) : null,
     },
   };
 }

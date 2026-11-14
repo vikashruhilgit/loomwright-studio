@@ -207,7 +207,7 @@ Each verb calls only its route on the loopback API (bearer token). A refusal is 
 | Verb | Route | Answer |
 |---|---|---|
 | `studio agents list [--json]` | `GET /agents` | `200 {agents}`: Wright first, then every member, `active` and `off`, in id order |
-| `studio agents show <id> [--json]` | `GET /agents/:id` | `200 {agent, settings: {file, content, error}, never, workspaces, memory: {dir, files: [{name, path, present}]}, charter: {persona, duties, boundaries}}` |
+| `studio agents show <id> [--json]` | `GET /agents/:id` | `200 {agent, settings: {file, content, error}, never, workspaces, memory: {dir, files: [{name, path, present}]}, charter: {persona, duties, boundaries}, jobs}` (`jobs`: the granted kernel tools grouped by catalogue job, `[{job, label, tools}]` in the held card's order with the tools the catalogue lacks last as `job: null`, "Other tools"; `null` when the settings file was refused or the kernel has no catalogue) |
 | `studio agents create --from <file>` | `POST /agents` body: the charter | `201 {agent, files, files_error}`; `400 agent_id_invalid` / `charter_invalid` with `field`; `409 id_taken` with `field`; `409 files_exist` with `file` |
 | `studio agents rename <id> <display name>` | `POST /agents/:id/rename` body `{display_name}` | `200 {agent, changed}`; `400 invalid_input` with `field: display_name` |
 | `studio agents set <id> <field> <value>` | `POST /agents/:id/set` body `{field, value}` | `200 {agent, field, old, new, changed}` (`agent` is the member's row, or Wright's roster entry); `400 invalid_input` naming the field; `409 settings_missing` / `settings_invalid` / `model_unset` / `settings_changed` with the `file`; `409 reserved` for a field Wright's `set` does not take |
