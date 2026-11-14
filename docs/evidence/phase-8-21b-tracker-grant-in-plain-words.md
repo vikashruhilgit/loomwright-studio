@@ -178,3 +178,29 @@ Not run here: the kernel's own `owner_grant` path against a real ClickUp connect
 7. Optional: in Approvals, repeat step 5's held card and confirm the same Choose access row is there, and that the A shortcut stands down while a checkbox has focus (the Allow once button decides).
 
 Record, for each step, the observed output and a screenshot path; paste the dry run's output of step 6 in a fenced block.
+
+### The walk
+
+Run on 2026-11-14 between 16:55 and 17:03 local time (macOS 26.6.2, Node v24.11.1) by Claude, driving the app at the owner's request. Both the kernel and the app were built from this PR's head `503d915b`: `npm run build` then `service install` (launchd service, pid 88851), and `npm run package`, opened through LaunchServices with `open`. ClickUp connection row 1 is `connected`. Screenshots are in [`phase-8-21b-v2/`](phase-8-21b-v2/).
+
+- **Step 1: PASS.** As above.
+- **Step 2: FAIL (one check).** Wright drafted `ticket-triage-21b` (approval 37). The card has the readiness row "Ticket Triage 21b can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)" with Choose access, which opens the capabilities in words with nothing ticked ([1-card-choose-access.jpg](phase-8-21b-v2/1-card-choose-access.jpg)). But below them, in plain view, the card lists 21 raw tool names under "Other tools · no capability covers these" (`clickup_attach_task_file`, `clickup_create_document`, … `clickup_get_operators`), and the card has no "Kernel tool names, as enforced" fold above them ([2-card-other-tools-raw-names.jpg](phase-8-21b-v2/2-card-other-tools-raw-names.jpg)). This is a conflict inside the requirement: AC10 says an uncovered tool "appears under Other tools by name … and is never hidden", while this step says no raw name above the fold. The live ClickUp server has 21 such tools, so the conflict is not an edge case. The card also flags "duty 1 not covered (needs Hand tickets to /automate…)": Wright tagged the duty `jobs: ["automate_tickets"]` for a read-and-comment duty.
+- **Step 3: PASS.** Ticked Read tickets and Comment on tickets, pressed Create. `studio agents show ticket-triage-21b`: `connectors.clickup` holds 17 tools, 12 of Read's 15 (the other 3 are not usable on this connection; `clickup_get_workspace_hierarchy` is dropped by design, `clickup-tasks.ts:174`) and all 5 of Comment's. The kernel's note: "The owner granted ClickUp access with this approval. The owner chose to proceed with these still open: duty 1 is not covered (needs Hand tickets to /automate)" ([3-created-kernel-note.jpg](phase-8-21b-v2/3-created-kernel-note.jpg)); Wright's next message did not name ClickUp access as open.
+- **Step 4: PASS.** PERMISSIONS reads "No kernel jobs granted." with "Kernel tool names, as enforced" collapsed; CONNECTORS reads "ClickUp 17 of 58 tools granted", Read and Comment granted, the rest not granted, "changes things" on Comment; no "Ticket access still open" ([4-inspector-connectors.jpg](phase-8-21b-v2/4-inspector-connectors.jpg)). The same 21-name "Other tools" list shows here too.
+- **Step 5: FAIL.** Wright drafted `ticket-triage-21b-two` (approval 38) for the same kind of duty, but this time wrote it with `jobs: []` and no `source` (approval 37's had `source: "clickup"`). The kernel's readiness then reads "Covered: duty 1 with no tool (it needs no kernel tool)" and names no ClickUp access ([5-second-card-covered.jpg](phase-8-21b-v2/5-second-card-covered.jpg)). Created with nothing ticked: `connectors: none`, and the inspector shows no "Ticket access still open" ([5-second-inspector-no-open-access.jpg](phase-8-21b-v2/5-second-inspector-no-open-access.jpg)). Only Wright's own next message named the missing ClickUp access ([5-wright-names-step.jpg](phase-8-21b-v2/5-wright-names-step.jpg)). Cause: the tracker-access check runs only when the model tags the duty's `source`, so the kernel's verdict depends on a field the model may leave out.
+- **Step 6: PASS.** Without being asked, Wright drafted playbook 10 for `ticket-triage-21b` and dry-ran it (run 189). It read the list's tagged task with no `mcp_tool_error`; its review session used 124,277 tokens and drafted no comment.
+- **Step 7:** not run.
+
+Also seen: Wright drafted a playbook (11) for the second member although asked not to, and did not dry-run it. Both playbooks are drafts; a draft's trigger does not fire (playbook 9's trigger has been on since 2026-11-13 with only `dry_run` rows).
+
+```text
+playbook_runs id 189: kind dry_run, status done, playbook 10 version 1, session 150, tokens 124277
+  poll.spec: {"source":"clickup.tasks","filters":{"list":"901422761392","tags":["studio-sandbox"]},"interval_seconds":900}
+  poll.items:
+    ref      clickup:86bd2djuq
+    title    Add a README to studio-sandbox
+    would    run
+  poll.reviewed: clickup:86bd2djuq; drafts: []; no preview_incomplete, no mcp_tool_error
+```
+
+Verdict: FAIL for Validation 2 (steps 2 and 5)
