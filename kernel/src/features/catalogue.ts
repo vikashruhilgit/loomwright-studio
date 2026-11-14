@@ -516,6 +516,39 @@ export function jobDisplayLines(allowedTools: readonly string[], catalogue: Tool
   return lines;
 }
 
+/** The label of the group `jobGroups` ends with: the granted kernel tools the catalogue does not list, named, never hidden. */
+export const JOB_GROUP_OTHER_LABEL = "Other tools";
+
+/** One job of a member's granted kernel tools: `AgentJobGroup` in `app/src/api/contract.ts`. */
+export interface JobGroup {
+  /** The catalogue job's id; `null` for the group of tools the catalogue does not list. */
+  readonly job: ToolJob | null;
+  /** The job's label, or `JOB_GROUP_OTHER_LABEL`. */
+  readonly label: string;
+  /** The granted kernel tools' names (`kernel_…`, without the `mcp__kernel__` prefix): the job's, in catalogue order. */
+  readonly tools: readonly string[];
+}
+
+/**
+ * The granted kernel tools of `allowedTools` grouped by job, the same grouping and
+ * order as `jobDisplayLines`: one group per job with a granted tool, in catalogue
+ * order, then, last, the granted kernel tools the catalogue does not list as one group
+ * (`job: null`, `JOB_GROUP_OTHER_LABEL`). Every other entry (a Claude tool, a Bash
+ * prefix) is left to the enforced list. `[]` when no kernel tool is granted.
+ * Mechanism only (invariant 1): it reads what is granted and grants nothing.
+ */
+export function jobGroups(allowedTools: readonly string[], catalogue: ToolCatalogue): JobGroup[] {
+  const granted = kernelToolNames(allowedTools);
+  const groups: JobGroup[] = [];
+  for (const job of catalogue.jobs) {
+    const tools = job.tools.filter((t) => granted.includes(t.name)).map((t) => t.name);
+    if (tools.length > 0) groups.push({ job: job.id, label: job.label, tools });
+  }
+  const unknown = granted.filter((name) => catalogueTool(catalogue, name) === undefined);
+  if (unknown.length > 0) groups.push({ job: null, label: JOB_GROUP_OTHER_LABEL, tools: unknown });
+  return groups;
+}
+
 /** What an update's display puts after a job line, purpose line or name the change adds (`jobDisplayLines`' `held`). */
 export const DISPLAY_ADDED = " (added)";
 

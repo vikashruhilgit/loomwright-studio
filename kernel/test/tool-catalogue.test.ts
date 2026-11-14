@@ -21,6 +21,7 @@ import {
   DISPLAY_CATALOGUE_UNAVAILABLE,
   DISPLAY_NOT_IN_CATALOGUE,
   GENERAL_JOB,
+  JOB_GROUP_OTHER_LABEL,
   TOOL_JOBS,
   TOOL_JOB_IDS,
   ToolCatalogueError,
@@ -29,6 +30,7 @@ import {
   catalogueText,
   isToolJob,
   jobDisplayLines,
+  jobGroups,
   purposeOf,
 } from "../src/features/catalogue.js";
 import type { ToolCatalogue } from "../src/features/catalogue.js";
@@ -325,6 +327,38 @@ describe("the job-grouped display lines (AC3's grouping, AC9's fallback)", () =>
     expect(jobDisplayLines(next, CATALOGUE).join("\n")).not.toContain(DISPLAY_ADDED);
     // The mark cannot be confused with the vocabulary: no job label carries it.
     for (const label of Object.values(TOOL_JOBS)) expect(label.endsWith(DISPLAY_ADDED) || label.endsWith(DISPLAY_GAINS_TOOLS)).toBe(false);
+  });
+});
+
+describe("the member's granted kernel tools grouped by job (item 21b: `jobGroups`, the Team inspector's PERMISSIONS)", () => {
+  const K = "mcp__kernel__";
+
+  it("groups the granted kernel tools exactly as the held card does: the same jobs in the same order, each job's tools in catalogue order, the tools the catalogue lacks last", () => {
+    const granted = ["Read", `${K}kernel_task_list`, `${K}kernel_github_pr_comments`, `${K}kernel_automate_merge_check`, `${K}kernel_github_pr_get`, `${K}kernel_mcp_jira_x`, `${K}kernel_github_pr_get`, "Bash(git diff:*)"];
+    expect(jobGroups(granted, CATALOGUE)).toEqual([
+      { job: "ask_for_merge", label: "Ask for a merge", tools: ["kernel_automate_merge_check"] },
+      { job: "read_pr", label: "Read a PR", tools: ["kernel_github_pr_get", "kernel_github_pr_comments"] },
+      { job: "general", label: "General", tools: ["kernel_task_list"] },
+      { job: null, label: JOB_GROUP_OTHER_LABEL, tools: ["kernel_mcp_jira_x"] },
+    ]);
+    // One group per `job:` line the card shows, in the same order (the grouping has one authority).
+    const cardJobs = jobDisplayLines(granted, CATALOGUE, false).map((line) => line.slice("job: ".length));
+    expect(jobGroups(granted, CATALOGUE).map((g) => (g.job === null ? DISPLAY_NOT_IN_CATALOGUE : g.label))).toEqual(cardJobs);
+  });
+
+  it("a granted tool that belongs to no catalogue job is named under Other tools, never hidden, and a bare prefix names no tool", () => {
+    expect(jobGroups([`${K}kernel_not_in_the_catalogue`, K], CATALOGUE)).toEqual([{ job: null, label: "Other tools", tools: ["kernel_not_in_the_catalogue"] }]);
+  });
+
+  it("no group when no kernel tool is granted (a Claude tool and a Bash prefix are left to the enforced list)", () => {
+    expect(jobGroups([], CATALOGUE)).toEqual([]);
+    expect(jobGroups(["Read", "Bash(git diff:*)", "mcp__other__x", K], CATALOGUE)).toEqual([]);
+  });
+
+  it("grants nothing: a job whose tools are all granted still lists only what was granted, and ungranted jobs are absent", () => {
+    const walk = WALK_JOBS.automate_tickets[1].map((n) => `${K}${n}`);
+    const groups = jobGroups(walk, CATALOGUE);
+    expect(groups).toEqual([{ job: "automate_tickets", label: "Hand tickets to /automate", tools: [...WALK_JOBS.automate_tickets[1]] }]);
   });
 });
 
