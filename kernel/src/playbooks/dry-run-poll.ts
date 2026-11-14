@@ -21,7 +21,9 @@
 // fails is `rate_limited` or `source_error` (a ticket source's fix names the
 // tracker and the fixed code the kernel wrote, never the server's text; for
 // `tool_unavailable` it also names the tool and the connector, both the
-// kernel's own data).
+// kernel's own data; for `mcp_tool_error`, where the tool ran and refused the read
+// of a usable connection, it names the poll's filters first and the connection
+// after, from the scope and the spec's filter keys).
 // Each is a `preview_incomplete`: no session starts, the parsed spec is still
 // returned, and the dry run still counts (the enable stays possible: a real
 // run parks at run time instead, item 05).
@@ -221,6 +223,17 @@ export async function previewPoll(
       const code = (MCP_TICKET_FAILURES as readonly unknown[]).includes(fetched.message) ? fetched.message : fetched.error;
       // A missing tool is named with the connector: both are the kernel's own data (`MCP_TRACKERS`), never the server's text.
       const missing = code === "tool_unavailable" ? `The ${tracker.kind} connector's tool list lacks ${MCP_TRACKERS[tracker.kind].tool}; reconnect ${tracker.label} in Integrations so the list is read again. ` : "";
+      if (code === "mcp_tool_error") {
+        // The tool ran and refused the read, and the connection is usable (it was just called): the poll's filters are the likely cause, so they come first.
+        // Built from the kernel's data only: the scope (`fetched.repo`) and the spec's own filter keys, never the server's text or a filter's value.
+        const keys = Object.keys(spec.filters).filter((k) => (spec.filters as Record<string, unknown>)[k] !== undefined).map((k) => `filters.${k}`);
+        const ids = spec.source === "clickup.tasks" ? " (filters.list and filters.space hold a ClickUp ID, digits only)" : "";
+        return incomplete(
+          spec,
+          "source_error",
+          `${tracker.label} could not be read for ${fetched.repo}: ${code}. The server ran the read and refused it, so check the poll's filters first: ${fetched.repo} is read from ${keys.join(", ")}${ids}. Then check the ${tracker.kind} connection in Integrations, then dry-run again.`,
+        );
+      }
       return incomplete(spec, "source_error", `${tracker.label} could not be read for ${fetched.repo}: ${code}. ${missing}Check the ${tracker.kind} connection in Integrations and the poll's filters, then dry-run again.`);
     }
     // The client's error message is outside text (a response body can carry a PR author's): kept out of the fix the model reads.

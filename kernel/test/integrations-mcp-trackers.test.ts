@@ -19,7 +19,7 @@ import type { McpTicketReader, McpTicketResult } from "../src/integrations/mcp/t
 import { MCP_KINDS } from "../src/integrations/mcp/rows.js";
 import type { McpKind } from "../src/integrations/mcp/rows.js";
 import type { ClickupPollSpec, JiraPollSpec, SourceItem } from "../src/integrations/types.js";
-import { createPlaybook } from "../src/playbooks/store.js";
+import { PlaybookError, createPlaybook } from "../src/playbooks/store.js";
 import { Store } from "../src/store/index.js";
 import { brainMessageHandler, defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
 import type { LoomwrightSummary } from "../src/brain/index.js";
@@ -28,7 +28,7 @@ import type { EventSessions } from "../src/loop/types.js";
 import { CLICKUP_ITEM_REF, JIRA_ITEM_REF, itemPromptBlock } from "../src/playbooks/items.js";
 import type { SessionHandle, StartSessionParams } from "../src/sessions/index.js";
 import { MAX_POLL_ITEMS, fetchPollItems, firePollTriggers, parsePollSpec } from "../src/triggers/poll.js";
-import { CLICKUP_TASK_ID, fetchClickupTasks } from "../src/triggers/sources/clickup-tasks.js";
+import { CLICKUP_SCOPE_ID, CLICKUP_TASK_ID, fetchClickupTasks } from "../src/triggers/sources/clickup-tasks.js";
 import { JIRA_KEY, JIRA_SITE, fetchJiraIssues, jiraJql } from "../src/triggers/sources/jira-issues.js";
 import { TriggerError, registerTrigger, updateTriggerSpec } from "../src/triggers/store.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
@@ -200,6 +200,15 @@ describe("the shipped definitions (AC11)", () => {
     expect(FIXTURE.clickup.tools.map((t) => t.name)).toEqual(["clickup_filter_tasks"]);
   });
 
+  it("only ClickUp has a name lookup, and only for a list: a read-only tool its server lists, never the listing tool", () => {
+    expect(MCP_TRACKERS.clickup.lookup).toEqual({ list: "clickup_get_list" });
+    expect(Object.isFrozen(MCP_TRACKERS.clickup.lookup)).toBe(true);
+    expect(MCP_TRACKERS.clickup.lookup?.list).not.toBe(MCP_TRACKERS.clickup.tool);
+    expect(MCP_TRACKERS.jira.lookup).toBeUndefined();
+    const lookup = JSON.parse(readFileSync(new URL("./fixtures/mcp-trackers/clickup-lookup-tools.json", import.meta.url), "utf8")) as { tools: { name: string; annotations: { readOnlyHint: boolean } }[] };
+    expect(lookup.tools.find((t) => t.name === MCP_TRACKERS.clickup.lookup?.list)?.annotations.readOnlyHint).toBe(true);
+  });
+
   it("the failure codes are the closed set the sources report", () => {
     expect([...MCP_TICKET_FAILURES]).toEqual([
       "connector_missing",
@@ -281,6 +290,41 @@ describe("a clickup.tasks spec (AC6)", () => {
     for (const tags of [[], "bug", ["ok", ""], ["ok", 7], null]) {
       expect(thrown(() => parsePollSpec(clickupSpec({ list: "901", tags }))).code, JSON.stringify(tags)).toBe("invalid_spec");
     }
+  });
+
+  it("a list or space that is not an ID is invalid_spec naming the filter and the value it holds, never the connection (phase 8 item 21a)", () => {
+    // The ID rule: digits only, as the server's list_ids and space_ids take (docs/evidence/phase-8-21a-clickup-list-by-name.md).
+    expect(CLICKUP_SCOPE_ID.test("901422761392")).toBe(true);
+    for (const name of ["Loomwright Studio", "901 ", " 901", "9x1", "-901", "9.1", "٣٤٥", "9".repeat(31)]) {
+      const list = thrown(() => parsePollSpec(clickupSpec({ list: name })));
+      expect(list.code, name).toBe("invalid_spec");
+      expect(list.message, name).toContain("filters.list");
+      expect(list.message, name).toContain(JSON.stringify(name));
+      expect(list.message, name).not.toMatch(/connection|Integrations/);
+      const space = thrown(() => parsePollSpec(clickupSpec({ space: name })));
+      expect(space.code, name).toBe("invalid_spec");
+      expect(space.message, name).toContain("filters.space");
+      expect(space.message, name).toContain(JSON.stringify(name));
+    }
+    // A name is quoted, so a control character in it reaches the message escaped.
+    expect(thrown(() => parsePollSpec(clickupSpec({ list: "a\u001b[31mb" }))).message).toContain('"a\\u001b[31mb"');
+    // The one-of rule is still checked first, in its own words.
+    expect(thrown(() => parsePollSpec(clickupSpec({ list: "A name", space: "Another" }))).message).toBe("a clickup.tasks poll takes exactly one of filters.list or filters.space");
+  });
+
+  it("the same refusal reaches a playbook's creation as invalid_input naming the filter and the value, with nothing stored", () => {
+    let caught: unknown;
+    try {
+      pollPlaybook(clickupSpec({ list: "Loomwright Studio" }));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PlaybookError);
+    expect((caught as PlaybookError).code).toBe("invalid_input");
+    expect((caught as PlaybookError).message).toContain("filters.list");
+    expect((caught as PlaybookError).message).toContain('"Loomwright Studio"');
+    expect(store.prepare("SELECT count(*) FROM triggers").pluck().get()).toBe(0);
+    expect(store.prepare("SELECT count(*) FROM playbooks").pluck().get()).toBe(0);
   });
 
   it("any other filter key is poll_filter_unknown, naming clickup.tasks's keys", () => {

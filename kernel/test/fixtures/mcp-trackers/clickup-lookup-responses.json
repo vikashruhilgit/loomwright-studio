@@ -1,0 +1,44 @@
+{
+  "_note": "RECORDED on 2026-11-13 from the owner's personal ClickUp (read-only; see docs/evidence/phase-8-21a-clickup-list-by-name.md), with every id, name and link replaced by a placeholder (the ids stay digits-only, as observed). get_list_one is one clickup_get_list answer for {list_name}: id, name, space {id, name}, url, statuses (a list with a description also carries content, a string). get_list_not_found is what the server answers, is_error true, for a list name nothing has; the kernel's reader keeps no server text, so it sees only mcp_tool_error. filter_tasks_by_name is what clickup_filter_tasks answers, is_error true, when list_ids holds a name: the cause of the failed dry runs. The kernel never keeps or quotes these error texts.",
+  "get_list_one": {
+    "id": "9010000000001",
+    "name": "Placeholder list",
+    "space": {
+      "id": "9010000000002",
+      "name": "Placeholder space"
+    },
+    "url": "https://app.clickup.com/9010000000003/v/li/9010000000001",
+    "statuses": [
+      {
+        "id": "p00000000000000000001",
+        "status": "to do",
+        "color": "#87909e",
+        "orderindex": 0,
+        "type": "open",
+        "status_group": "subcat_9010000000001"
+      },
+      {
+        "id": "p00000000000000000002",
+        "status": "in progress",
+        "color": "#87909e",
+        "orderindex": 1,
+        "type": "custom",
+        "status_group": "subcat_9010000000001"
+      },
+      {
+        "id": "p00000000000000000003",
+        "status": "complete",
+        "color": "#87909e",
+        "orderindex": 2,
+        "type": "closed",
+        "status_group": "subcat_9010000000001"
+      }
+    ]
+  },
+  "get_list_not_found": {
+    "error": "List \"Placeholder list\" not found"
+  },
+  "filter_tasks_by_name": {
+    "error": "Failed to filter tasks: list_ids must be an array of isNumericOrNumber"
+  }
+}

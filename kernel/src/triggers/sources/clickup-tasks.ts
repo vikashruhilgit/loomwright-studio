@@ -33,22 +33,42 @@
 // `clickup:space/<id>`) as `repo` and a fixed code as `message`
 // (`tracker-shared.ts`).
 //
+// `list` and `space` hold ClickUp IDs, digits only (`CLICKUP_SCOPE_ID`): the
+// tool's `list_ids` and `space_ids` take nothing else, and a name sent there
+// fails `mcp_tool_error` (`docs/evidence/phase-8-21a-clickup-list-by-name.md`).
+// The parser refuses any other value, naming the filter. A name the owner gave
+// at draft time is turned into an ID once, by `resolveClickupNames`, which
+// `kernel_playbook_create` / `_update` call before the spec is stored, so a
+// stored spec always holds IDs.
+//
 // Imports: as `jira-issues.ts`.
-import { MCP_TRACKERS } from "../../integrations/mcp/trackers.js";
+import { MCP_TICKET_FAILURES, MCP_TRACKERS } from "../../integrations/mcp/trackers.js";
 import type { McpTicketReader } from "../../integrations/mcp/trackers.js";
 import type { ClickupPollSpec, SourceItem } from "../../integrations/types.js";
 import type { Store } from "../../store/store.js";
 import { TriggerError } from "../fire-shared.js";
 import type { SourceFetch } from "./github-pulls.js";
-import { listFilter, objectOf, orderItems, readTickets, statusOf, textFilter, textOf, updatedOf, urlOf } from "./tracker-shared.js";
+import { MAX_TICKET_FILTER_LENGTH, listFilter, objectOf, orderItems, readTickets, statusOf, textFilter, textOf, updatedOf, urlOf } from "./tracker-shared.js";
 
 /** A ClickUp task id: letters, digits, `_` and `-` (custom task ids carry a prefix and a hyphen). */
 export const CLICKUP_TASK_ID = /^[A-Za-z0-9_-]{1,100}$/;
 
+/** A ClickUp list or space id: digits only (read from the live server 2026-11-13: it rejects any other `list_ids` value, and every id it answered was digits). */
+export const CLICKUP_SCOPE_ID = /^[0-9]{1,30}$/;
+
+/** `filters.<key>` must hold an ID: `invalid_spec` naming the filter and the value it holds, quoted and cut to the filter's bound. */
+function requireScopeId(key: "list" | "space", value: string | undefined): void {
+  if (value === undefined || CLICKUP_SCOPE_ID.test(value)) return;
+  throw new TriggerError(
+    "invalid_spec",
+    `poll filter filters.${key} must be a ClickUp ${key} ID (digits only), but it holds ${JSON.stringify(value.slice(0, MAX_TICKET_FILTER_LENGTH))}; a name is turned into an ID when the playbook is drafted or updated`,
+  );
+}
+
 /**
  * `filters` (already known to hold only ClickUp's keys) as a
  * `ClickupPollSpec`'s filters, or `invalid_spec`: exactly one of `list` or
- * `space` (a string of 1-200 characters); optional `status`, `assignee`
+ * `space` (a ClickUp ID: digits only); optional `status`, `assignee`
  * (strings) and `tags` (a non-empty array of strings).
  */
 export function checkClickupFilters(filters: Record<string, unknown>): ClickupPollSpec["filters"] {
@@ -57,6 +77,8 @@ export function checkClickupFilters(filters: Record<string, unknown>): ClickupPo
   if ((list === undefined) === (space === undefined)) {
     throw new TriggerError("invalid_spec", "a clickup.tasks poll takes exactly one of filters.list or filters.space");
   }
+  requireScopeId("list", list);
+  requireScopeId("space", space);
   const status = textFilter(filters, "status");
   const assignee = textFilter(filters, "assignee");
   const tags = listFilter(filters, "tags");
@@ -135,4 +157,98 @@ export async function fetchClickupTasks(tickets: McpTicketReader, store: Store, 
     if (item !== undefined) items.push(item);
   }
   return { ok: true, items: orderItems(items) };
+}
+
+// ---- A name given at draft time, turned into an ID -----------------------------
+
+/** A refusal: `invalid_spec`, in the kernel's own words (never the server's text), for the tool result to carry. */
+const refusal = (message: string): TriggerError => new TriggerError("invalid_spec", message);
+
+/** Names compare ignoring case and surrounding whitespace, as ClickUp's own `list_name` match does. */
+const normalised = (name: string): string => name.trim().toLowerCase();
+
+/**
+ * The ID of the ClickUp `key` called `name`, or a `TriggerError("invalid_spec")` naming the filter and the name.
+ *
+ * Only a list has a lookup (`MCP_TRACKERS.clickup.lookup.list`, `clickup_get_list` with `list_name`; probed
+ * 2026-11-13). The server's one tool that lists spaces, `clickup_get_workspace_hierarchy`, is dropped at
+ * connect because its proxy name is too long, so a space name is refused with no call (`tool_unavailable`).
+ * `clickup_get_list` answers ONE list: an exact name (ignoring case and padding) gives that list, a name
+ * nothing has is `is_error` (the reader sees only `mcp_tool_error`, and keeps no text), and when several
+ * lists share a name the server returns the first without saying so. The kernel cannot count same-named lists
+ * through this tool, so it can refuse "several" only when the server does (it does not): that is recorded in
+ * `docs/evidence/phase-8-21a-clickup-list-by-name.md` and `docs/OPEN_QUESTIONS.md`. The answer's own name must
+ * match the asked name, so a looser match is never taken for the list.
+ */
+async function lookupScopeId(tickets: McpTicketReader, store: Store, key: "list" | "space", name: string): Promise<string> {
+  const tool = MCP_TRACKERS.clickup.lookup?.[key];
+  const shown = `filters.${key} ${JSON.stringify(name)}`;
+  const failed = (code: string, why = ""): TriggerError => refusal(`${shown} could not be looked up: ${code}.${why}`);
+  const ask = `Tell the owner and ask which ${key} they mean; do not guess.`;
+  if (tool === undefined) {
+    throw failed("tool_unavailable", ` ClickUp gives the kernel no tool to look a ${key} up by name, so a ${key} name cannot be turned into an ID. ${ask}`);
+  }
+
+  let answered;
+  try {
+    answered = await tickets.call(store, "clickup", tool, { list_name: name });
+  } catch {
+    throw failed("mcp_protocol");
+  }
+  if (!answered.ok) {
+    // Only a code of the closed set reaches the message, whatever a reader answers.
+    const code = (MCP_TICKET_FAILURES as readonly unknown[]).includes(answered.error) ? answered.error : "client_error";
+    if (code === "mcp_tool_error") {
+      // ClickUp answers a list name nothing has as a tool error; the kernel keeps no server text, so this is also what any other refusal looks like.
+      throw failed(code, ` ClickUp answers this way for a name that no list has (0 matches), and the kernel keeps no server text to tell that from any other refusal. ${ask}`);
+    }
+    throw failed(code, code === "tool_unavailable" ? ` The clickup connector's tool list lacks ${tool}; reconnect ClickUp in Integrations so the list is read again.` : "");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(answered.text);
+  } catch {
+    throw failed("mcp_protocol");
+  }
+  const list = objectOf(parsed);
+  const id = list?.["id"];
+  const returned = list?.["name"];
+  if (typeof id !== "string" || !CLICKUP_SCOPE_ID.test(id) || typeof returned !== "string") throw failed("mcp_protocol");
+  // The answer is one list: it must be the one asked for, never a looser match (the server's name is compared, never quoted).
+  if (normalised(returned) !== normalised(name)) throw refusal(`${shown} matches no ClickUp ${key} (0 matches). ${ask}`);
+  return id;
+}
+
+/**
+ * `specText` (a poll trigger's JSON text, as `storeTrigger` makes it) with a
+ * `clickup.tasks` poll's `filters.list` or `filters.space` turned from a name
+ * into the ID of the list or space of that name: one lookup call
+ * (`MCP_TRACKERS.clickup.lookup`) through `tickets`, with the owner's sign-in,
+ * never inside a session. A value that is already an ID makes no call, and
+ * nothing else in the text changes. Text that is not a `clickup.tasks` poll with
+ * exactly one string `list` or `space` comes back as it is (the spec's own check
+ * refuses it).
+ *
+ * Throws `TriggerError("invalid_spec")` naming the filter and the name when no
+ * list matches, when the answer is another list, when a space name is given (no
+ * tool looks one up) and when the lookup fails (a fixed `MCP_TICKET_FAILURES`
+ * code, never the server's text). Reads only.
+ */
+export async function resolveClickupNames(tickets: McpTicketReader, store: Store, specText: string): Promise<string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(specText);
+  } catch {
+    return specText;
+  }
+  const spec = objectOf(parsed);
+  const filters = objectOf(spec?.["filters"]);
+  if (spec === undefined || filters === undefined || spec["source"] !== "clickup.tasks") return specText;
+  if ((filters["list"] === undefined) === (filters["space"] === undefined)) return specText;
+  const key = filters["list"] !== undefined ? "list" : "space";
+  const value = filters[key];
+  if (typeof value !== "string" || value === "" || value.length > MAX_TICKET_FILTER_LENGTH || CLICKUP_SCOPE_ID.test(value)) return specText;
+  const id = await lookupScopeId(tickets, store, key, value);
+  return JSON.stringify({ ...spec, filters: { ...filters, [key]: id } });
 }

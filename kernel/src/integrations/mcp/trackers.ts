@@ -15,7 +15,9 @@
 //
 // ClickUp's tool name (`clickup_filter_tasks`), its arguments and its response
 // shape were read from the live server on 2026-11-13 and are recorded in
-// `docs/evidence/phase-8-20g-clickup-reader.md`.
+// `docs/evidence/phase-8-20g-clickup-reader.md`; its list lookup (`clickup_get_list`,
+// used at draft time to turn a list name into an ID, and why a space name has no
+// lookup) is recorded in `docs/evidence/phase-8-21a-clickup-list-by-name.md`.
 //
 // Imports: the MCP client, the credential and row modules, the store and the
 // Keychain reader's type and constructor; never `connector.ts` (which imports
@@ -37,6 +39,13 @@ export interface McpTrackerDefinition {
   readonly tool: string;
   /** How the owner reads the tracker's name. */
   readonly label: string;
+  /**
+   * The server's own names of the read-only tools that turn a name the owner gave at
+   * draft time into an ID (`resolveClickupNames`), by what the name is of. Each is
+   * checked against the connection's stored tool list like `tool`. A kind that has
+   * no tool for a name is absent here, and a tracker with no lookup has no `lookup`.
+   */
+  readonly lookup?: { readonly list?: string; readonly space?: string };
 }
 
 /**
@@ -48,7 +57,7 @@ export interface McpTrackerDefinition {
  */
 export const MCP_TRACKERS: Readonly<Record<McpKind, McpTrackerDefinition>> = Object.freeze({
   jira: Object.freeze({ url: "https://mcp.atlassian.com/v1/mcp", tool: "searchJiraIssuesUsingJql", label: "Jira" }),
-  clickup: Object.freeze({ url: "https://mcp.clickup.com/mcp", tool: "clickup_filter_tasks", label: "ClickUp" }),
+  clickup: Object.freeze({ url: "https://mcp.clickup.com/mcp", tool: "clickup_filter_tasks", label: "ClickUp", lookup: Object.freeze({ list: "clickup_get_list" }) }),
 });
 
 /** Every way a ticket read fails: a closed set of fixed codes, each the whole of the failure. */
