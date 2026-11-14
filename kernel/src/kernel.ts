@@ -475,6 +475,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         token,
         routes: contributions.routes,
         approvalApplier,
+        // Null when building it failed: no catalogue is passed, so a member's tools are not grouped by job (never guessed).
+        ...(toolCatalogue === null ? {} : { toolCatalogue }),
         ...(options.port === undefined ? {} : { port: options.port }),
       },
       { now, startedAt, pid },

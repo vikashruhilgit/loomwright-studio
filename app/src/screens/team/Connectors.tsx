@@ -22,13 +22,23 @@
 //
 // Beside the GitHub row, one row per connected MCP kind (Jira, ClickUp; phase 8,
 // D38) shows which of that kind's `granted_tools` the agent holds, read from the
-// agent's `GET /agents/:id` `settings.content.connectors[<kind>]`. A checkbox per
-// tool calls `changeMcpGrant`, which posts `<kind>:<tool>[,<tool>…]` (or
-// `<kind>:none`) to the same route. Wright has no detail route, so its per-tool
-// grant is unknown (no checkboxes), never "not granted". As with GitHub, the row
-// changes only when the feed's `agent_*` event refetches the detail.
+// agent's `GET /agents/:id` `settings.content.connectors[<kind>]`. The grant is
+// offered as a short list of capabilities in words (`CapabilityList`, phase 8 item
+// 21b: "Read tickets", "Comment on tickets", …), each granted, not granted or
+// partly granted (n of m), with its raw tool names one expand away. Ticking one
+// calls `changeCapabilityGrant`, which builds the kind's whole next tool set (what
+// the member holds plus the capability's tools, or minus them on an untick) and
+// posts it through `changeMcpGrant` as `<kind>:<tool>[,<tool>…]` (or `<kind>:none`)
+// to the same route. A listed tool no capability names is shown as "Other tools",
+// by name, and no capability tick ever grants it. When the connection answers no
+// `capabilities` (an older kernel, or its list could not be read) the row keeps the
+// raw per-tool checkboxes it always had, with a line saying the plain list is
+// unavailable. Nothing is ticked or granted by default (invariant 1). Wright has no
+// detail route, so its per-tool grant is unknown (no checkboxes), never "not
+// granted". As with GitHub, the row changes only when the feed's `agent_*` event
+// refetches the detail.
 import { useEffect, useRef } from "react";
-import type { McpConnection, McpConnectionKind, RosterEntry, StudioBridge } from "../../api/contract";
+import type { McpCapability, McpConnection, McpConnectionKind, RosterEntry, StudioBridge } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { type GithubGrantValue, setAgentConnectors, setAgentMcpTools } from "./actions";
 import { type ConnectorsState, connectorStateText, githubGranted, isRecord, MCP_KIND_LABELS, mcpToolsHeld } from "./model";
@@ -96,20 +106,54 @@ export async function changeGithubGrant(api: StudioBridge, agent: { readonly id:
   return { ok: true, text: changed ? `GitHub granted to ${name}.` : `${name} already has GitHub.` };
 }
 
+/** What a capability tick or untick changed, for the result line: the capability's words and which way. */
+export interface CapabilityChange {
+  readonly label: string;
+  readonly on: boolean;
+}
+
 /**
  * Replace one MCP kind's tool grant for `agent` through `POST /agents/:id/set`
  * (`<kind>:<tool>[,<tool>…]`, or `<kind>:none` for no tools). The one call every
- * tool checkbox makes. A tool name holding a comma is refused here, unsent: the
- * kernel splits the value on commas, so it would grant two other tools.
+ * tool checkbox and capability tick makes. A tool name holding a comma is refused
+ * here, unsent: the kernel splits the value on commas, so it would grant two other
+ * tools. A `capability` makes the result line name it instead of counting tools.
  */
-export async function changeMcpGrant(api: StudioBridge, agent: { readonly id: string; readonly display_name: string }, kind: McpConnectionKind, tools: readonly string[]): Promise<GrantOutcome> {
+export async function changeMcpGrant(
+  api: StudioBridge,
+  agent: { readonly id: string; readonly display_name: string },
+  kind: McpConnectionKind,
+  tools: readonly string[],
+  capability?: CapabilityChange,
+): Promise<GrantOutcome> {
   const label = MCP_KIND_LABELS[kind];
   if (tools.some((tool) => tool.includes(","))) return { ok: false, text: `A ${label} tool name holds a comma, which a grant cannot carry. Nothing was changed.` };
   const outcome = await setAgentMcpTools(api, agent.id, kind, tools);
   if (!outcome.ok) return { ok: false, text: outcome.message };
   if (!outcome.body.changed) return { ok: true, text: `${agent.display_name}'s ${label} tools were already as set.` };
+  if (capability !== undefined) return { ok: true, text: `${label}: ${capability.label} ${capability.on ? "granted to" : "revoked from"} ${agent.display_name}.` };
   if (tools.length === 0) return { ok: true, text: `${label} tools revoked from ${agent.display_name}.` };
   return { ok: true, text: `${label}: ${tools.length} ${tools.length === 1 ? "tool" : "tools"} granted to ${agent.display_name}.` };
+}
+
+/**
+ * Tick (`on`) or untick one capability for `agent`: the kind's next whole tool set is
+ * what the member `held` plus the capability's tools (or minus them), so every other
+ * tool it holds, a capability's or an other tool, is kept. Posted through
+ * `changeMcpGrant`, never a second POST shape. `held` undefined (the grant is
+ * unknown) changes nothing and says so.
+ */
+export async function changeCapabilityGrant(
+  api: StudioBridge,
+  agent: { readonly id: string; readonly display_name: string },
+  kind: McpConnectionKind,
+  capability: McpCapability,
+  held: readonly string[] | undefined,
+  on: boolean,
+): Promise<GrantOutcome> {
+  if (held === undefined) return { ok: false, text: `${agent.display_name}'s ${MCP_KIND_LABELS[kind]} grant is unknown. Nothing was changed.` };
+  const next = on ? [...held, ...capability.tools.filter((tool) => !held.includes(tool))] : held.filter((tool) => !capability.tools.includes(tool));
+  return changeMcpGrant(api, agent, kind, next, { label: capability.label, on });
 }
 
 /** One connected MCP kind in the row: the tools it lists and the ones the agent holds (undefined: unknown). */
@@ -118,6 +162,10 @@ export interface McpGrantRow {
   /** The tools to show: the connection's `granted_tools`, then any held tool it no longer lists. */
   readonly tools: readonly string[];
   readonly held: readonly string[] | undefined;
+  /** The connection's capabilities in words (`GET /connectors`); null when it answered none (an older kernel, or the list could not be built). */
+  readonly capabilities: readonly McpCapability[] | null;
+  /** The listed tools no capability names; null with `capabilities`. */
+  readonly otherTools: readonly string[] | null;
 }
 
 /** A connected (or expiring) MCP row is one the agent can be granted tools of. */
@@ -136,7 +184,14 @@ export function mcpGrantRows(state: ConnectorsState, settingsContent: unknown): 
   return (state.connectors.mcp_connections ?? []).filter(isConnectedMcp).map((row) => {
     const held = settingsContent === undefined ? undefined : mcpToolsHeld(settingsContent, row.kind);
     const listed = row.granted_tools;
-    return { kind: row.kind, tools: [...listed, ...(held ?? []).filter((tool) => !listed.includes(tool))], held };
+    const capabilities = row.capabilities ?? null;
+    return {
+      kind: row.kind,
+      tools: [...listed, ...(held ?? []).filter((tool) => !listed.includes(tool))],
+      held,
+      capabilities,
+      otherTools: capabilities === null ? null : (row.other_tools ?? []),
+    };
   });
 }
 
@@ -161,11 +216,130 @@ export interface ConnectorsProps {
   readonly onChange: (level: GithubLevel) => void;
   /** The connected MCP kinds and what the agent holds of each (`mcpGrantRows`); none by default. */
   readonly mcp?: readonly McpGrantRow[];
-  /** The agent's full tool set for one kind after the owner ticked or cleared a tool. */
+  /** The agent's full tool set for one kind after the owner ticked or cleared a tool (a row with no capabilities). */
   readonly onMcpChange?: (kind: McpConnectionKind, tools: readonly string[]) => void;
+  /** The owner ticked (`on`) or unticked one capability of a kind; the screen posts it through `changeCapabilityGrant`. */
+  readonly onCapabilityChange?: (kind: McpConnectionKind, capability: McpCapability, on: boolean) => void;
 }
 
-function McpRow({ row, busy, onMcpChange }: { readonly row: McpGrantRow; readonly busy: boolean; readonly onMcpChange?: ConnectorsProps["onMcpChange"] }) {
+/** How much of one capability a member holds: all its listed tools, some of them, or none. */
+export interface CapabilityState {
+  readonly status: "granted" | "partly" | "none";
+  readonly held: number;
+  readonly of: number;
+  /** "granted", "not granted" or "partly granted (n of m)". */
+  readonly words: string;
+}
+
+/** `capability`'s state for a member holding `held`, counted against the tools the connection lists for it. */
+export function capabilityState(capability: McpCapability, held: readonly string[]): CapabilityState {
+  const of = capability.tools.length;
+  const count = capability.tools.filter((tool) => held.includes(tool)).length;
+  if (count === of && of > 0) return { status: "granted", held: count, of, words: GRANT_WORDS.granted };
+  if (count === 0) return { status: "none", held: 0, of, words: GRANT_WORDS.notGranted };
+  return { status: "partly", held: count, of, words: `partly ${GRANT_WORDS.granted} (${count} of ${of})` };
+}
+
+/** A capability's checkbox: a partly held one is indeterminate, and ticking it grants the rest. */
+function CapabilityBox({ label, state, disabled, onToggle }: { readonly label: string; readonly state: CapabilityState; readonly disabled: boolean; readonly onToggle: (on: boolean) => void }) {
+  const box = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (box.current !== null) box.current.indeterminate = state.status === "partly";
+  }, [state.status]);
+  return (
+    <label>
+      <input ref={box} type="checkbox" checked={state.status === "granted"} disabled={disabled} onChange={(event) => onToggle(event.target.checked)} /> {label}
+    </label>
+  );
+}
+
+export interface CapabilityListProps {
+  readonly kind: McpConnectionKind;
+  /** The connection's capabilities, each with only the tools it lists. */
+  readonly capabilities: readonly McpCapability[];
+  /** The listed tools no capability names: shown by name, never granted by a tick. */
+  readonly otherTools: readonly string[];
+  /** The tools the member holds of this kind; a card that has not created the member yet passes what the owner ticked. */
+  readonly held: readonly string[];
+  readonly disabled?: boolean;
+  /** The owner ticked (`on`) or unticked one capability. Absent: the boxes are read-only. */
+  readonly onToggle?: (capability: McpCapability, on: boolean) => void;
+  /** Prefix of the list's test ids; default `team-connector-mcp-<kind>-capabilities`. */
+  readonly testId?: string;
+}
+
+/** The folded "Other tools" line, in words: how many, that a tick never grants them, and how many are held. */
+export function otherToolsSummary(count: number, granted: number): string {
+  const what = `${count} other ${count === 1 ? "tool" : "tools"}`;
+  return `${what} · no capability covers ${count === 1 ? "it" : "these"}, so a tick never grants ${count === 1 ? "it" : "them"}${granted > 0 ? ` · ${granted} granted` : ""}`;
+}
+
+/**
+ * A tracker grant as a short list of capabilities in words (phase 8 item 21b): each
+ * granted, not granted or partly granted (n of m), a "changes things" mark on one that
+ * writes, deletes or posts, and its raw tool names one expand away as the enforced
+ * detail. Then "Other tools": the listed tools no capability names (plus any held tool
+ * the connection no longer lists), by name, never hidden and never ticked, folded under
+ * a line in words (`otherToolsSummary`) like every other raw name. Controlled
+ * and pure of any route: the Team row posts a tick through `changeCapabilityGrant`; the
+ * held card keeps the ticks until its approve. Every kernel string is a text child.
+ */
+export function CapabilityList({ kind, capabilities, otherTools, held, disabled = false, onToggle, testId = `team-connector-mcp-${kind}-capabilities` }: CapabilityListProps) {
+  const label = MCP_KIND_LABELS[kind];
+  const named = new Set([...capabilities.flatMap((c) => c.tools), ...otherTools]);
+  const others = [...otherTools, ...held.filter((tool) => !named.has(tool))];
+  return (
+    <div className="team-insp-sub" data-testid={testId}>
+      <ul className="team-insp-list team-cap-list" aria-label={`${label} capabilities`}>
+        {capabilities.map((capability) => {
+          const state = capabilityState(capability, held);
+          return (
+            <li key={capability.id} className="team-cap" data-testid={`${testId}-${capability.id}`}>
+              <div className="team-cap-head">
+                <CapabilityBox label={capability.label} state={state} disabled={disabled || onToggle === undefined} onToggle={(on) => onToggle?.(capability, on)} />
+                <span className="team-cap-state" data-status={state.status} data-testid={`${testId}-${capability.id}-state`}>
+                  {state.words}
+                </span>
+                {capability.changes ? (
+                  <span className="team-cap-changes" data-testid={`${testId}-${capability.id}-changes`}>
+                    changes things
+                  </span>
+                ) : null}
+              </div>
+              <details className="team-cap-names">
+                <summary>Tool names</summary>
+                <ul className="team-insp-list team-insp-mono" aria-label={`${capability.label} tool names`} data-testid={`${testId}-${capability.id}-tools`}>
+                  {capability.tools.map((tool) => (
+                    <li key={tool}>{tool}</li>
+                  ))}
+                </ul>
+              </details>
+            </li>
+          );
+        })}
+      </ul>
+      {others.length === 0 ? null : (
+        // Listed by name and never hidden (AC10), but folded like every other raw name, so the owner reads only words
+        // until they open it: a live ClickUp server lists 21 tools no capability covers (21b Validation 2, step 2).
+        <details className="team-cap-other" data-testid={`${testId}-other`}>
+          <summary className="team-insp-subhead" data-testid={`${testId}-other-summary`}>
+            {otherToolsSummary(others.length, others.filter((tool) => held.includes(tool)).length)}
+          </summary>
+          <ul className="team-insp-list team-insp-mono" aria-label={`${label} other tools`}>
+            {others.map((tool) => (
+              <li key={tool}>
+                {tool}
+                {held.includes(tool) ? <span className="team-insp-note"> (granted)</span> : null}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function McpRow({ row, busy, onMcpChange, onCapabilityChange }: { readonly row: McpGrantRow; readonly busy: boolean; readonly onMcpChange?: ConnectorsProps["onMcpChange"]; readonly onCapabilityChange?: ConnectorsProps["onCapabilityChange"] }) {
   const held = row.held;
   const label = MCP_KIND_LABELS[row.kind];
   // The next set keeps the listed order, so the posted value is stable however the owner ticks.
@@ -179,16 +353,30 @@ function McpRow({ row, busy, onMcpChange }: { readonly row: McpGrantRow; readonl
         <dt>{label}</dt>
         <dd data-testid={`team-connector-mcp-${row.kind}-grant`}>{mcpGrantWords(row)}</dd>
       </dl>
-      {held === undefined || row.tools.length === 0 ? null : (
-        <ul className="team-insp-list team-insp-mono" aria-label={`${label} tools`} data-testid={`team-connector-mcp-${row.kind}-tools`}>
-          {row.tools.map((tool) => (
-            <li key={tool}>
-              <label>
-                <input type="checkbox" checked={held.includes(tool)} disabled={busy || onMcpChange === undefined} onChange={(event) => toggle(tool, event.target.checked)} /> {tool}
-              </label>
-            </li>
-          ))}
-        </ul>
+      {held === undefined || row.tools.length === 0 ? null : row.capabilities !== null ? (
+        <CapabilityList
+          kind={row.kind}
+          capabilities={row.capabilities}
+          otherTools={row.otherTools ?? []}
+          held={held}
+          disabled={busy}
+          onToggle={onCapabilityChange === undefined ? undefined : (capability, on) => onCapabilityChange(row.kind, capability, on)}
+        />
+      ) : (
+        <>
+          <p className="team-insp-empty" data-testid={`team-connector-mcp-${row.kind}-plain-unavailable`}>
+            The plain list of what {label} can do is unavailable, so its raw tool names are shown.
+          </p>
+          <ul className="team-insp-list team-insp-mono" aria-label={`${label} tools`} data-testid={`team-connector-mcp-${row.kind}-tools`}>
+            {row.tools.map((tool) => (
+              <li key={tool}>
+                <label>
+                  <input type="checkbox" checked={held.includes(tool)} disabled={busy || onMcpChange === undefined} onChange={(event) => toggle(tool, event.target.checked)} /> {tool}
+                </label>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </>
   );
@@ -237,9 +425,9 @@ function CrewGrant({ level, state, busy, onChange }: { readonly level: GithubLev
   );
 }
 
-export function Connectors({ granted, lead, level, state, busy, onChange, mcp = [], onMcpChange }: ConnectorsProps) {
+export function Connectors({ granted, lead, level, state, busy, onChange, mcp = [], onMcpChange, onCapabilityChange }: ConnectorsProps) {
   const grantWords = granted === undefined ? GRANT_WORDS.unknown : granted ? GRANT_WORDS.granted : GRANT_WORDS.notGranted;
-  const mcpRows = mcp.map((row) => <McpRow key={row.kind} row={row} busy={busy} onMcpChange={onMcpChange} />);
+  const mcpRows = mcp.map((row) => <McpRow key={row.kind} row={row} busy={busy} onMcpChange={onMcpChange} onCapabilityChange={onCapabilityChange} />);
   if (!lead) {
     return (
       <>

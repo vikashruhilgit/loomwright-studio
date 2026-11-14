@@ -30,6 +30,8 @@
 //
 // The `studio` CLI loads this feature, so this module imports only kernel
 // modules that never load the Agent SDK.
+import { isMcpKind, mcpRow, storedToolsOf } from "../integrations/mcp/rows.js";
+import type { McpKind } from "../integrations/mcp/rows.js";
 import { appendEvent, clip, errorMessage } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
 import { recordNotification } from "../notifications/record.js";
@@ -72,6 +74,23 @@ export const KERNEL_APPLIED_ACTIONS = [
   "mcp__kernel__kernel_agent_update",
 ] as const;
 
+/**
+ * The held actions an owner may grant a tracker's tools with (phase 8 item 21b): the crew member's creation
+ * and its update. A subset of `KERNEL_APPLIED_ACTIONS`: the grant is applied by the same kernel applier, in the
+ * decision's transaction, as the owner's own (`by: "owner"`), never as part of Wright's draft.
+ */
+export const OWNER_GRANT_ACTIONS = ["mcp__kernel__kernel_agent_create", "mcp__kernel__kernel_agent_update"] as const;
+
+/**
+ * The tracker tools the owner ticked on a held create or update, sent with their `once` approval: one MCP kind
+ * (`jira`, `clickup`) and server tool names its connection lists (`decideApproval` checks both before it decides
+ * anything). Wright's draft can never carry one: only the owner's approve route reads it.
+ */
+export interface OwnerGrant {
+  readonly kind: McpKind;
+  readonly tools: readonly string[];
+}
+
 /** The approval a kernel applier runs on. */
 export interface AppliedApproval {
   readonly id: number;
@@ -83,6 +102,8 @@ export interface AppliedApproval {
   readonly subjectVersion: number | null;
   /** The `approval_requested` event's id. */
   readonly requestedEventId: number;
+  /** The owner's own tracker grant, checked against the connection's stored tool list; present only on a `kernel_agent_create` / `kernel_agent_update` the owner approved with ticks. */
+  readonly ownerGrant?: OwnerGrant;
 }
 
 /**
@@ -425,6 +446,8 @@ export interface DecisionInput {
   readonly decision: ApprovalDecision;
   /** Phase 2: always `owner`. */
   readonly by: string;
+  /** The tracker tools the owner ticked (item 21b): only a `once` approval of a held crew create or update takes one, else the decision is refused `invalid_approval` and nothing is written. */
+  readonly ownerGrant?: OwnerGrant;
 }
 
 /** The agent the decision's message is addressed to: the requesting session's agent (`null` for a session with none). */
@@ -539,6 +562,24 @@ function applyHeld(store: Store, applier: ApprovalApplier, tool: string, input: 
   }
 }
 
+/**
+ * Why `grant` can't ride on this decision, or `undefined` when it can (item 21b): it needs a `once` approval of a
+ * held crew create or update that the kernel applies (an applier is given), an MCP kind, and a non-empty list
+ * of tool names that kind's connection lists (its stored tool list: the server's own names, read at connect).
+ * A tool the connection does not list is never granted: the names are data, checked here, not trusted.
+ */
+function ownerGrantProblem(store: Store, decision: ApprovalDecision, tool: string | undefined, applier: ApprovalApplier | undefined, grant: OwnerGrant): string | undefined {
+  if (decision !== "once") return "an owner_grant goes only with a once approval";
+  if (tool === undefined || !(OWNER_GRANT_ACTIONS as readonly string[]).includes(tool)) return "an owner_grant is only for the approval of a crew member's creation or update";
+  if (applier === undefined) return "an owner_grant needs the kernel's applier, which this decision has none of";
+  if (!isMcpKind(grant.kind)) return "owner_grant.kind must be jira or clickup";
+  if (!Array.isArray(grant.tools) || grant.tools.length === 0 || grant.tools.some((t) => typeof t !== "string" || t === "")) return "owner_grant.tools must be a non-empty list of tool names";
+  const listed = new Set(storedToolsOf(mcpRow(store, grant.kind)?.granted_tools ?? null).map((t) => t.name));
+  const unlisted = grant.tools.filter((t) => !listed.has(t));
+  if (unlisted.length === 0) return undefined;
+  return `the ${grant.kind} connection does not list ${unlisted.length === 1 ? `the tool ${JSON.stringify(clip(unlisted[0] as string, 64))}` : `${unlisted.length} of the tools named`}, so it can't be granted`;
+}
+
 /** The decision's message text (Design 2's table): what happened, and whether the agent repeats the call. */
 function decisionText(row: ApprovalRow, decision: ApprovalDecision, source: unknown, record: ApplyRecord | undefined): string {
   const head = `${decision === "deny" ? "denied" : "approved"} approval ${row.id}: ${row.action}`;
@@ -593,14 +634,20 @@ export function decideApproval(store: Store, input: DecisionInput, now: Date, ap
       const refused = alwaysRefusal(store, row);
       if (refused !== undefined) throw new ApprovalError("always_not_supported", refused);
     }
+    // Read only: the held call, so an owner_grant is checked before a single write (a refusal decides nothing).
+    const requested = requestedEvent(store, id);
+    const source = requested?.payload.source;
+    const rail = source === "rail" ? railCallOf(parsed(row.payload_json)) : undefined;
+    const ownerGrant = input.ownerGrant === undefined ? undefined : ({ kind: input.ownerGrant.kind, tools: [...new Set(input.ownerGrant.tools)] } satisfies OwnerGrant);
+    if (ownerGrant !== undefined) {
+      const problem = ownerGrantProblem(store, decision, rail?.tool, applier, ownerGrant);
+      if (problem !== undefined) throw new ApprovalError("invalid_approval", problem);
+    }
     const status: ApprovalStatus = decision === "deny" ? "denied" : "approved";
     const changed = store
       .prepare("UPDATE approvals SET status = ?, decision = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'")
       .run(status, decision, by, at, id).changes;
     if (changed !== 1) throw new ApprovalError("approval_not_pending", `approval ${id} is not pending`);
-    const requested = requestedEvent(store, id);
-    const source = requested?.payload.source;
-    const rail = source === "rail" ? railCallOf(parsed(row.payload_json)) : undefined;
     let record: ApplyRecord | undefined;
     if (decision === "once" && requested !== null && rail !== undefined && isKernelApplied(rail.tool) && applier !== undefined) {
       const event = requested.payload;
@@ -610,6 +657,7 @@ export function decideApproval(store: Store, input: DecisionInput, now: Date, ap
         agent: typeof event.agent === "string" ? namedAgent(event.agent) : null,
         subjectVersion: typeof event.subject_version === "number" ? event.subject_version : null,
         requestedEventId: requested.eventId,
+        ...(ownerGrant === undefined ? {} : { ownerGrant }),
       };
       const outcome = applyHeld(store, applier, rail.tool, rail.call.input, approval, now);
       // The grant is spent by the kernel on every attempt, so no later agent call can use it.
@@ -621,7 +669,9 @@ export function decideApproval(store: Store, input: DecisionInput, now: Date, ap
         record = { apply_refused: outcome.refused, apply_detail: outcome.text };
       }
     }
-    appendEvent(store, "approval_decided", { sessionId: row.requesting_session, taskId: null }, { id, decision, by, action: row.action, ...record }, at);
+    // The owner's tick is recorded only when the applier applied the decision (a refused apply wrote nothing, grant included).
+    const granted = ownerGrant !== undefined && record !== undefined && "applied" in record ? { owner_grant: { kind: ownerGrant.kind, tools: ownerGrant.tools } } : {};
+    appendEvent(store, "approval_decided", { sessionId: row.requesting_session, taskId: null }, { id, decision, by, action: row.action, ...record, ...granted }, at);
     enqueueEvent(
       store,
       {

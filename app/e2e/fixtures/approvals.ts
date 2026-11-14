@@ -5,7 +5,9 @@
 // screen can tell (`kernel/src/approvals/routes.ts` and `store.ts`):
 //
 // - `GET /approvals` lists the pending ones; `?all=1` adds the decided ones.
-// - `POST /approvals/:id/approve` takes `{ decision: "once" | "always" }`.
+// - `POST /approvals/:id/approve` takes `{ decision: "once" | "always" }`, and for a held crew create
+//   (phase 8 item 21b) an optional `owner_grant: {kind, tools}`, which every POST records with its body
+//   (`trackerCharterApproval` and `trackerConnectorsRoutes` are that item's held card and its connection).
 //   A decided approval answers `409 approval_not_pending`; an `always` with no
 //   playbook, or one the test marks refused, answers `409
 //   always_not_supported` with the kernel's message. A decision records the
@@ -18,7 +20,7 @@
 // every POST is recorded with its params and body. `onChange` is called after
 // each decision and revoke with the event kind the kernel would append, so a
 // spec can push it through the feed.
-import type { Approval, BrainMessage, EventFrame, Grant, RouteKey, SessionSummary, ThreadItem, ThreadResponse } from "../../src/api/contract";
+import type { Approval, BrainMessage, EventFrame, Grant, McpCapability, RouteKey, SessionSummary, ThreadItem, ThreadResponse } from "../../src/api/contract";
 import type { FixtureAnswer, FixtureRequest, FixtureRoute } from "../fixture-kernel";
 
 export const KERNEL_AGENT_CREATE = "mcp__kernel__kernel_agent_create";
@@ -115,6 +117,62 @@ export function charterApproval(id = 1): Approval {
       "Model: sonnet · 250,000 tokens/day · 1 session",
     ].join("\n"),
   });
+}
+
+/** The fixture's ClickUp capabilities, as `GET /connectors` answers them (item 21b): the tools each lists, in words. */
+export const TRACKER_CAPABILITIES: readonly McpCapability[] = [
+  { id: "read", label: "Read tickets", changes: false, tools: ["clickup_get_task", "clickup_filter_tasks"] },
+  { id: "comment", label: "Comment on tickets", changes: true, tools: ["clickup_create_task_comment"] },
+  { id: "delete", label: "Delete tickets", changes: true, tools: ["clickup_delete_task"] },
+];
+
+/** The readiness line the kernel writes for a ticket duty whose member has no ClickUp access. */
+export const TRACKER_NO_ACCESS_LINE = "duty 1: Ticket Runner can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)";
+
+/**
+ * A held create of a ticket-working member (Ticket Runner) whose display flags the tracker line (item 21b), in
+ * the kernel's charter format so the screen draws it as the charter card.
+ */
+export function trackerCharterApproval(id = 8): Approval {
+  return approval(id, {
+    requesting_agent: "wright",
+    requesting_session: 12,
+    action: "kernel_agent_create",
+    requested_at: at(2),
+    playbook: null,
+    payload: { tool: KERNEL_AGENT_CREATE, input: { charter: { id: "ticket-runner-20c" } }, cwd: "/Users/owner/src/studio" },
+    display: [
+      'Create crew member ticket-runner-20c ("Ticket Runner", crab crew-teal), proposed by Wright',
+      "readiness: checked by the kernel before you see it",
+      `  flagged: ${TRACKER_NO_ACCESS_LINE}`,
+      "job: Hand tickets to /automate",
+      "  - Hand tickets to Loomwright's /automate.",
+      "enforced: never: git_push; tools: Read; bash prefixes: none",
+      "limits: tokens_per_day 200000 (proposed); sessions_at_once 1 (proposed); delegation_depth not set (no limit)",
+      "workspaces: none",
+    ].join("\n"),
+  });
+}
+
+/** `GET /connectors` with ClickUp connected and its tools grouped in words (item 21b). */
+export function trackerConnectorsRoutes(): Partial<Record<RouteKey, FixtureRoute>> {
+  return {
+    "GET /connectors": () =>
+      ok({
+        connectors: [],
+        mcp_connections: [
+          {
+            kind: "clickup",
+            server_url: "https://mcp.clickup.example/mcp",
+            status: "connected",
+            granted_tools: TRACKER_CAPABILITIES.flatMap((c) => c.tools),
+            capabilities: TRACKER_CAPABILITIES,
+            other_tools: [],
+            token_expiry: null,
+          },
+        ],
+      }),
+  };
 }
 
 /**

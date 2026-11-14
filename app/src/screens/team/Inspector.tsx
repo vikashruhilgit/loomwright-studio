@@ -3,8 +3,11 @@
 //
 // - A crew member: its role (the charter persona, unclamped), duties, and its
 //   prose boundaries labelled guidance; then, visibly apart and labelled
-//   enforced, the kernel-enforced permissions read from its settings file
-//   (allowed tools, Bash prefixes) and its `never` list; then model, limits,
+//   enforced, its permissions: what it may do as catalogue job labels, in the order
+//   the held charter card groups them (`GET /agents/:id` `jobs`, phase 8 item 21b),
+//   "Other tools" by name for a granted tool no job lists, and, collapsed under
+//   "Kernel tool names, as enforced", the kernel-enforced lists read from its
+//   settings file (allowed tools, Bash prefixes) and its `never` list unchanged; then model, limits,
 //   workspaces and the memory files as plain paths. Rename, Set a field, Off
 //   and On call `POST /agents/:id/rename|set|off|on`.
 // - Wright: only the `WrightSetField` fields are offered (`POST
@@ -19,7 +22,8 @@
 //   `POST /agents/:id/set`: a crew member's None, Read or Write (phase 8 item 20,
 //   read from its `GET /agents/:id` `settings.content.connectors`), Wright's
 //   roster-based Grant GitHub or Revoke; plus, per connected MCP kind (Jira,
-//   ClickUp), the tools the agent holds (the same `connectors`), unknown for Wright.
+//   ClickUp), what the agent holds (the same `connectors`) as a list of capabilities
+//   in words (raw tool names when the kernel sent none), unknown for Wright.
 // - The header avatar carries the card's state (`avatar`, from the task line),
 //   never a fixed one.
 //
@@ -27,7 +31,7 @@
 // through the feed (`agent_*` events refetch `agents`), never a local edit.
 // Every kernel string is a React text child (invariant 3).
 import { type FormEvent, type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
-import type { AgentDetailResponse, AgentSetField, McpConnectionKind, RosterEntry, StudioBridge, WrightSetField } from "../../api/contract";
+import type { AgentDetailResponse, AgentSetField, McpCapability, McpConnectionKind, RosterEntry, StudioBridge, WrightSetField } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
@@ -35,7 +39,7 @@ import { Button } from "../../components/Button/Button";
 import { formatTokens } from "../../components/Card/Card";
 import { SelectField, TextField } from "../../components/Input/Input";
 import { setAgentField, turnAgent } from "./actions";
-import { Connectors, type GithubLevel, changeGithubGrant, changeMcpGrant, githubLevel, mcpGrantRows } from "./Connectors";
+import { Connectors, type GithubLevel, changeCapabilityGrant, changeGithubGrant, changeMcpGrant, githubLevel, mcpGrantRows } from "./Connectors";
 import {
   CLEAR_VALUE,
   CREW_SET_FIELDS,
@@ -51,6 +55,7 @@ import {
   githubGranted,
   isRecord,
   isWright,
+  mcpToolsHeld,
   rosterModel,
   settingText,
   settingsRead,
@@ -129,42 +134,123 @@ function tokensLine(agent: RosterEntry): string {
   return `${formatTokens(agent.tokens_today)} of ${formatTokens(agent.tokens_per_day)} tokens today`;
 }
 
-/** The kernel-enforced block of a crew member: the settings file's tool policy and the `never` list. */
+/** The collapsed section's title: the raw kernel tool names, apart from the job labels above it. */
+export const RAW_TOOL_NAMES_SUMMARY = "Kernel tool names, as enforced";
+
+/** The heading over the ticket duties' tracker access that is still open (item 21b). */
+export const TRACKER_OPEN_HEADING = "Ticket access still open";
+
+/**
+ * A ticket duty's missing tracker access, named as open (item 21b, AC16): every `tracker_access` entry
+ * whose `status` is not `granted`, in the kernel's own words (`line`), read from the same check the held
+ * charter card used. Nothing when the kernel sent none (an older kernel), the settings file was refused
+ * (`null`: the grant is unknown, never "open") or every ticket duty can read its tracker.
+ */
+function TrackerOpen({ access }: { readonly access: AgentDetailResponse["tracker_access"] }) {
+  const open = (access ?? []).filter((entry) => entry.status !== "granted");
+  if (open.length === 0) return null;
+  return (
+    <div className="team-insp-sub" data-testid="team-tracker-open">
+      <span className="team-insp-subhead">{TRACKER_OPEN_HEADING}</span>
+      <ul className="team-insp-list">
+        {open.map((entry, i) => (
+          <li key={i} data-testid="team-tracker-open-line" data-status={entry.status}>
+            {entry.line}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** The line when the kernel sent no `jobs` (an older kernel, or no catalogue): the raw names stay in the collapsed section. */
+const JOBS_UNAVAILABLE = "The plain list of jobs is unavailable. The kernel's own tool names are below.";
+
+/** The line for a member holding no kernel job. */
+const NO_JOBS = "No kernel jobs granted.";
+
+/** What a crew member may do, as catalogue job labels, then "Other tools" by name (a granted tool no job lists: never hidden). */
+function Jobs({ jobs }: { readonly jobs: AgentDetailResponse["jobs"] }) {
+  if (jobs === undefined || jobs === null) {
+    return (
+      <p className="team-insp-empty" data-testid="team-enforced-jobs-unavailable">
+        {JOBS_UNAVAILABLE}
+      </p>
+    );
+  }
+  if (jobs.length === 0) {
+    return (
+      <p className="team-insp-empty" data-testid="team-enforced-jobs-none">
+        {NO_JOBS}
+      </p>
+    );
+  }
+  return (
+    <ul className="team-insp-list" aria-label="What it may do" data-testid="team-enforced-jobs">
+      {jobs.map((group) => (
+        <li key={group.job ?? "other"} data-testid={group.job === null ? "team-enforced-job-other" : `team-enforced-job-${group.job}`}>
+          {group.label}
+          {group.job === null ? (
+            <ul className="team-insp-list team-insp-mono" aria-label="Other tools">
+              {group.tools.map((tool) => (
+                <li key={tool}>{tool}</li>
+              ))}
+            </ul>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The permissions block of a crew member. Above, what it may do in the catalogue's words
+ * (`jobs`); below, collapsed, the kernel-enforced lists unchanged: the settings file's tool
+ * policy and the `never` list. No raw tool name is shown above the collapsed section except
+ * "Other tools", which are named so none is hidden.
+ */
 function Enforced({ detail }: { readonly detail: AgentDetailResponse }) {
   // Only a file the kernel accepted is shown as enforced: a refused one arrives as parsed content too.
   const policy = enforcedToolPolicy(acceptedSettings(detail));
+  const unreadable = detail.settings.error !== null || policy === null;
   return (
     <Section title="Permissions" note="enforced by the kernel" testId="team-enforced">
-      {detail.settings.error !== null || policy === null ? (
+      {unreadable ? (
         <p className="team-insp-error" data-testid="team-settings-unreadable">
           settings file unreadable{detail.settings.error === null ? "" : `: ${detail.settings.error.message}`}
         </p>
       ) : (
-        <>
-          <div className="team-insp-sub" data-testid="team-enforced-tools">
-            <span className="team-insp-subhead">
-              Allowed tools <Badge tone="accent">enforced</Badge>
-            </span>
-            <List items={policy.allowedTools} empty="None" mono />
-          </div>
-          <div className="team-insp-sub" data-testid="team-enforced-bash">
-            <span className="team-insp-subhead">
-              Bash prefixes <Badge tone="accent">enforced</Badge>
-            </span>
-            <List items={policy.allowedBashPrefixes} empty="None" mono />
-          </div>
-        </>
+        <Jobs jobs={detail.jobs} />
       )}
-      <div className="team-insp-sub" data-testid="team-enforced-never">
-        <span className="team-insp-subhead">
-          Never <Badge tone="accent">enforced</Badge>
-        </span>
-        {detail.never === null ? (
-          <p className="team-insp-empty">Not read: the settings file does not read ok.</p>
-        ) : (
-          <List items={detail.never} empty="Nothing extra" mono />
+      <details className="team-raw-names" data-testid="team-enforced-raw">
+        <summary>{RAW_TOOL_NAMES_SUMMARY}</summary>
+        {unreadable ? null : (
+          <>
+            <div className="team-insp-sub" data-testid="team-enforced-tools">
+              <span className="team-insp-subhead">
+                Allowed tools <Badge tone="accent">enforced</Badge>
+              </span>
+              <List items={policy.allowedTools} empty="None" mono />
+            </div>
+            <div className="team-insp-sub" data-testid="team-enforced-bash">
+              <span className="team-insp-subhead">
+                Bash prefixes <Badge tone="accent">enforced</Badge>
+              </span>
+              <List items={policy.allowedBashPrefixes} empty="None" mono />
+            </div>
+          </>
         )}
-      </div>
+        <div className="team-insp-sub" data-testid="team-enforced-never">
+          <span className="team-insp-subhead">
+            Never <Badge tone="accent">enforced</Badge>
+          </span>
+          {detail.never === null ? (
+            <p className="team-insp-empty">Not read: the settings file does not read ok.</p>
+          ) : (
+            <List items={detail.never} empty="Nothing extra" mono />
+          )}
+        </div>
+      </details>
     </Section>
   );
 }
@@ -306,6 +392,18 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
     }
   };
 
+  // One capability tick or untick: the kind's whole next tool set, posted through the same route as a tool's checkbox.
+  const onCapabilityGrant = async (kind: McpConnectionKind, capability: McpCapability, on: boolean) => {
+    setBusy(true);
+    setNotice(undefined);
+    try {
+      const outcome = await changeCapabilityGrant(api, agent, kind, capability, mcpToolsHeld(mcpSettings, kind), on);
+      setNotice({ kind: outcome.ok ? "ok" : "error", text: outcome.text });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const ok = detail?.status === "ok" ? detail.detail : undefined;
   const prose = ok === undefined ? undefined : charterProse(ok);
   // A charter list that does not parse is null: shown as not read, never as "None stated".
@@ -371,6 +469,7 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
           </Section>
           <Section title="Duties">
             {duties === null ? <p className="team-insp-empty">{CHARTER_UNREAD}</p> : <List items={duties} empty="None stated" />}
+            {ok === undefined ? null : <TrackerOpen access={ok.tracker_access} />}
           </Section>
           <Section title="Boundaries" note="guidance, not enforced" testId="team-guidance">
             {boundaries === null ? (
@@ -420,6 +519,7 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
           onChange={(level) => void onGrant(level)}
           mcp={mcpGrantRows(connectors, mcpSettings)}
           onMcpChange={(kind, tools) => void onMcpGrant(kind, tools)}
+          onCapabilityChange={(kind, capability, on) => void onCapabilityGrant(kind, capability, on)}
         />
       </Section>
 
