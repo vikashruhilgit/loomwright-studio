@@ -203,4 +203,15 @@ playbook_runs id 189: kind dry_run, status done, playbook 10 version 1, session 
   poll.reviewed: clickup:86bd2djuq; drafts: []; no preview_incomplete, no mcp_tool_error
 ```
 
-Verdict: FAIL for Validation 2 (steps 2 and 5)
+First walk's result, at `503d915b`: FAIL on steps 2 and 5.
+
+### The re-walk of steps 2 and 5, after the fix
+
+Run on 2026-11-14 between 17:14 and 17:44 local time by Claude, at the owner's request, against the kernel (`service install`, pid 95057) and the packaged app built from `3e4181a5` plus the marker fix below. Fix: a duty states its tracker or `none` (any duty may name one; Wright's create is refused without it), and the tracker check runs on every duty that names one; the uncovered tools fold under one line in words.
+
+- **Step 5: PASS.** Asked through `studio ask` (the screen was locked), Wright drafted `ticket-triage-21b-three` (approval 39) with the duty `{"jobs": [], "source": "clickup"}`: no `/automate` job this time. The card's readiness: "flagged: duty 1: Ticket Triage 21b three can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)". Approved once with nothing ticked: `connectors` none; `GET /agents/:id`'s `tracker_access` reads `status: no_access`; the inspector shows "Ticket access still open · Ticket Triage 21b three can't read ClickUp tickets yet: it has no ClickUp access" under Duties ([rewalk-5-inspector-access-open.jpg](phase-8-21b-v2/rewalk-5-inspector-access-open.jpg)); Wright's reply: "Before it can do anything, you need to give it ClickUp access … Grant ClickUp in the member's inspector under Team".
+- **Step 2: PASS.** Wright drafted `ticket-triage-21b-four` (approval 40) for the card alone; it was flagged the same way. Choose access lists the six capabilities in words with nothing ticked, then one folded line, "▸ 21 other tools · no capability covers these, so a tick never grants them"; no raw tool name shows on the card ([rewalk-2-card-other-tools-folded.jpg](phase-8-21b-v2/rewalk-2-card-other-tools-folded.jpg)). Opening it lists the 21 names. Approval 40 was then denied. The inspector folds the same line ([rewalk-4-inspector-other-tools-folded.jpg](phase-8-21b-v2/rewalk-4-inspector-other-tools-folded.jpg), taken before the marker fix: the line had no disclosure marker, so it did not look openable; the CSS now keeps the marker, as on the card).
+
+Not re-walked at the fixed head: steps 1, 3, 4 and 6 (the fix does not touch them; step 4's inspector was seen again above), and step 7. Seen again, outside this item: after each approval Wright drafts a playbook for the new member although asked not to (playbooks 11 and 12).
+
+Verdict: PASS for Validation 2

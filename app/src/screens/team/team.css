@@ -446,3 +446,8 @@
   flex-direction: column;
   gap: var(--space-1);
 }
+/* The folded line keeps its disclosure marker (display: flex on the subhead drops it), so the owner can tell it opens. */
+.team-cap-other > summary {
+  display: list-item;
+  cursor: pointer;
+}
