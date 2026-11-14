@@ -14,7 +14,7 @@ import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
 import { fakeBridge, ok } from "../../store/fake-bridge";
 import type { FakeBridge, Responder } from "../../store/fake-bridge";
-import { CapabilityList, capabilityState, changeCapabilityGrant, changeMcpGrant, mcpGrantRows } from "./Connectors";
+import { CapabilityList, capabilityState, changeCapabilityGrant, changeMcpGrant, mcpGrantRows, otherToolsSummary } from "./Connectors";
 import { type ConnectorsState, connectorStateText, githubGranted, mcpToolsHeld } from "./model";
 import { TeamView } from "./TeamView";
 
@@ -649,6 +649,22 @@ describe("CapabilityList", () => {
     const other = screen.getByTestId("team-connector-mcp-clickup-capabilities-other");
     expect(within(other).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["clickup_oddity (granted)", "clickup_retired (granted)"]);
     expect(within(other).queryAllByRole("checkbox")).toEqual([]);
+  });
+
+  it("folds Other tools under a line in words, closed until the owner opens it, so no raw name shows above it (21b Validation 2, step 2)", () => {
+    render(<CapabilityList kind="clickup" capabilities={CLICKUP_CAPABILITIES} otherTools={CLICKUP_OTHER} held={["clickup_oddity", "clickup_retired"]} />);
+    const other = screen.getByTestId("team-connector-mcp-clickup-capabilities-other");
+    expect(other.tagName).toBe("DETAILS");
+    expect((other as HTMLDetailsElement).open).toBe(false);
+    const summary = screen.getByTestId("team-connector-mcp-clickup-capabilities-other-summary");
+    expect(summary.tagName).toBe("SUMMARY");
+    expect(summary.textContent).toBe("2 other tools · no capability covers these, so a tick never grants them · 2 granted");
+    expect(summary.textContent).not.toMatch(/clickup_/);
+  });
+
+  it("otherToolsSummary counts in words, one or many, and names how many are held only when some are", () => {
+    expect(otherToolsSummary(21, 0)).toBe("21 other tools · no capability covers these, so a tick never grants them");
+    expect(otherToolsSummary(1, 1)).toBe("1 other tool · no capability covers it, so a tick never grants it · 1 granted");
   });
 
   it("a tick reports the capability and the way, and a partly held capability is indeterminate until ticked", () => {

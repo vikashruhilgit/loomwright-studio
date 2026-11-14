@@ -366,7 +366,7 @@ function shortestWorkspaceLine(jobs: readonly ToolJob[]): string {
 
 /** What the member holds: whether a need is met (`holdsConnector`, the catalogue's one rule) and which MCP tools it holds, or why that can't be told. */
 type GrantView =
-  | { readonly holds: (need: ConnectorNeed) => boolean; readonly source: string; readonly mcp: (kind: McpGrantKind) => readonly string[] }
+  | { readonly holds: (need: Pick<ConnectorNeed, "kind" | "write">) => boolean; readonly source: string; readonly mcp: (kind: McpGrantKind) => readonly string[] }
   | { readonly unread: string };
 
 function grantView(grant: ReadinessGrant, ownerGrant?: OwnerMcpGrant): GrantView {
@@ -455,7 +455,7 @@ function permissionFindings(
       const subject = `permission to use ${connectorAccessText(n)} for ${TOOL_JOBS[job]}`;
       if ("unread" in view) {
         items.push(item("permission", "not_checked", `${subject}: not checked (${view.unread})`, `${subject}: not checked`, [job]));
-      } else if (!view.holds({ kind: n.kind, write: n.write, job })) {
+      } else if (!view.holds({ kind: n.kind, write: n.write })) {
         ownerGrant = true;
         items.push(item("permission", "flagged", `${subject}: only you can grant it (Team, in the member's inspector)`, `${subject}: the owner's step in Team`, [job]));
       }
@@ -497,7 +497,7 @@ export const TRACKER_NO_SOURCE_FLAG = "doesn't say which tracker it reads";
 function trackerItem(name: string, n: number, duty: DutyEntry, view: GrantView, env: TrackerEnv): ReadinessItem {
   const text = duty.text;
   const finding = (status: TrackerStatus, source: TicketSource | null, sentence: string): TrackerFinding => ({ duty: text, source, status, sentence: oneLine(sentence) });
-  const source = duty.source;
+  const source = duty.source === "none" ? undefined : duty.source;
   if (source === undefined) {
     const sentence = `duty ${n} ${TRACKER_NO_SOURCE_FLAG}`;
     return { ...item("tracker", "flagged", sentence, `duty ${n} names no ticket source`), tracker: finding("no_source", null, sentence) };
@@ -514,10 +514,9 @@ function trackerItem(name: string, n: number, duty: DutyEntry, view: GrantView, 
   }
   if ("unread" in view) return notChecked();
   // GitHub Issues are read through the member's GitHub connector; ClickUp and Jira through the connection's "read tickets" tools it holds.
-  const ticketJob = duty.jobs.find(jobNeedsTicketSource) as ToolJob;
   const held = source === "github" ? [] : view.mcp(source);
   const needed = source === "github" ? [] : env[source].readTools;
-  const granted = source === "github" ? view.holds({ kind: "github", write: false, job: ticketJob }) : needed.length > 0 && needed.every((t) => held.includes(t));
+  const granted = source === "github" ? view.holds({ kind: "github", write: false }) : needed.length > 0 && needed.every((t) => held.includes(t));
   if (granted) {
     const sentence = `${name} can read ${label} tickets`;
     return { ...item("tracker", "ready", `${subject}: ${sentence}`, `${subject}: ${sentence}`), tracker: finding("granted", source, sentence) };
@@ -530,11 +529,20 @@ function trackerItem(name: string, n: number, duty: DutyEntry, view: GrantView, 
   };
 }
 
-/** One item per ticket duty (a duty entry whose jobs include a ticket job), in charter order. A bare line names no job, so it is never a ticket duty. */
+/**
+ * Whether a duty entry works tickets: it names a tracker as its source (with or without a kernel job: reading and
+ * commenting need only the member's connector access), or one of its jobs works tickets (`jobNeedsTicketSource`;
+ * such a duty with no tracker named is flagged `no_source`). A bare line, or `source: "none"` with no ticket job, is not.
+ */
+function worksTickets(duty: DutyEntry): boolean {
+  return (duty.source !== undefined && duty.source !== "none") || duty.jobs.some(jobNeedsTicketSource);
+}
+
+/** One item per ticket duty (`worksTickets`), in charter order. */
 function trackerFindings(charter: Pick<Charter, "display_name" | "duties">, view: GrantView, env: TrackerEnv): ReadinessItem[] {
   const items: ReadinessItem[] = [];
   for (const [i, duty] of charter.duties.entries()) {
-    if (typeof duty === "string" || !duty.jobs.some(jobNeedsTicketSource)) continue;
+    if (typeof duty === "string" || !worksTickets(duty)) continue;
     items.push(trackerItem(charter.display_name, i + 1, duty, view, env));
   }
   return items;
@@ -796,9 +804,18 @@ export function openFlagsSentence(readiness: ReadinessResult): string {
  */
 export function wrightDutyRefusal(charter: Charter): string | undefined {
   const i = charter.duties.findIndex((d) => typeof d === "string");
-  if (i < 0) return undefined;
+  if (i >= 0) {
+    return (
+      `duties.${i}: write each duty as {"text": "<the duty>", "jobs": [<the catalogue job ids that do it>], "source": "github" | "clickup" | "jira" | "none"} ` +
+      "([] for a duty that needs no kernel tool), so the kernel can check that the charter grants every job a duty needs"
+    );
+  }
+  // The tracker is stated on every duty, never left to a tag the drafter may skip: an unstated one would let a ticket
+  // duty with no kernel job pass as needing nothing, and the owner would never be told the member can't read its tickets.
+  const unstated = charter.duties.findIndex((d) => typeof d !== "string" && d.source === undefined);
+  if (unstated < 0) return undefined;
   return (
-    `duties.${i}: write each duty as {"text": "<the duty>", "jobs": [<the catalogue job ids that do it>]} ` +
-    "([] for a duty that needs no kernel tool), so the kernel can check that the charter grants every job a duty needs"
+    `duties.${unstated}: state the duty's "source": the tracker it works tickets from ("github" for GitHub Issues, "clickup" or "jira"), ` +
+    'whether it does so through a kernel job or only by reading and commenting through the member\'s connector access, or "none" when it works no tickets'
   );
 }

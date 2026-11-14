@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
-import { CONNECTOR_LABELS, TOOL_JOB_IDS, jobNeedsTicketSource } from "../features/catalogue.js";
+import { CONNECTOR_LABELS, TOOL_JOB_IDS } from "../features/catalogue.js";
 import type { ToolJob } from "../features/catalogue.js";
 import { CONNECTOR_KINDS } from "../integrations/types.js";
 import type { ConnectorKind } from "../integrations/types.js";
@@ -97,16 +97,27 @@ export type TicketSource = (typeof TICKET_SOURCES)[number];
  * A duty that names its jobs: its text, and the catalogue jobs (`TOOL_JOBS`
  * ids, no repeats) that do it; `[]` is a duty that needs no kernel tool. The
  * charter readiness check (`./charter-readiness.ts`) reads `jobs`, never the
- * text. `source` (optional) is the tracker a ticket duty reads its tickets from:
- * valid only on a duty whose jobs include a ticket job (`jobNeedsTicketSource`),
- * Wright's proposal on the held card, and never a grant (`connectors` stays the
- * owner's: the owner grants a tracker's tools when they approve).
+ * text. `source` is the tracker the duty works tickets from (`TICKET_SOURCES`),
+ * or `none` for a duty that works no tickets: on any duty, with or without a
+ * ticket job, since a duty can work a tracker's tickets through the member's
+ * connector access alone (read and comment) with no kernel job. Wright states
+ * it on every duty it drafts (`wrightDutyRefusal`), so the access check never
+ * depends on whether the model chose to tag a duty; it is optional in a stored
+ * charter (one written before this rule reads as unstated). Wright's proposal on
+ * the held card, never a grant (`connectors` stays the owner's: the owner grants
+ * a tracker's tools when they approve).
  */
 export interface DutyEntry {
   readonly text: string;
   readonly jobs: readonly ToolJob[];
-  readonly source?: TicketSource;
+  readonly source?: DutySource;
 }
+
+/** What a duty's `source` may say: a tracker, or `none` (the duty works no tickets). */
+export const DUTY_SOURCES = Object.freeze([...TICKET_SOURCES, "none"] as const);
+
+/** One of `DUTY_SOURCES`. */
+export type DutySource = (typeof DUTY_SOURCES)[number];
 
 /**
  * One duty: an entry, or a bare line of text (the owner's own create, and
@@ -216,14 +227,11 @@ const dutyEntrySchema = z
       .array(z.enum(TOOL_JOB_IDS as [ToolJob, ...ToolJob[]]))
       .max(TOOL_JOB_IDS.length)
       .refine((list) => new Set(list).size === list.length, "must not repeat a job"),
-    // The tracker a ticket duty reads (an enum, so the published schema lists it); the refine below keeps it to a ticket duty.
-    source: z.enum(TICKET_SOURCES).optional(),
+    // The tracker the duty works tickets from, or none (an enum, so the published schema lists it). Any duty may name one:
+    // reading and commenting on a tracker's tickets needs the member's connector access, not a kernel job.
+    source: z.enum(DUTY_SOURCES).optional(),
   })
-  .strict()
-  .refine((duty) => duty.source === undefined || duty.jobs.some(jobNeedsTicketSource), {
-    message: "source is only for a duty that works tickets (its jobs must include a job that does, such as automate_tickets)",
-    path: ["source"],
-  });
+  .strict();
 
 const charterSchema = z
   .object({

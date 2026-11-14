@@ -268,12 +268,19 @@ export interface CapabilityListProps {
   readonly testId?: string;
 }
 
+/** The folded "Other tools" line, in words: how many, that a tick never grants them, and how many are held. */
+export function otherToolsSummary(count: number, granted: number): string {
+  const what = `${count} other ${count === 1 ? "tool" : "tools"}`;
+  return `${what} · no capability covers ${count === 1 ? "it" : "these"}, so a tick never grants ${count === 1 ? "it" : "them"}${granted > 0 ? ` · ${granted} granted` : ""}`;
+}
+
 /**
  * A tracker grant as a short list of capabilities in words (phase 8 item 21b): each
  * granted, not granted or partly granted (n of m), a "changes things" mark on one that
  * writes, deletes or posts, and its raw tool names one expand away as the enforced
  * detail. Then "Other tools": the listed tools no capability names (plus any held tool
- * the connection no longer lists), by name, never hidden and never ticked. Controlled
+ * the connection no longer lists), by name, never hidden and never ticked, folded under
+ * a line in words (`otherToolsSummary`) like every other raw name. Controlled
  * and pure of any route: the Team row posts a tick through `changeCapabilityGrant`; the
  * held card keeps the ticks until its approve. Every kernel string is a text child.
  */
@@ -312,8 +319,12 @@ export function CapabilityList({ kind, capabilities, otherTools, held, disabled 
         })}
       </ul>
       {others.length === 0 ? null : (
-        <div className="team-cap-other" data-testid={`${testId}-other`}>
-          <span className="team-insp-subhead">Other tools · no capability covers these, so a tick never grants them</span>
+        // Listed by name and never hidden (AC10), but folded like every other raw name, so the owner reads only words
+        // until they open it: a live ClickUp server lists 21 tools no capability covers (21b Validation 2, step 2).
+        <details className="team-cap-other" data-testid={`${testId}-other`}>
+          <summary className="team-insp-subhead" data-testid={`${testId}-other-summary`}>
+            {otherToolsSummary(others.length, others.filter((tool) => held.includes(tool)).length)}
+          </summary>
           <ul className="team-insp-list team-insp-mono" aria-label={`${label} other tools`}>
             {others.map((tool) => (
               <li key={tool}>
@@ -322,7 +333,7 @@ export function CapabilityList({ kind, capabilities, otherTools, held, disabled 
               </li>
             ))}
           </ul>
-        </div>
+        </details>
       )}
     </div>
   );

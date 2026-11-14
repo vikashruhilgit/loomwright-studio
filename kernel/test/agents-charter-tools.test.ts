@@ -109,7 +109,7 @@ function charter(extra: Record<string, unknown> = {}): Record<string, unknown> {
     avatar: { shape: "crab", hue: "crew-teal" },
     persona: "A careful reviewer who comments on pull requests.\nIt explains each finding plainly.",
     // A duty entry: Wright's create names each duty's jobs (none here: the reviewer needs no kernel tool).
-    duties: [{ text: "Review the pull requests the owner sends and comment on them.", jobs: [] }],
+    duties: [{ text: "Review the pull requests the owner sends and comment on them.", jobs: [], source: "none" }],
     boundaries: ["Never push code or open a pull request."],
     model: "claude-sonnet-5",
     permission_mode: "default",
@@ -555,7 +555,7 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
   it("phase 8 item 19a (AC6): a long duty's readiness line quotes its excerpt; role.md in the stored display carries its full text", async () => {
     const h = await bootManager();
     const long = "Review the pull requests the owner sends and comment on each risky change, naming the file, the line and the smallest fix, and say plainly when a change looks safe to merge.";
-    const c = charter({ duties: [{ text: long, jobs: [] }] });
+    const c = charter({ duties: [{ text: long, jobs: [], source: "none" }] });
     expect((await h.wright.gate(CREATE, { charter: c, idempotency_key: "c1" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
     const shown = String(events(h.store, "approval_requested")[0]?.payload.display);
     expect(shown.split("\n").slice(1, 3)).toEqual([READINESS_HEADING, "  covered: duty 1 with no tool (it needs no kernel tool): Review the pull requests the owner sends and comment on each risky…"]);
@@ -1386,8 +1386,10 @@ describe("a ticket duty's tracker (item 21b)", () => {
 
   it("the create tool's description names source as the proposal it is, and still says connectors is only the GitHub grant", () => {
     const description = TOOLS[0]?.description ?? "";
-    expect(description).toContain('"source"?: "github" | "clickup" | "jira"');
-    expect(description).toContain("it is your proposal, shown on the held card for the owner to change, and it grants nothing");
+    expect(description).toContain('"source": "github" | "clickup" | "jira" | "none"');
+    expect(description).toContain("a duty written as a bare line, or with no source, is refused");
+    expect(description).toContain("only reads and comments on them through the member's connector access (which needs no job: never name a job for that)");
+    expect(description).toContain("It is your proposal, shown on the held card for the owner to change, and it grants nothing");
     expect(description).toContain("connectors is your proposal of the GitHub grant");
     expect(description).toContain("ClickUp and Jira access is never in a charter and never yours to propose");
   });

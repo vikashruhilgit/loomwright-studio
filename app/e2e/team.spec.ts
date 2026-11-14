@@ -778,6 +778,10 @@ test("phase 8 item 21b: the owner reads a member's permissions as jobs and grant
   await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-read-changes")).toHaveCount(0);
   await expect(row.getByTestId("team-connector-mcp-clickup-tools")).toHaveCount(0);
   await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-other")).toContainText("clickup_oddity");
+  // Other tools are listed but folded under a line in words: no raw name shows until the owner opens it (21b Validation 2).
+  await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-other-summary")).toBeVisible();
+  await expect(caps.getByTestId("team-connector-mcp-clickup-capabilities-other-summary")).not.toContainText("clickup_");
+  await expect(caps.getByText("clickup_oddity", { exact: true })).toBeHidden();
   // A raw name is one expand away.
   await expect(caps.getByText("clickup_get_task", { exact: true })).toBeHidden();
   await caps.getByTestId("team-connector-mcp-clickup-capabilities-read").getByText("Tool names", { exact: true }).click();

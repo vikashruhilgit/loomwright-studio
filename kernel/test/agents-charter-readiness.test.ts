@@ -112,7 +112,7 @@ function toolsOf(job: ToolJob): string[] {
 }
 
 /** A duty entry. */
-const duty = (text: string, ...jobs: ToolJob[]) => ({ text, jobs });
+const duty = (text: string, ...jobs: ToolJob[]) => ({ text, jobs, source: "none" as const });
 
 /** A ticket duty that states its tracker (`source`), as a charter drafted since item 21b does. */
 const ticketDuty = (text: string, source: "github" | "clickup" | "jira" = "github") => ({ text, jobs: ["automate_tickets"], source });
@@ -585,7 +585,19 @@ describe("AC9: a duty naming a job outside TOOL_JOBS", () => {
     const c = crew(["Turn tickets into PRs"], ["automate_tickets"]);
     const d = await h.create(c);
     expect(d.permissionDecisionReason).toBe(`kernel_agent_create: invalid_input: ${wrightDutyRefusal(validated(c))} (nothing was held for the owner)`);
-    expect(d.permissionDecisionReason).toContain('duties.0: write each duty as {"text": "<the duty>", "jobs": [<the catalogue job ids that do it>]}');
+    expect(d.permissionDecisionReason).toContain('duties.0: write each duty as {"text": "<the duty>", "jobs": [<the catalogue job ids that do it>], "source": "github" | "clickup" | "jira" | "none"}');
+    expect(h.approvals()).toBe(0);
+    h.ownerCreate(c);
+    expect(getAgent(h.store, "dev")).toBeDefined();
+  });
+
+  it("Wright's create refuses a duty that states no source (21b Validation 2, approval 38): the tracker is never left to a tag it may skip; the owner's create keeps it", async () => {
+    const h = await boot();
+    const c = crew([{ text: "Read the ClickUp tickets and comment on them", jobs: [] }], []);
+    const d = await h.create(c);
+    expect(d.permissionDecisionReason).toBe(`kernel_agent_create: invalid_input: ${wrightDutyRefusal(validated(c))} (nothing was held for the owner)`);
+    expect(d.permissionDecisionReason).toContain('duties.0: state the duty\'s "source"');
+    expect(d.permissionDecisionReason).toContain('or "none" when it works no tickets');
     expect(h.approvals()).toBe(0);
     h.ownerCreate(c);
     expect(getAgent(h.store, "dev")).toBeDefined();
@@ -1011,17 +1023,16 @@ function connectClickup(store: Store, status = "connected"): void {
 }
 
 describe("21b: the charter names a ticket duty's source (AC13, AC19)", () => {
-  it("TICKET_SOURCES is closed, published as an enum in the charter schema, and a source is accepted only on a duty that works tickets", () => {
+  it("TICKET_SOURCES is closed; the charter schema publishes them plus none, and any duty may name one, with or without a ticket job", () => {
     expect(TICKET_SOURCES).toEqual(["github", "clickup", "jira"]);
     const duties = (CHARTER_JSON_SCHEMA as { properties: { duties: { items: { anyOf: { properties?: { source?: { enum?: string[] } } }[] } } } }).properties.duties.items.anyOf;
-    expect(duties.find((d) => d.properties?.source !== undefined)?.properties?.source?.enum).toEqual(["github", "clickup", "jira"]);
+    expect(duties.find((d) => d.properties?.source !== undefined)?.properties?.source?.enum).toEqual(["github", "clickup", "jira", "none"]);
     for (const source of TICKET_SOURCES) expect(validateCharter(clickupCrew(source), { dataDir, homeDir: home }).ok).toBe(true);
-    // A duty with no source is accepted (a charter written before this item).
+    // A duty with no source is accepted in a stored charter (one written before this item); Wright's create refuses it (below).
     expect(validateCharter(clickupCrew(undefined), { dataDir, homeDir: home }).ok).toBe(true);
-    const wrong = validateCharter(crew([{ text: "Read the PRs", jobs: ["read_pr"], source: "clickup" }], ["read_pr"]), { dataDir, homeDir: home });
-    expect(wrong).toMatchObject({ ok: false, error: "charter_invalid", field: "duties.0.source" });
-    expect(!wrong.ok && wrong.message).toContain("source is only for a duty that works tickets");
-    expect(validateCharter(crew([{ text: "Read", jobs: [], source: "github" }], []), { dataDir, homeDir: home })).toMatchObject({ ok: false, field: "duties.0.source" });
+    // Reading and commenting on a tracker's tickets needs no kernel job, so a jobless duty may name its tracker (approval 38's duty).
+    expect(validateCharter(crew([{ text: "Read the ClickUp tickets and comment", jobs: [], source: "clickup" }], []), { dataDir, homeDir: home }).ok).toBe(true);
+    expect(validateCharter(crew([{ text: "Read the PRs", jobs: ["read_pr"], source: "none" }], ["read_pr"]), { dataDir, homeDir: home }).ok).toBe(true);
     expect(validateCharter(clickupCrew("trello"), { dataDir, homeDir: home })).toMatchObject({ ok: false, error: "charter_invalid", field: "duties.0.source" });
     // A bare line cannot carry one.
     expect(validateCharter(crew(["Work tickets"], []), { dataDir, homeDir: home }).ok).toBe(true);
@@ -1067,6 +1078,19 @@ describe("21b: whether the member can read the tracker (AC14, AC16, AC17, AC18)"
     const updated = trackerReadinessOf(clickupCrew(undefined), { kind: "stored", raw: undefined }, CLICKUP_UP, "update");
     expect(updated.agentNote).toContain("an update never changes duties");
     expect(updated.agentNote).not.toContain("draft the charter again with that duty's source");
+  });
+
+  it("a duty that works ClickUp tickets with no kernel job (read and comment) is checked the same: approval 38's duty, flagged no_access", () => {
+    const jobless = crew([{ text: "Read the ClickUp tickets and comment on them", jobs: [], source: "clickup" }], []);
+    const r = trackerReadinessOf(jobless, { kind: "proposed", connectors: [] }, CLICKUP_UP);
+    expect(trackerLines(r)).toEqual(["  flagged: duty 1: Dev can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)"]);
+    expect(r.items.find((i) => i.subject === "tracker")?.tracker).toMatchObject({ source: "clickup", status: "no_access" });
+    // The same duty stating none has no tracker item: it works no tickets.
+    const none = trackerReadinessOf(crew([{ text: "Summarise the week", jobs: [], source: "none" }], []), { kind: "proposed", connectors: [] }, CLICKUP_UP);
+    expect(trackerLines(none)).toEqual([]);
+    // A ticket job with source none is still a ticket duty that names no tracker.
+    const unnamed = trackerReadinessOf(clickupCrew("none"), { kind: "proposed", connectors: [] }, CLICKUP_UP);
+    expect(unnamed.items.find((i) => i.subject === "tracker")?.tracker).toMatchObject({ status: "no_source" });
   });
 
   it("AC14: a ClickUp ticket duty with no ClickUp access is flagged, naming the member and the tracker; the access is the owner's step", () => {
@@ -1135,7 +1159,7 @@ describe("21b: whether the member can read the tracker (AC14, AC16, AC17, AC18)"
 
   it("one line per ticket duty, in charter order, after every other line", () => {
     const c = crew(
-      [{ text: "Tickets from ClickUp", jobs: ["automate_tickets"], source: "clickup" }, duty("Read PRs", "read_pr"), { text: "Tickets from Jira", jobs: ["automate_tickets"], source: "jira" }, { text: "More tickets", jobs: ["automate_tickets"] }],
+      [{ text: "Tickets from ClickUp", jobs: ["automate_tickets"], source: "clickup" }, duty("Read PRs", "read_pr"), { text: "Tickets from Jira", jobs: ["automate_tickets"], source: "jira" }, { text: "More tickets", jobs: ["automate_tickets"], source: "none" }],
       ["automate_tickets", "read_pr"],
     );
     const r = trackerReadinessOf(c, { kind: "proposed", connectors: [] }, CLICKUP_UP);
@@ -1155,7 +1179,7 @@ describe("21b: whether the member can read the tracker (AC14, AC16, AC17, AC18)"
   });
 
   it("only a no_access line carries TRACKER_ACCESS_FLAG: no other readiness line of the charter does", () => {
-    const c = crew([{ text: "Tickets", jobs: ["automate_tickets"], source: "clickup" }, { text: "More", jobs: ["automate_tickets"] }], ["automate_tickets", "read_pr"]);
+    const c = crew([{ text: "Tickets", jobs: ["automate_tickets"], source: "clickup" }, { text: "More", jobs: ["automate_tickets"], source: "none" }], ["automate_tickets", "read_pr"]);
     for (const trackers of [CLICKUP_UP, NO_TRACKERS]) {
       const withFlag = trackerReadinessOf(c, { kind: "proposed", connectors: [] }, trackers).lines.filter((l) => l.includes(TRACKER_ACCESS_FLAG));
       expect(withFlag.length).toBe(trackers === CLICKUP_UP ? 1 : 0);
