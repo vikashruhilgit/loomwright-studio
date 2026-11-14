@@ -18,6 +18,7 @@
 // category in words; an unknown one shown as its own text), the limits on one
 // line, the other tools and Bash prefixes, plus the "what changed" sentence
 // between two versions and the `owner/repo` names a workspace lookup may try.
+import type { McpCapability, McpConnectionKind, OwnerGrant } from "../../api/contract";
 import { count } from "../chat/continuity";
 import { CHARTER_JOB_PREFIX, CHARTER_PURPOSE_PREFIX, CHARTER_READINESS_HEADING_PREFIX, charterDisplayParts } from "./subject";
 import type { CharterDisplayParts } from "./subject";
@@ -27,6 +28,39 @@ export const KERNEL_TOOL_PREFIX = "mcp__kernel__";
 
 /** The kernel's flagged workspace line names this (`workspaceItem` in `kernel/src/agents/charter-readiness.ts`). */
 export const WORKSPACE_FLAG = "no copy of a repo to work in";
+
+/**
+ * The kernel's flagged tracker line names this (`TRACKER_ACCESS_FLAG` in `kernel/src/agents/charter-readiness.ts`, byte for
+ * byte): `<name> can't read <tracker> tickets yet: it has no <tracker> access` (or `only part of`). The card keys its
+ * tick-to-grant row on it, as it keys the workspace row on `WORKSPACE_FLAG`.
+ */
+export const TRACKER_ACCESS_FLAG = "tickets yet: it has ";
+
+/** The kernel's "tracker not connected" line names this (`TRACKER_NOT_CONNECTED_FLAG`): the card offers Connect on it. */
+export const TRACKER_NOT_CONNECTED_FLAG = "isn't connected on Integrations";
+
+/** The MCP trackers the kernel's tracker lines name, by the label they print (`CONNECTOR_LABELS`). */
+const TRACKER_LABELS: Readonly<Record<string, "clickup" | "jira">> = { ClickUp: "clickup", Jira: "jira" };
+
+/** What a readiness line says about a ticket duty's tracker, for the card's fix: which MCP tracker, and whether it lacks access or is not connected. */
+export interface TrackerLine {
+  readonly kind: "clickup" | "jira";
+  readonly state: "no_access" | "not_connected";
+}
+
+/**
+ * The MCP tracker a flagged readiness line is about, or `undefined` for any other line (GitHub Issues are read through
+ * the GitHub connector, so they have no tick-to-grant row). The kernel's text is untrusted: the last match in the line
+ * is taken, since the member's display name comes first and could imitate the sentence.
+ */
+export function trackerLine(text: string): TrackerLine | undefined {
+  // The full line, or the kernel's shortened one when the readiness block was cut to fit (`<name> can't read <tracker> tickets yet (<tracker> access is the owner's step)`).
+  const access = [...text.matchAll(/can't read (ClickUp|Jira) tickets yet(?:: it has (?:no|only part of the) \1 access| \(\1 access is the owner's step\))/g)].pop();
+  if (access?.[1] !== undefined) return { kind: TRACKER_LABELS[access[1]] as "clickup" | "jira", state: "no_access" };
+  const off = [...text.matchAll(/(ClickUp|Jira) isn't connected(?: on Integrations|, so)/g)].pop();
+  if (off?.[1] !== undefined) return { kind: TRACKER_LABELS[off[1]] as "clickup" | "jira", state: "not_connected" };
+  return undefined;
+}
 
 export type CharterBlockKind = "jobs" | "enforced" | "settings" | "role";
 
@@ -283,4 +317,17 @@ export function repoCandidates(display: string, parts: CharterDisplayParts | und
     }
   }
   return out;
+}
+
+/**
+ * The owner's tracker ticks after one capability is ticked (`on`) or cleared on a held charter card: the kind's tools
+ * the owner chose, as the `owner_grant` the approve posts. One MCP kind at a time (the approve body carries one), so a
+ * tick for another kind while one holds ticks changes nothing; clearing the last tool answers `undefined` (nothing to
+ * grant: the approve posts no `owner_grant`). The order is the order ticked, so the posted list is stable.
+ */
+export function nextOwnerGrant(current: OwnerGrant | undefined, kind: McpConnectionKind, capability: McpCapability, on: boolean): OwnerGrant | undefined {
+  if (current !== undefined && current.kind !== kind) return current;
+  const held = current?.tools ?? [];
+  const tools = on ? [...held, ...capability.tools.filter((tool) => !held.includes(tool))] : held.filter((tool) => !capability.tools.includes(tool));
+  return tools.length === 0 ? undefined : { kind, tools };
 }

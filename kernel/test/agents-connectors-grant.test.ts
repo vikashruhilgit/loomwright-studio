@@ -518,3 +518,38 @@ describe("role.md names the grant (AC7)", () => {
     expect(readFileSync(role, "utf8")).toBe(renderRoleMd(validated(charter("reviewer"))));
   });
 });
+
+// ---- Item 21b: a ticket duty's source is data; only the owner grants ------------------------------------------
+
+describe("a ticket duty's source is data, never a grant (item 21b)", () => {
+  const ticketCharter = (id: string, source: string) =>
+    charter(id, { duties: [{ text: "Work the owner's tickets", jobs: ["automate_tickets"], source }] });
+
+  it.each(["github", "clickup", "jira"])("a charter whose ticket duty says source %s writes no connectors key and no tool: the settings file holds no grant", (source) => {
+    const r = createAgent(kernel.store, dataDir, ticketCharter("sourced", source), { by: "owner", homeDir: home }, new Date(T0));
+    expect(r.ok ? "" : r.message).toBe("");
+    expect(jsonOf("sourced")).not.toHaveProperty("connectors");
+    expect(JSON.stringify(jsonOf("sourced"))).not.toContain(source === "github" ? '"github"' : source);
+    expect(setEvents()).toEqual([]);
+  });
+
+  it("the owner's one write path still grants a tracker's tools (the set route), keeping the duty's source untouched in the row's charter", async () => {
+    expect(createAgent(kernel.store, dataDir, ticketCharter("sourced", "clickup"), { by: "owner", homeDir: home }, new Date(T0)).ok).toBe(true);
+    const res = await api("POST", "/agents/sourced/set", { field: CONNECTORS_FIELD, value: "clickup:clickup_filter_tasks,clickup_get_task" });
+    expect(res.status).toBe(200);
+    expect(jsonOf("sourced").connectors).toEqual({ clickup: ["clickup_filter_tasks", "clickup_get_task"] });
+    const row = kernel.store.prepare<[string], { charter_json: string }>("SELECT charter_json FROM agents WHERE id = ?").get("sourced");
+    expect((JSON.parse(row?.charter_json ?? "{}") as { duties: { source: string }[] }).duties[0]?.source).toBe("clickup");
+  });
+
+  it("a Wright update can't change duties or the grant: a charter source can't be edited into a grant by changes either", async () => {
+    expect(createAgent(kernel.store, dataDir, ticketCharter("sourced", "clickup"), { by: "owner", homeDir: home }, new Date(T0)).ok).toBe(true);
+    const session = await listedToolsOf("wright", { allowedTools: [UPDATE], allowedBashPrefixes: [] });
+    const sha = createHash("sha256").update(readFileSync(fileOf("sourced"))).digest("hex");
+    const before = readFileSync(fileOf("sourced"), "utf8");
+    const refused = await gate(session.call, UPDATE, { id: "sourced", changes: { duties: [{ text: "x", jobs: ["automate_tickets"], source: "clickup" }], connectors: { clickup: ["clickup_get_task"] } }, expected_sha256: sha, idempotency_key: "u1" });
+    expect(refused.permissionDecision).toBe("deny");
+    expect(refused.permissionDecisionReason).not.toContain("held as approval");
+    expect(readFileSync(fileOf("sourced"), "utf8")).toBe(before);
+  });
+});

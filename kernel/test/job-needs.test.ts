@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { TOOL_JOB_DEFINITIONS, TOOL_JOB_IDS, TOOL_JOBS, buildToolCatalogue, jobNeedsWorkspace } from "../src/features/catalogue.js";
+import { TOOL_JOB_DEFINITIONS, TOOL_JOB_IDS, TOOL_JOBS, buildToolCatalogue, jobNeedsTicketSource, jobNeedsWorkspace } from "../src/features/catalogue.js";
 import type { ToolCatalogue } from "../src/features/catalogue.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import {
@@ -249,5 +249,26 @@ describe("the needs-vs-policy comparison readiness and fit share", () => {
   it("a Claude tool the job itself declares (not a command's) is a gap a charter change can close", () => {
     const declared = { ...resolveJobNeeds("read_pr", PINNED), claudeTools: [{ name: "WebFetch", label: "fetch web pages", closable: true }] };
     expect(jobNeedsGaps(declared, none).map((g) => [g.name, g.closable])).toEqual([["WebFetch", true]]);
+  });
+});
+
+// ---- Item 21b: a ticket duty's tracker is a readiness item, not a fit gap ---------------------------------------------
+
+describe("the ticket source is declared on the one ticket job and is not a needs gap (item 21b)", () => {
+  it("only the ticket job declares a ticket source, once; the other needs a job declares are unchanged", () => {
+    expect(Object.entries(TOOL_JOB_DEFINITIONS).filter(([, d]) => d.needs.ticketSource).map(([id]) => id)).toEqual(["automate_tickets"]);
+    expect(jobNeedsTicketSource("automate_tickets")).toBe(true);
+    expect(jobNeedsTicketSource("read_pr")).toBe(false);
+    // Every job still declares the five parts it always did, beside the new one.
+    for (const def of Object.values(TOOL_JOB_DEFINITIONS)) expect(Object.keys(def.needs).sort()).toEqual(["bashPrefixes", "claudeTools", "connectors", "loomwrightCommands", "ticketSource", "workspace"]);
+  });
+
+  it("a member lacking everything the ticket job needs gets only the closed gap kinds: no gap names a tracker", () => {
+    const gaps = jobNeedsGaps(resolveJobNeeds("automate_tickets"), { allowedTools: [], allowedBashPrefixes: [], connectors: {}, workspace: false });
+    const kinds: readonly string[] = ["claude_tool", "bash_prefix", "connector", "workspace"];
+    for (const g of gaps) {
+      expect(kinds).toContain(g.kind);
+      expect(g.label).not.toMatch(/tracker|ClickUp|Jira|ticket source/i);
+    }
   });
 });

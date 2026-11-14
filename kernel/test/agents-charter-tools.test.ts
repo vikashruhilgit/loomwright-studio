@@ -44,6 +44,7 @@ import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions 
 import type { ContributedTool } from "../src/features/index.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
 import type { AppliedApproval } from "../src/approvals/index.js";
+import type { OwnerGrant } from "../src/approvals/store.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
 import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
@@ -290,7 +291,7 @@ async function bootManager(checkTools: readonly ContributedTool[] = TOOLS) {
     return t;
   };
   const tool = (name: string, args: unknown, sessionId = wright.id): Promise<KernelToolResult> => contributedToolHandler(toolOf(name), contextOf(sessionId))(args);
-  const decide = (id: number) => decideApproval(store, { id, decision: "once", by: "owner" }, clock.at, applier);
+  const decide = (id: number, ownerGrant?: OwnerGrant) => decideApproval(store, { id, decision: "once", by: "owner", ...(ownerGrant === undefined ? {} : { ownerGrant }) }, clock.at, applier);
   const approvals = () => store.prepare<[], { id: number; status: string }>("SELECT id, status FROM approvals ORDER BY id").all();
   const decided = (id: number) => listApprovals(store, { all: true }).find((a) => a.id === id);
   const reasons = (tool: string) => events(store, "tool_decision").filter((e) => e.payload.tool === tool).map((e) => e.payload.reason);
@@ -1360,5 +1361,89 @@ describe("kernel_agent_list (AC7)", () => {
     expect(agents[0]).toMatchObject({ id: "wright", settings: null, settings_error: null });
     expect(agents[1]).toMatchObject({ id: "mason", settings: null, settings_error: "settings_missing", sha256: null });
     expect(existsSync(wrightSettingsPath(dataDir))).toBe(false);
+  });
+});
+
+// ---- Item 21b: a ticket duty's source, and the owner's tracker grant on approve ----------------------------------
+
+describe("a ticket duty's tracker (item 21b)", () => {
+  const READ = ["clickup_filter_tasks", "clickup_get_task"];
+  /** A ticket-working member from ClickUp: Wright drafts the duty's source, never the grant. */
+  const ticketCharter = (extra: Record<string, unknown> = {}) =>
+    charter({
+      duties: [{ text: "Work the owner's ClickUp tickets", jobs: ["automate_tickets"], source: "clickup" }],
+      tool_policy: { allowedTools: ["Read", ...tools("automate_tickets")], allowedBashPrefixes: [], never: [] },
+      ...extra,
+    });
+  function tools(job: ToolJob): string[] {
+    return (buildToolCatalogue(SHIPPED_TOOLS).jobs.find((j) => j.id === job)?.tools ?? []).map((t) => `${K}${t.name}`);
+  }
+  function connect(store: Store): void {
+    const stored = [...READ, "clickup_create_comment"].map((name) => ({ name, proxy: `kernel_mcp_w_clickup_${name}`, read_only: false, description: "", schema: "{}" }));
+    store.prepare("INSERT INTO mcp_connections (kind, server_url, status, granted_tools) VALUES ('clickup', 'https://mcp.example.test/mcp', 'connected', ?)").run(JSON.stringify(stored));
+  }
+  const connectorsOf = (id: string): unknown => (JSON.parse(readFileSync(agentSettingsPath(dataDir, id), "utf8")) as { connectors?: unknown }).connectors;
+
+  it("the create tool's description names source as the proposal it is, and still says connectors is only the GitHub grant", () => {
+    const description = TOOLS[0]?.description ?? "";
+    expect(description).toContain('"source"?: "github" | "clickup" | "jira"');
+    expect(description).toContain("it is your proposal, shown on the held card for the owner to change, and it grants nothing");
+    expect(description).toContain("connectors is your proposal of the GitHub grant");
+    expect(description).toContain("ClickUp and Jira access is never in a charter and never yours to propose");
+  });
+
+  it("a Wright create draft carrying a ClickUp or Jira grant, in connectors or anywhere in a duty, is refused and holds nothing", async () => {
+    const h = await bootManager();
+    const drafts: Record<string, unknown>[] = [
+      ticketCharter({ connectors: ["clickup"] }),
+      ticketCharter({ connectors: ["jira"] }),
+      ticketCharter({ connectors: { clickup: READ } }),
+      ticketCharter({ duties: [{ text: "Work tickets", jobs: ["automate_tickets"], source: "clickup", clickup: READ }] }),
+      ticketCharter({ duties: [{ text: "Work tickets", jobs: ["automate_tickets"], source: "clickup", connectors: ["clickup"] }] }),
+    ];
+    for (const [i, draft] of drafts.entries()) {
+      const refused = await h.wright.gate(CREATE, { charter: draft, idempotency_key: `c${i}` });
+      expect(refused.permissionDecision, `draft ${i}`).toBe("deny");
+      expect(refused.permissionDecisionReason, `draft ${i}`).toMatch(/invalid_input/);
+      expect(refused.permissionDecisionReason, `draft ${i}`).not.toContain("held as approval");
+    }
+    expect(h.approvals()).toEqual([]);
+  });
+
+  it("after the owner approves with their ticks the member's settings file holds those tools, recorded as the owner's, and the applied sentence names no open tracker access", async () => {
+    const h = await bootManager(SHIPPED_TOOLS);
+    connect(h.store);
+    expect((await h.wright.gate(CREATE, { charter: ticketCharter(), idempotency_key: "c1" })).permissionDecision).toBe("deny");
+    h.decide(1, { kind: "clickup", tools: READ });
+    expect(getAgent(h.store, "mason")?.created_by).toBe("wright");
+    expect(connectorsOf("mason")).toEqual({ clickup: READ });
+    const applied = events(h.store, "approval_decided")[0]?.payload.applied as string;
+    expect(applied).toContain("The owner granted ClickUp access with this approval.");
+    expect(applied).not.toContain("can't read ClickUp tickets");
+    expect(applied).not.toContain("ClickUp access is the owner's step");
+    expect(events(h.store, "agent_settings_set").map((e) => e.payload)).toEqual([{ id: "mason", field: "connectors", old: null, new: { clickup: READ }, by: "owner", approval_id: 1 }]);
+    expect(count(h.store, "SELECT count(*) FROM events WHERE kind = 'agent_created'")).toBe(1);
+  });
+
+  it("with no tick the member is created with no grant and the applied sentence names the missing access as open", async () => {
+    const h = await bootManager(SHIPPED_TOOLS);
+    connect(h.store);
+    await h.wright.gate(CREATE, { charter: ticketCharter(), idempotency_key: "c1" });
+    h.decide(1);
+    expect(connectorsOf("mason")).toBeUndefined();
+    expect(events(h.store, "approval_decided")[0]?.payload.applied as string).toContain("Mason can't read ClickUp tickets yet (ClickUp access is the owner's step)");
+  });
+
+  it("an owner's tick that would not be a valid grant (a stored grant the file can't hold) is refused by the applier before anything is written", async () => {
+    const h = await bootManager(SHIPPED_TOOLS);
+    connect(h.store);
+    await h.wright.gate(CREATE, { charter: ticketCharter(), idempotency_key: "c1" });
+    // 101 listed tools is more than a grant can hold; the store's own list check passes, so the applier's merge is what refuses it.
+    const many = Array.from({ length: 101 }, (_, i) => `clickup_tool_${i}`);
+    h.store.prepare("UPDATE mcp_connections SET granted_tools = ? WHERE kind = 'clickup'").run(JSON.stringify(many.map((name) => ({ name, proxy: `p_${name}`, read_only: false, description: "", schema: "{}" }))));
+    h.decide(1, { kind: "clickup", tools: many });
+    expect(getAgent(h.store, "mason")).toBeUndefined();
+    expect(presentFiles("mason")).toEqual([]);
+    expect(events(h.store, "approval_decided")[0]?.payload).toMatchObject({ apply_refused: "invalid_input" });
   });
 });
