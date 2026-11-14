@@ -1,6 +1,8 @@
 # 21d — Wright drafts a playbook for a crew member that is off
 
-## Status: ready
+## Status: parked
+
+Moved on 2026-11-14 to `.supervisor/requirements/phase-8-22/` (the owner's option A: it runs with the wave-1 follow-ups). That copy is the live one; this one stays parked so no folder run picks it up twice.
 
 **As** the owner of Loomwright Studio,
 **I want** Wright to draft a playbook for a crew member even while that member is off, and tell me in plain words to turn the member on before anything runs,
