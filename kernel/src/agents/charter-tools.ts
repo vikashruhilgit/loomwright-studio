@@ -107,6 +107,15 @@ import { AVATAR_HUES, AVATAR_SHAPES } from "./types.js";
 import type { AgentPart } from "./types.js";
 
 export const AGENT_CREATE_TOOL_NAME = "kernel_agent_create";
+
+/**
+ * What Wright does once a member's approval is decided (phase 8 item 21f): a
+ * playbook only on the owner's ask, a dry run never unasked. In the create's
+ * description and its applied sentence, so an install whose `role.md`
+ * predates the template's rule still reads it where it acts.
+ */
+export const AFTER_MEMBER_APPROVAL =
+  "Draft its playbook only if the owner asked for one, and run no dry run the owner did not ask for: a dry run spends the owner's tokens, so offer it instead.";
 export const AGENT_UPDATE_TOOL_NAME = "kernel_agent_update";
 export const AGENT_LIST_TOOL_NAME = "kernel_agent_list";
 
@@ -369,7 +378,7 @@ function createOnApproval(a: CreateArgs, ctx: { store: Store; now: () => Date; a
   const checked = validateCharter(a.charter, { dataDir: store.dataDir });
   const open = checked.ok ? openFlagsSentence(createReadiness(checked.charter, ctx.catalogue, store.dataDir)) : "";
   return {
-    applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.${open}`,
+    applied: `The kernel created crew member ${created} (${r.agent.display_name}) on approval ${approval.id}.${open} ${AFTER_MEMBER_APPROVAL}`,
     // A write error is thrown and ignored by the decision: the row stays, and the next ensureAgentFiles writes the files.
     after: () => void ensureAgentFiles(store, store.dataDir, created),
   };
@@ -393,6 +402,7 @@ const createTool = defineTool({
     "connectors is your proposal of the GitHub grant, never a default: say so to the owner; it takes effect only if the owner approves this call, and no later update changes it. " +
     "The kernel always holds this call for the owner, showing the role.md and settings file it would write and what it enforces; end your turn. " +
     "The owner's approval creates the member: the kernel applies it itself and tells you what it did in a new message; do not repeat the call. " +
+    `${AFTER_MEMBER_APPROVAL} ` +
     `Refused (nothing held) with one of: ${CHARTER_TOOL_REFUSALS.join(", ")}. Use a new idempotency_key for each request to the owner.`,
   shape: {
     // Not `z.record`: the Agent SDK's bundled serialiser throws on a record, which empties `tools/list`; and a record rebuilds

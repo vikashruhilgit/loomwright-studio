@@ -23,6 +23,7 @@ import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/i
 import { ASK_HELP, ASK_THREAD_HELP, askSubcommand } from "../src/brain/cli.js";
 import { MAX_CONTEXT_CHARS, MAX_MESSAGE_CHARS, RESUMED_THREAD_LINE, buildContext } from "../src/brain/context.js";
 import type { LoomwrightSummary } from "../src/brain/context.js";
+import { decideApproval, requestApproval } from "../src/approvals/store.js";
 import { brainMessageHandler } from "../src/brain/handler.js";
 import { ensureBrainMessage, getBrainMessage } from "../src/brain/messages.js";
 import type { BrainMessageRow } from "../src/brain/messages.js";
@@ -624,6 +625,90 @@ describe("the replay event", () => {
     expect(replays).toHaveLength(1);
     expect(getBrainMessage(store, id)?.status).toBe("queued");
     expect(replayRowOf(store, replays[0] as number, { [REPLAY_PAYLOAD_KEY]: id })?.id).toBe(id);
+  });
+});
+
+// ---- Item 21f: an approval's decision continues the conversation that asked for it ----------------
+
+describe("an approval's decision continues the conversation that asked for it (item 21f)", () => {
+  /** An approval Wright asked for from `sessionId`, decided `decision`: the decision's message row once the loop ran it. */
+  async function decided(store: Store, sessions: EventSessions, sessionId: number | null, decision: "once" | "deny" = "once"): Promise<BrainMessageRow> {
+    const held = requestApproval(store, { agent: "wright", sessionId: sessionId as number, action: "kernel_agent_create", payload: { what: "a crew member" }, source: "tool" }, NOW);
+    if (sessionId === null) store.prepare("UPDATE approvals SET requesting_session = NULL WHERE id = ?").run(held.id);
+    decideApproval(store, { id: held.id, decision, by: "owner" }, NOW);
+    await tick(store, sessions);
+    return store.prepare<[string], BrainMessageRow>("SELECT * FROM brain_messages WHERE source = ?").get(`approval:${held.id}`) as BrainMessageRow;
+  }
+
+  it("AC1/AC2: the decision's row continues the asking row's thread and resumes its session, so the owner's words are in the conversation", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store);
+    const asking = await answered(store, "Only the crew member: don't draft a playbook or run a dry run.", s.sessions);
+    const row = await decided(store, s.sessions, asking.session_id);
+    expect(row.status).toBe("replied");
+    expect(getMessageThread(store, row.id)).toMatchObject({ thread_id: asking.id, continues: asking.id, continuation: "resumed" });
+    expect(s.starts).toHaveLength(2);
+    expect(s.starts[1]?.continueFrom).toBe(asking.session_id);
+    // The decision text itself is unchanged.
+    expect(row.text).toBe(`approved approval ${row.source.slice("approval:".length)}: kernel_agent_create`);
+  });
+
+  it("AC2: when the resume is refused, the replay quotes the owner's ask as thread data", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store, (p) => (p.continueFrom !== undefined ? { refuse: new SessionError("not_resumable", "x") } : {}));
+    const asking = await answered(store, "Only the crew member: don't draft a playbook.", s.sessions);
+    const row = await decided(store, s.sessions, asking.session_id);
+    expect(row.status).toBe("replied");
+    expect(getMessageThread(store, row.id)?.continuation).toBe("replayed");
+    const prompt = s.starts.at(-1)?.prompt as string;
+    expect(prompt).toContain(`<untrusted-data source="thread:${asking.id}">`);
+    expect(prompt).toContain("Only the crew member: don't draft a playbook.");
+  });
+
+  it("AC5: an approval whose requesting session answered no row of the agent starts fresh with no thread data", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store);
+    // A session with no brain_messages row (a playbook run's, say).
+    const orphan = Number(store.prepare("INSERT INTO sessions (agent, status, model) VALUES ('wright', 'completed', ?)").run(MODEL).lastInsertRowid);
+    const row = await decided(store, s.sessions, orphan);
+    expect(row.status).toBe("replied");
+    expect(getMessageThread(store, row.id)).toBeUndefined();
+    expect(s.starts[0]?.continueFrom).toBeUndefined();
+    // No requesting session at all.
+    const none = await decided(store, s.sessions, null);
+    expect(none.status).toBe("replied");
+    expect(getMessageThread(store, none.id)).toBeUndefined();
+  });
+
+  it("AC6: a continued decision whose resume is refused and whose replay is past its bound starts fresh instead of failing", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store, (p) => (p.continueFrom !== undefined ? { refuse: new SessionError("not_resumable", "x") } : {}));
+    const asking = await answered(store, "first", s.sessions);
+    store.prepare("UPDATE brain_messages SET reply_text = ? WHERE id = ?").run("z".repeat(MAX_THREAD_HISTORY_CHARS), asking.id);
+    const row = await decided(store, s.sessions, asking.session_id);
+    expect(row.status).toBe("replied");
+    const last = s.starts.at(-1) as StartSessionParams;
+    expect(last.continueFrom).toBeUndefined();
+    expect(last.prompt).not.toContain("<untrusted-data source=\"thread:");
+    // With no SDK session id to resume either, the plan alone is past its bound: still a fresh start.
+    store.prepare("UPDATE sessions SET sdk_session_id = NULL WHERE id = ?").run(asking.session_id);
+    const again = await decided(store, s.sessions, asking.session_id);
+    expect(again.status).toBe("replied");
+  });
+
+  it("AC7/AC8: a denied decision continues the thread too, and a redelivery records its thread row once", async () => {
+    setModel();
+    const store = openStore();
+    const s = stubSessions(store);
+    const asking = await answered(store, "draft it", s.sessions);
+    const row = await decided(store, s.sessions, asking.session_id, "deny");
+    expect(row.text).toMatch(/^denied approval \d+: kernel_agent_create\. Nothing was done; do not repeat the call\.$/);
+    expect(getMessageThread(store, row.id)).toMatchObject({ continues: asking.id, continuation: "resumed" });
+    expect(store.prepare<[number], number>("SELECT count(*) FROM brain_message_threads WHERE message_id = ?").pluck().get(row.id)).toBe(1);
   });
 });
 

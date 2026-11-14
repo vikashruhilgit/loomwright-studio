@@ -547,6 +547,7 @@ const dryRunTool = defineTool({
   job: "manage_playbooks",
   description:
     "Dry-run a draft playbook you own, or (Wright) one of a registered crew member's: run its current version once, as its agent would when it fires, in a session that can read but never act. " +
+    "Call it only when the owner asked for the dry run (or for the playbook to be turned on): it starts a session and spends the owner's tokens, so after a draft offer it instead of starting it. " +
     "A crew member's playbook runs as that member (its settings, policy and never list, its memory folder); an off member's is refused. " +
     "Every call that would act (a comment, a push, a write, a kernel change) is recorded as something it would do and does not run. " +
     "The playbook must have a model (the kernel never picks one). The run's tokens count against the owning agent's limits. " +

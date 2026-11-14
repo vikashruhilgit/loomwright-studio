@@ -43,6 +43,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookCallback, HookInput, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AFTER_MEMBER_APPROVAL } from "../src/agents/charter-tools.js";
 import { agentFilePaths, agentMemoryDir, getAgent } from "../src/agents/index.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
@@ -471,7 +472,7 @@ describe("phase 4 exit: a comment-only reviewer created from chat can't push, ev
     expect(enforced).toBe(`    enforced: never: ${MASON_NEVER.join(", ")}; tools: ${MASON_TOOLS.join(", ")}; bash prefixes: ${MASON_PREFIXES.map((p) => JSON.stringify(p)).join(", ")}`);
 
     // ---- 3. studio approve 1 once: the kernel creates mason; Wright's decision message says Nothing to repeat ----
-    const applied = "The kernel created crew member mason (Mason) on approval 1.";
+    const applied = `The kernel created crew member mason (Mason) on approval 1. ${AFTER_MEMBER_APPROVAL}`;
     s.wright.push(reply("Noted: Mason exists."));
     expect(await studio(["approve", "1", "once"])).toEqual({
       code: 0,

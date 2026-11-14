@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import type { HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  AFTER_MEMBER_APPROVAL,
   AGENT_CREATE_TOOL_NAME,
   AGENT_LIST_TOOL_NAME,
   AGENT_UPDATE_TOOL_NAME,
@@ -326,6 +327,13 @@ describe("the charter-tools part", () => {
     expect(TOOLS[0]?.description).toContain("limits.delegation_depth");
   });
 
+  it("item 21f: the create's description and its applied sentence say a playbook comes only on the owner's ask and no dry run runs unasked", () => {
+    expect(AFTER_MEMBER_APPROVAL).toBe(
+      "Draft its playbook only if the owner asked for one, and run no dry run the owner did not ask for: a dry run spends the owner's tokens, so offer it instead.",
+    );
+    expect(TOOLS[0]?.description).toContain(AFTER_MEMBER_APPROVAL);
+  });
+
   it("the handlers of the held tools fail closed: an approved retry that reached one did nothing", async () => {
     const h = await bootManager();
     expect(errorText(await h.tool(AGENT_CREATE_TOOL_NAME, { charter: charter(), idempotency_key: "c1" }))).toBe(
@@ -375,7 +383,7 @@ describe("kernel_agent_create (AC1, AC2)", () => {
     for (const line of renderRoleMd(c).trimEnd().split("\n")) expect(block).toContain(`\n    ${line}`);
     expect(block).toContain("    - Never push code or open a pull request.\n");
 
-    const applied = "The kernel created crew member mason (Mason) on approval 1.";
+    const applied = `The kernel created crew member mason (Mason) on approval 1. ${AFTER_MEMBER_APPROVAL}`;
     expect(await h.studio(["approve", "1", "once"])).toEqual({
       code: 0,
       stderr: "",
@@ -499,7 +507,7 @@ describe("kernel_agent_create: refusals and the apply's edges (AC3)", () => {
     chmodSync(agentsDir, 0o500);
     try {
       h.decide(1);
-      expect(h.decided(1)).toMatchObject({ status: "approved", applied: "The kernel created crew member mason (Mason) on approval 1." });
+      expect(h.decided(1)).toMatchObject({ status: "approved", applied: `The kernel created crew member mason (Mason) on approval 1. ${AFTER_MEMBER_APPROVAL}` });
       expect(getAgent(h.store, "mason")).toMatchObject({ status: "active", created_by: "wright", approval_id: 1 });
       expect(readdirSync(agentsDir)).toEqual(["wright.json"]);
       expect(presentFiles("mason")).toEqual([]);
