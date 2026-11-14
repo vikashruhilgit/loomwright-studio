@@ -166,12 +166,12 @@ export function TrackerPanel({ api, kind, member, grant, onToggle, verb, disable
   const connected = row !== undefined && (row.status === "connected" || row.status === "expiring");
   let body;
   if (connection.status === "loading") {
-    body = <p className="chat-card-hint" role="status">Reading {label}'s tools…</p>;
+    body = <p className="charter-wsq-note" role="status">Reading {label}'s tools…</p>;
   } else if (connection.status === "error") {
     body = <p className="chat-card-refusal" role="alert">Couldn't read the {label} connection, so its access can't be chosen here. {verb} still works; grant it in Team afterwards.</p>;
   } else if (!connected) {
     body = (
-      <p className="chat-card-hint">
+      <p className="charter-wsq-note">
         {label} isn't connected on Integrations, so there is nothing to grant yet.{" "}
         <Button variant="secondary" size="row" onClick={() => navigate(INTEGRATIONS_HASH)}>
           {CONNECT_TRACKER}
@@ -179,12 +179,12 @@ export function TrackerPanel({ api, kind, member, grant, onToggle, verb, disable
       </p>
     );
   } else if (row.capabilities === undefined || row.capabilities === null) {
-    body = <p className="chat-card-hint" data-testid="charter-tracker-plain-unavailable">The plain list of what {label} can do is unavailable, so nothing can be ticked here. Grant it in Team afterwards.</p>;
+    body = <p className="charter-wsq-note" data-testid="charter-tracker-plain-unavailable">The plain list of what {label} can do is unavailable, so nothing can be ticked here. Grant it in Team afterwards.</p>;
   } else {
     const other = grant !== undefined && grant.kind !== kind;
     body = (
       <>
-        <p className="chat-card-hint">
+        <p className="charter-wsq-note">
           Tick what {printable(member)} may do in {label}. It is granted as your own grant when you {verb.toLowerCase()}; nothing is ticked for you.
           {other ? ` ${MCP_KIND_LABELS[grant.kind]} access is ticked already: clear it to choose ${label} access (one tracker per approval).` : ""}
         </p>
@@ -201,7 +201,7 @@ export function TrackerPanel({ api, kind, member, grant, onToggle, verb, disable
     );
   }
   return (
-    <div className="chat-charter-tracker" data-testid="charter-tracker-panel" data-kind={kind}>
+    <div className="charter-wsq" data-testid="charter-tracker-panel" data-kind={kind}>
       {body}
     </div>
   );
