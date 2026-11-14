@@ -783,6 +783,45 @@ describe("a crew member's inspector", () => {
     });
   });
 
+  describe("a ticket duty's open tracker access (phase 8 item 21b, AC16)", () => {
+    const withAccess = (agent: RosterEntry, tracker_access: AgentDetailResponse["tracker_access"]): AgentDetailResponse => ({ ...detail(agent), tracker_access });
+    const NO_ACCESS = { duty: "Work the tickets", source: "clickup", status: "no_access", line: "Mason can't read ClickUp tickets yet: it has no ClickUp access" } as const;
+
+    it("names a ticket duty's missing tracker access as open, in the kernel's words", async () => {
+      await startTeam({ details: { mason: withAccess(MASON, [NO_ACCESS, { duty: "Triage", source: null, status: "no_source", line: "duty 2 doesn't say which tracker it reads" }]), pim: detail(PIM) } });
+      const inspector = await openInspector("Mason");
+      const open = await within(inspector).findByTestId("team-tracker-open");
+      expect(within(open).getAllByTestId("team-tracker-open-line").map((li) => [li.dataset.status, li.textContent])).toEqual([
+        ["no_access", "Mason can't read ClickUp tickets yet: it has no ClickUp access"],
+        ["no_source", "duty 2 doesn't say which tracker it reads"],
+      ]);
+    });
+
+    it("says nothing when every ticket duty can read its tracker, when it has none, or when the kernel sent no answer (grant unknown is never open)", async () => {
+      await startTeam({
+        roster: [WRIGHT, MASON, PIM],
+        details: {
+          mason: withAccess(MASON, [{ duty: "Work the tickets", source: "clickup", status: "granted", line: "Mason can read ClickUp tickets" }]),
+          pim: withAccess(PIM, null),
+        },
+      });
+      let inspector = await openInspector("Mason");
+      await within(inspector).findByTestId("team-insp-role");
+      expect(within(inspector).queryByTestId("team-tracker-open")).toBeNull();
+      inspector = await openInspector("Pim");
+      await within(inspector).findByTestId("team-insp-role");
+      expect(within(inspector).queryByTestId("team-tracker-open")).toBeNull();
+    });
+
+    it("renders a hostile line as text, never markup", async () => {
+      const hostile = "<img src=x onerror=alert(1)>";
+      await startTeam({ details: { mason: withAccess(MASON, [{ ...NO_ACCESS, line: hostile }]), pim: detail(PIM) } });
+      const open = await within(await openInspector("Mason")).findByTestId("team-tracker-open");
+      expect(open.textContent).toContain(hostile);
+      expect(open.querySelector("img")).toBeNull();
+    });
+  });
+
   it("shows model, limits, workspaces and the memory files as plain paths", async () => {
     await startTeam();
     const inspector = await openInspector("Mason");
