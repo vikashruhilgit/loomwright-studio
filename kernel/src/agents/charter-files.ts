@@ -541,13 +541,13 @@ function writeIfAbsent(path: string, text: string): boolean {
  * `role.md` names the connectors the settings file grants (read after the file
  * exists). Returns the paths it created. A write error is thrown.
  */
-function writeCharterFiles(dataDir: string, charter: Charter, homeDir?: string): string[] {
+function writeCharterFiles(dataDir: string, charter: Charter, homeDir?: string, connectors?: RecordedConnectors): string[] {
   const paths = agentFilePaths(dataDir, charter.id);
   const role = paths.memory[0] as string;
   mkdirSync(dirname(paths.settings), { recursive: true, mode: 0o700 });
   mkdirSync(paths.memoryDir, { recursive: true, mode: 0o700 });
   const created: string[] = [];
-  if (writeIfAbsent(paths.settings, renderAgentSettingsJson(charter))) created.push(paths.settings);
+  if (writeIfAbsent(paths.settings, settingsWithRecordedGrant(renderAgentSettingsJson(charter), connectors))) created.push(paths.settings);
   // The grant is the settings file's (the owner's `set` writes it there), so a re-created
   // role.md names what the file holds; a file the reader refuses names none.
   const settings = readAgentSettings(dataDir, charter.id, homeDir === undefined ? {} : { homeDir });
@@ -658,13 +658,58 @@ export type EnsureAgentFilesResult =
   /** The row's `charter_json` is no longer a valid charter for this id. Nothing was touched (never rendered from a damaged snapshot). */
   | { readonly ok: false; readonly error: "charter_invalid"; readonly field: string; readonly message: string };
 
+/** The `connectors` value the member's last recorded grant set (`value`, `null` for none), when one is recorded. */
+interface RecordedConnectors {
+  readonly value: unknown;
+}
+
+/**
+ * The connectors grant recorded for member `id` since its own `agent_created` event: the newest
+ * `agent_settings_set` event for its `connectors` (the owner's grant on an approval, or the owner's `set`).
+ * The grant is never in the charter, so this record, committed with the decision that made it, is what a
+ * re-created settings file is rebuilt from (phase 8 item 21b review): a file written after the commit that
+ * never landed, or one removed since, comes back with the grant the record says, never without it.
+ */
+function recordedConnectors(store: Store, id: string): RecordedConnectors | undefined {
+  const created = store
+    .prepare<[string], number | null>("SELECT max(id) FROM events WHERE kind = 'agent_created' AND json_extract(payload_json, '$.id') = ?")
+    .pluck()
+    .get(id);
+  if (created === undefined || created === null) return undefined;
+  const payload = store
+    .prepare<[number, string], string>(
+      "SELECT payload_json FROM events WHERE kind = 'agent_settings_set' AND id > ? AND json_extract(payload_json, '$.id') = ? AND json_extract(payload_json, '$.field') = 'connectors' ORDER BY id DESC LIMIT 1",
+    )
+    .pluck()
+    .get(created, id);
+  if (payload === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(payload) as { readonly new?: unknown };
+    return { value: parsed.new ?? null };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The charter's settings text with the recorded grant laid over its `connectors` (absent for `null`); the charter's own when none is recorded. */
+function settingsWithRecordedGrant(text: string, connectors: RecordedConnectors | undefined): string {
+  if (connectors === undefined) return text;
+  const file = JSON.parse(text) as Record<string, unknown>;
+  if (connectors.value === null) delete file.connectors;
+  else file.connectors = connectors.value;
+  const next = `${JSON.stringify(file, null, 2)}\n`;
+  // A grant the file can't hold is left out, as the charter's own: the reader then shows the access as missing, never a broken file.
+  return Buffer.byteLength(next) > MAX_SETTINGS_BYTES ? text : next;
+}
+
 /**
  * Re-create every missing file of crew member `id` from its row's
  * `charter_json`, each only when absent (exclusive create): the settings file
- * and `role.md`, then the other memory files through
- * `ensureAgentMemoryFiles`. An existing file, the owner's edit included, is
- * never touched. Item 05 calls it before every crew message. A write error
- * is thrown.
+ * (with the connectors grant recorded for it, `recordedConnectors`, since the
+ * charter never carries an owner's tracker grant) and `role.md`, then the
+ * other memory files through `ensureAgentMemoryFiles`. An existing file, the
+ * owner's edit included, is never touched. Item 05 calls it before every crew
+ * message. A write error is thrown.
  */
 export function ensureAgentFiles(store: Store, dataDir: string, id: string, options: { readonly homeDir?: string } = {}): EnsureAgentFilesResult {
   if (!isValidAgentId(id)) return { ok: false, error: "agent_id_invalid", message: `id ${quotedClip(id)}: ${ID_RULE}` };
@@ -679,5 +724,5 @@ export function ensureAgentFiles(store: Store, dataDir: string, id: string, opti
   const checked = validateCharter(json, { dataDir, ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }) });
   if (!checked.ok) return { ok: false, error: "charter_invalid", field: checked.field, message: `charter_json of ${id}: ${checked.message}` };
   if (checked.charter.id !== id) return { ok: false, error: "charter_invalid", field: "id", message: `charter_json of ${id}: its id is ${JSON.stringify(checked.charter.id)}` };
-  return { ok: true, created: writeCharterFiles(dataDir, checked.charter, options.homeDir) };
+  return { ok: true, created: writeCharterFiles(dataDir, checked.charter, options.homeDir, recordedConnectors(store, id)) };
 }

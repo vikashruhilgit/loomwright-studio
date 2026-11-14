@@ -1427,11 +1427,11 @@ describe("a ticket duty's tracker (item 21b)", () => {
     expect(count(h.store, "SELECT count(*) FROM events WHERE kind = 'agent_created'")).toBe(1);
   });
 
-  it("a settings write that fails takes the whole apply back: no member, no grant recorded, no sentence saying it was granted (21b review of 475f1425)", async () => {
+  it("a settings write that fails after the commit is healed from the record: the next ensureAgentFiles writes the file with the owner's grant (21b review)", async () => {
     const h = await bootManager(SHIPPED_TOOLS);
     connect(h.store);
     await h.wright.gate(CREATE, { charter: ticketCharter(), idempotency_key: "c1" });
-    // The settings folder is read-only: only the write of the new file throws (EACCES), as a full disk would; every check before it reads.
+    // The settings folder is read-only while the approval is decided: every file write after the commit fails (EACCES), as a full disk would.
     const folder = dirname(agentSettingsPath(dataDir, "mason"));
     mkdirSync(folder, { recursive: true });
     chmodSync(folder, 0o500);
@@ -1440,14 +1440,30 @@ describe("a ticket duty's tracker (item 21b)", () => {
     } finally {
       chmodSync(folder, 0o700);
     }
-    expect(getAgent(h.store, "mason")).toBeUndefined();
-    const decided = events(h.store, "approval_decided")[0]?.payload;
-    expect(decided).toMatchObject({ apply_refused: "apply_error" });
-    expect(decided?.applied).toBeUndefined();
-    expect(decided?.owner_grant).toBeUndefined();
-    expect(events(h.store, "agent_settings_set")).toEqual([]);
-    expect(count(h.store, "SELECT count(*) FROM events WHERE kind = 'agent_created'")).toBe(0);
+    // The decision committed the member and the owner's grant; no file was written before the commit, so none is left behind.
+    expect(getAgent(h.store, "mason")).toBeDefined();
+    expect(events(h.store, "agent_settings_set").map((e) => e.payload)).toEqual([{ id: "mason", field: "connectors", old: null, new: { clickup: READ }, by: "owner", approval_id: 1 }]);
     expect(existsSync(agentSettingsPath(dataDir, "mason"))).toBe(false);
+    // The self-heal (before every crew message) rebuilds the file from the charter with the recorded grant laid over it.
+    expect(ensureAgentFiles(h.store, dataDir, "mason")).toMatchObject({ ok: true });
+    expect(connectorsOf("mason")).toEqual({ clickup: READ });
+  });
+
+  it("a settings file removed later comes back with the recorded grant, and a member with no recorded grant gets the charter's own", async () => {
+    const h = await bootManager(SHIPPED_TOOLS);
+    connect(h.store);
+    await h.wright.gate(CREATE, { charter: ticketCharter(), idempotency_key: "c1" });
+    h.decide(1, { kind: "clickup", tools: READ });
+    expect(connectorsOf("mason")).toEqual({ clickup: READ });
+    rmSync(agentSettingsPath(dataDir, "mason"));
+    ensureAgentFiles(h.store, dataDir, "mason");
+    expect(connectorsOf("mason")).toEqual({ clickup: READ });
+    // A member created with nothing ticked has no recorded grant: its file is the charter's alone.
+    await h.wright.gate(CREATE, { charter: ticketCharter({ id: "nora", display_name: "Nora" }), idempotency_key: "c2" });
+    h.decide(2);
+    rmSync(agentSettingsPath(dataDir, "nora"));
+    ensureAgentFiles(h.store, dataDir, "nora");
+    expect(connectorsOf("nora")).toBeUndefined();
   });
 
   it("with no tick the member is created with no grant and the applied sentence names the missing access as open", async () => {
