@@ -50,15 +50,21 @@ export interface TrackerLine {
 
 /**
  * The MCP tracker a flagged readiness line is about, or `undefined` for any other line (GitHub Issues are read through
- * the GitHub connector, so they have no tick-to-grant row). The kernel's text is untrusted: the last match in the line
- * is taken, since the member's display name comes first and could imitate the sentence.
+ * the GitHub connector, so they have no tick-to-grant row). The kernel's text is untrusted: a member's display name
+ * sits inside both sentences and could imitate the other one, so each form is anchored to the kernel's whole line shape
+ * (`trackerItem` in `kernel/src/agents/charter-readiness.ts`, which always begins `duty <n>: `):
+ * - not connected: `duty <n>: <tracker> isn't connected on Integrations, so <name> can't read its tickets yet (connect it
+ *   there first; only you can grant access)`. The tracker label comes before the name, so the name cannot move it; tried first.
+ * - no access: `duty <n>: <name> can't read <tracker> tickets yet: it has no|only part of the <tracker> access ... (only you
+ *   can grant it)`. Anchored at both ends, so the last sentence (the kernel's own) is the one read, and a name cannot add one after it.
+ * The two forms end differently, so one line cannot satisfy both. A duty's flagged line (`duty <n> not covered ...`) has no
+ * colon after the number, so a duty excerpt that imitates either sentence matches neither.
  */
 export function trackerLine(text: string): TrackerLine | undefined {
-  // The full line, or the kernel's shortened one when the readiness block was cut to fit (`<name> can't read <tracker> tickets yet (<tracker> access is the owner's step)`).
-  const access = [...text.matchAll(/can't read (ClickUp|Jira) tickets yet(?:: it has (?:no|only part of the) \1 access| \(\1 access is the owner's step\))/g)].pop();
-  if (access?.[1] !== undefined) return { kind: TRACKER_LABELS[access[1]] as "clickup" | "jira", state: "no_access" };
-  const off = [...text.matchAll(/(ClickUp|Jira) isn't connected(?: on Integrations|, so)/g)].pop();
+  const off = /^duty \d+: (ClickUp|Jira) isn't connected on Integrations, so .+ can't read its tickets yet \(connect it there first; only you can grant access\)$/.exec(text);
   if (off?.[1] !== undefined) return { kind: TRACKER_LABELS[off[1]] as "clickup" | "jira", state: "not_connected" };
+  const access = /^duty \d+: .+ can't read (ClickUp|Jira) tickets yet: it has (?:no \1 access|only part of the \1 access to read them) \(only you can grant it\)$/.exec(text);
+  if (access?.[1] !== undefined) return { kind: TRACKER_LABELS[access[1]] as "clickup" | "jira", state: "no_access" };
   return undefined;
 }
 

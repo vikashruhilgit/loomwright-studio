@@ -426,7 +426,7 @@ No new mockup: this item reuses the charter card, the Approvals screen's `Charte
   - A duty that names no tracker has no control: the line says it doesn't say which tracker it reads, and Wright is asked to propose one.
   - Only one tracker's access is ticked per approval (the approve body carries one `owner_grant`); a second tracker's boxes are disabled with a line saying so until the first is cleared. A GitHub Issues duty has no row here: GitHub is granted through its own connector.
 - **The A shortcut** stands down while focus is in a checkbox (a form control is never a shortcut target), so after ticking, the owner presses the Allow once button, or moves focus out and presses A.
-- **Untrusted text.** Every kernel string (a capability label, a tool name, a readiness or `tracker_access` line) is a React text child through `printable`; the tracker a line is about is the last tracker sentence in it, so a member's display name can't point the control at another tracker.
+- **Untrusted text.** Every kernel string (a capability label, a tool name, a readiness or `tracker_access` line) is a React text child through `printable`; the tracker a line is about is read only from the kernel's whole line shape (`trackerLine`: a line starting `duty <n>: `, the not-connected form by its leading tracker label, the no-access form anchored at both ends), never by a tracker name found anywhere in it, so a member's display name or a duty excerpt can't point the control at another tracker.
 
 ## Not in v1 (deferred to GUI v2 or later)
 

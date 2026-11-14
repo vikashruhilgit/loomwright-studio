@@ -321,7 +321,7 @@ export function CharterCard({ api, approval, agent, items, threads }: CharterCar
             parts={parts}
             display={display}
             readinessFix={(line) =>
-              line.status !== "flagged" ? null : line.text.includes(WORKSPACE_FLAG) ? (
+              line.status !== "flagged" ? null : trackerLine(line.text) === undefined && line.text.includes(WORKSPACE_FLAG) ? (
                 <Button variant="secondary" size="row" ref={chooseRef} aria-expanded={question} onClick={() => setQuestion((q) => !q)}>
                   {CHOOSE_WORKSPACE}
                 </Button>

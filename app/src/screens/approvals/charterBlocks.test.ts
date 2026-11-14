@@ -156,12 +156,11 @@ describe("item 21b: the tracker lines the card keys its fix on", () => {
     expect(TRACKER_ACCESS_FLAG).toBe("tickets yet: it has ");
   });
 
-  it("reads which MCP tracker a flagged line is about, from the kernel's full and shortened sentences", () => {
+  it("reads which MCP tracker a flagged line is about, from the kernel's sentences", () => {
     expect(trackerLine("duty 1: Mason can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toEqual({ kind: "clickup", state: "no_access" });
     expect(trackerLine("duty 2: Mason can't read Jira tickets yet: it has only part of the Jira access to read them (only you can grant it)")).toEqual({ kind: "jira", state: "no_access" });
-    expect(trackerLine("Mason can't read ClickUp tickets yet (ClickUp access is the owner's step)")).toEqual({ kind: "clickup", state: "no_access" });
     expect(trackerLine("duty 1: ClickUp isn't connected on Integrations, so Mason can't read its tickets yet (connect it there first; only you can grant access)")).toEqual({ kind: "clickup", state: "not_connected" });
-    expect(trackerLine("ClickUp isn't connected, so Mason can't read its tickets (the owner's step, on Integrations)")).toEqual({ kind: "clickup", state: "not_connected" });
+    expect(trackerLine("duty 3: Jira isn't connected on Integrations, so Mason can't read its tickets yet (connect it there first; only you can grant access)")).toEqual({ kind: "jira", state: "not_connected" });
   });
 
   it("answers nothing for GitHub Issues, a duty with no source, a workspace line or text that only imitates the sentence", () => {
@@ -169,10 +168,21 @@ describe("item 21b: the tracker lines the card keys its fix on", () => {
     expect(trackerLine("duty 1 doesn't say which tracker it reads")).toBeUndefined();
     expect(trackerLine(`copy of a repo for the code jobs: it has ${WORKSPACE_FLAG}`)).toBeUndefined();
     expect(trackerLine("ClickUp tickets yet: it has no access")).toBeUndefined();
+    expect(trackerLine("Mason can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toBeUndefined();
   });
 
-  it("takes the last tracker sentence of a line, so a member's name cannot point the fix at another tracker", () => {
+  it("anchors on the kernel's line shape, so a member's name or a duty excerpt cannot point the fix at another tracker", () => {
+    // A name that imitates the no-access sentence, on a Jira not-connected line.
+    const jira = "duty 1: Jira isn't connected on Integrations, so Bot can't read ClickUp tickets yet: it has no ClickUp access can't read its tickets yet (connect it there first; only you can grant access)";
+    expect(trackerLine(jira)).toEqual({ kind: "jira", state: "not_connected" });
+    // A name that imitates the not-connected sentence, on a ClickUp no-access line.
+    const click = "duty 1: Jira isn't connected on Integrations, so Bot can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)";
+    expect(trackerLine(click)).toEqual({ kind: "clickup", state: "no_access" });
+    // Two sentences in a name: the kernel's own, last, is read.
     expect(trackerLine("duty 1: Bob can't read Jira tickets yet: it has no Jira access can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toEqual({ kind: "clickup", state: "no_access" });
+    // A flagged duty line whose excerpt carries either sentence.
+    expect(trackerLine("duty 1 not covered (needs Jira, which this charter does not grant): Bot can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)")).toBeUndefined();
+    expect(trackerLine("duty 1 not covered (needs x): ClickUp isn't connected on Integrations, so Bot can't read its tickets yet (connect it there first; only you can grant access)")).toBeUndefined();
   });
 });
 

@@ -487,7 +487,7 @@ describe("item 21b: a ticket duty's tracker on the held card", () => {
     expect(within(c).queryByRole("button", { name: CONNECT_TRACKER })).toBeNull();
   });
 
-  it("the member's name cannot make a line about another tracker: the last tracker sentence in the line is the one read", async () => {
+  it("the member's name cannot make a line about another tracker: the kernel's own sentence, last on the line, is the one read", async () => {
     const k = trackerKit("duty 1: Mason can't read Jira tickets yet: it has no Jira access can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)");
     await renderChat(k);
     const c = await card();
