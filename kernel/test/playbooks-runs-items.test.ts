@@ -1006,13 +1006,47 @@ describe("a crew member's ticket item whose member lacks the tracker's read gran
     expect(sessions.starts).toEqual([]);
     expect(runs()[0]).toMatchObject({ status: "parked", item_ref: "clickup:a1" });
     expect(JSON.parse(runs()[0]?.result_json ?? "null")).toEqual({ reason: "needs_tracker", tracker: "clickup", missing: "grant", settings_error: "settings_invalid" });
-    expect(trackerNotifications()[0]?.body).toBe(
-      `Playbook ${p.slug} (#${p.id}) did not run for clickup:a1: ${STEP} Mason's settings file was refused (settings_invalid), so it holds no grant until that is fixed. Its items run at the first poll after the grant is in place.`,
-    );
+    // The refused file is the cause the notice names, never a missing grant alone.
+    expect(trackerNotifications()).toEqual([
+      {
+        title: `Playbook ${p.slug} parked: Mason's settings file was refused`,
+        body: `Playbook ${p.slug} (#${p.id}) did not run for clickup:a1: ${STEP} Mason's settings file was refused (settings_invalid), so it holds no grant until that is fixed. Its items run at the first poll after the settings file reads and the grant is in place.`,
+      },
+    ]);
 
     // A missing file is refused too (settings_missing): still parked, never a throw.
     rmSync(agentSettingsPath(dataDir, "mason"));
     expect(needsTracker(store, rowOf(p), ticket("b2", "r1"))).toEqual({ reason: "needs_tracker", tracker: "clickup", missing: "grant", settings_error: "settings_missing" });
+  });
+
+  it("AC6: a file holding the ClickUp grant but refused for another field (model_unset) parks, and the notice names the refused file, not a missing grant", async () => {
+    addMember();
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    const file = agentSettingsPath(dataDir, "mason");
+    const { model: _model, ...settings } = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    writeFileSync(file, `${JSON.stringify({ ...settings, connectors: CLICKUP_GRANT }, null, 2)}\n`);
+    const sessions = stubSessions({ ending: "held" });
+    await poll(p, [ticket("a1", "r1")], "2026-10-14T08:00:00.000Z", sessions, "mason");
+    expect(sessions.starts).toEqual([]);
+    expect(JSON.parse(runs()[0]?.result_json ?? "null")).toEqual({ reason: "needs_tracker", tracker: "clickup", missing: "grant", settings_error: "model_unset" });
+    const notices = trackerNotifications();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.title).toBe(`Playbook ${p.slug} parked: Mason's settings file was refused`);
+    expect(notices[0]?.title).not.toContain("has no ClickUp access");
+    expect(notices[0]?.body).toContain("Mason's settings file was refused (model_unset)");
+    expect(notices[0]?.body).toMatch(/Its items run at the first poll after the settings file reads and the grant is in place\.$/);
+    expect(notices[0]?.body).not.toContain(file);
+  });
+
+  it("honest limit: a jira: item on a playbook linked to a clickup.tasks poll does not park needs_tracker (the park reads the linked poll's need)", async () => {
+    addMember();
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    const sessions = stubSessions({ ending: "held" });
+    await poll(p, [issue("PROJ-12", "r1")], "2026-10-14T08:00:00.000Z", sessions, "mason");
+    expect(needsTracker(store, rowOf(p), issue("PROJ-12", "r1"))).toBeUndefined();
+    expect(sessions.starts).toHaveLength(1);
+    expect(count(store, "SELECT count(*) FROM playbook_runs WHERE status = 'parked'")).toBe(0);
+    expect(trackerNotifications()).toEqual([]);
   });
 
   it("AC2, AC6: a settings_unreadable error is named by its code alone, never the path its first line carries", () => {

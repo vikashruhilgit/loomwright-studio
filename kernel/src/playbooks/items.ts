@@ -320,7 +320,10 @@ export interface NeedsTrackerNotice {
  * rule (`parkedSinceLastSession`) for `needs_tracker` parks only. The body
  * names the owner's step in the dry run's words (`ownerStep`, through
  * `pollGrantGaps`), never a settings-file path or a command: only the owner
- * grants it, on Team. Called inside the `playbook-run` step, BEFORE the park
+ * grants it, on Team. When the member's settings file was refused, the title
+ * names the refused file instead of a missing grant (the file may hold the
+ * grant and be refused for another field), and the body names the refusal's
+ * code. Called inside the `playbook-run` step, BEFORE the park
  * row is written, so a redelivery records none more.
  */
 export function notifyNeedsTracker(store: Store, n: NeedsTrackerNotice, now: Date): void {
@@ -334,12 +337,15 @@ export function notifyNeedsTracker(store: Store, n: NeedsTrackerNotice, now: Dat
   // The refusal's code only (`settings_unreadable: <first line>` names a path): the row keeps the whole error.
   const code = park.settings_error?.split(":", 1)[0];
   const settings = code !== undefined ? ` ${name}'s settings file was refused (${code}), so it holds no grant until that is fixed.` : "";
+  // A refused file may already carry the grant (refused for another field), so its notice blames the file, never the grant alone.
+  const cause = code !== undefined ? `${name}'s settings file was refused` : `${name} has no ${CONNECTOR_LABELS[park.tracker]} access`;
+  const until = code !== undefined ? "the settings file reads and the grant is in place" : "the grant is in place";
   recordNotification(
     store,
     {
       source: NEEDS_TRACKER_SOURCE,
-      title: cutChars(`Playbook ${n.slug} parked: ${name} has no ${CONNECTOR_LABELS[park.tracker]} access`, MAX_NOTIFICATION_TITLE),
-      body: `Playbook ${n.slug} (#${n.playbook}) did not run for ${n.item.ref}: ${step}${settings} Its items run at the first poll after the grant is in place.`,
+      title: cutChars(`Playbook ${n.slug} parked: ${cause}`, MAX_NOTIFICATION_TITLE),
+      body: `Playbook ${n.slug} (#${n.playbook}) did not run for ${n.item.ref}: ${step}${settings} Its items run at the first poll after ${until}.`,
     },
     now,
   );
