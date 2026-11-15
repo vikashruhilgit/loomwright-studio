@@ -1,6 +1,7 @@
 # 22e — A crew member without tracker access never starts a ticket run, and the enable card says why
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/284
 
 **Ready (2026-11-15):** PR #283 merged (`48de35ff`), so `pollGrantOwnerSteps` is on `main`. Every line cited below was re-checked on `main` `787c00f6` (after #282 and #283) and is unchanged.
 
@@ -86,3 +87,9 @@ kernel/test/playbooks-fit.test.ts
 docs/architecture/playbook-runs.md
 docs/architecture/playbooks.md
 docs/architecture/mcp-connectors.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-15T17:08:20Z
+- **Brief:** .supervisor/jobs/done/2026-11-15-member-without-tracker-access-parks.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/284
