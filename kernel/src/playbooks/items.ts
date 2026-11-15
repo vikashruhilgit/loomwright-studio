@@ -16,22 +16,32 @@
 // outside the wrapper, so a ref that could carry words is refused, never
 // wrapped. Every author-controlled field (`title`, `text`, `author`, `status`)
 // is shown inside that one wrapper, and nowhere else. A Jira or ClickUp item is
-// not a GitHub item (`isGithubItem`), so it never parks `needs_github`.
+// not a GitHub item (`isGithubItem`), so it never parks `needs_github`. A crew
+// member's ticket item parks `needs_tracker` instead when the member lacks
+// that tracker's read grant (phase 8 item 22e: the dry run's rule,
+// `pollGrantGaps` in `./fit.ts`), with one notification per outage.
 //
 // Called only from `./runs.ts`, inside its work steps, so a redelivery
 // replays the stored decision and writes no second row, event or
 // notification. The `studio` CLI loads `./runs.ts`, so this module imports at
-// runtime only `../agents/settings.js`, `../brain/context.js`,
-// `../brain/memory.js` (`cutChars`), `../loop/internal.js` and
-// `../notifications/record.js`; never the Agent SDK, the session manager or
-// `kernel.ts`.
+// runtime only `../agents/registry.js`, `../agents/settings.js`,
+// `../brain/context.js`, `../brain/memory.js` (`cutChars`),
+// `../features/catalogue.js` (`CONNECTOR_LABELS`), `../loop/internal.js`,
+// `../notifications/record.js` and `./fit.js` (CLI-safe: the CLI already
+// loads it through `./enable.ts`); never the Agent SDK, the session manager
+// or `kernel.ts`.
+import { getAgent } from "../agents/registry.js";
 import { agentSettingsPath, readAgentSettings } from "../agents/settings.js";
 import { wrapUntrusted } from "../brain/context.js";
 import { cutChars } from "../brain/memory.js";
+import { CONNECTOR_LABELS } from "../features/catalogue.js";
+import type { HeldConnectors } from "../features/catalogue.js";
 import type { SourceItem } from "../integrations/types.js";
 import { NO_REF, appendEvent } from "../loop/internal.js";
 import { MAX_NOTIFICATION_TITLE, recordNotification } from "../notifications/record.js";
 import type { Store } from "../store/store.js";
+import { pollGrantGaps } from "./fit.js";
+import type { PlaybookRow } from "./store.js";
 
 // ---- The payload's item ----------------------------------------------------------
 
@@ -149,6 +159,44 @@ function connectorUsable(status: string | null): boolean {
 }
 
 /**
+ * The agent's grants as a run reads them, or why they can't be read: the
+ * refusal's code (`settings_invalid`, …), or `settings_unreadable: <first
+ * line>` when the read threw (Wright's file is created when absent). Never
+ * throws. Both parks read through it, so a refused file grants nothing to
+ * either (fail closed).
+ */
+function readGrantSettings(store: Store, agent: string): { readonly settings: HeldConnectors } | { readonly settings_error: string } {
+  try {
+    const r = readAgentSettings(store.dataDir, agent);
+    return r.ok ? { settings: r.settings } : { settings_error: r.error };
+  } catch (err) {
+    // One printable line: it is shown in the park row and the notification (which refuses a NUL).
+    const line = ((err instanceof Error ? err.message : String(err)).split("\n", 1)[0] ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
+    return { settings_error: `settings_unreadable: ${cutChars(line, 500)}` };
+  }
+}
+
+/**
+ * Whether a `parked` row of `playbook` with this `reason` exists after its
+ * newest item run that started a session (the outage already notified): the
+ * outage rule both park notices share. A skip or failed row never ends an outage, nor does a time-based
+ * fire (no item); a run that starts a session ends every reason's outage, and
+ * a park of one reason never ends or merges another's.
+ */
+function parkedSinceLastSession(store: Store, playbook: number, reason: string): boolean {
+  return (
+    store
+      .prepare<[number, string, number], number>(
+        "SELECT 1 FROM playbook_runs WHERE playbook = ? AND status = 'parked' " +
+          "AND json_extract(result_json, '$.reason') = ? " +
+          "AND id > (SELECT COALESCE(MAX(id), 0) FROM playbook_runs WHERE playbook = ? AND session_id IS NOT NULL AND item_ref IS NOT NULL) LIMIT 1",
+      )
+      .pluck()
+      .get(playbook, reason, playbook) !== undefined
+  );
+}
+
+/**
  * Whether a GitHub item's run of `agent` must park, and why: `undefined`
  * when the agent's settings grant `github` and the newest `github`
  * connector row is usable. The grant is read with the rule `connectorsFor`
@@ -157,17 +205,9 @@ function connectorUsable(status: string | null): boolean {
  * never throws out of the step. The connector is read with direct SQL.
  */
 export function needsGithub(store: Store, agent: string): NeedsGithub | undefined {
-  let granted = false;
-  let settingsError: string | undefined;
-  try {
-    const r = readAgentSettings(store.dataDir, agent);
-    granted = r.ok ? (r.settings.connectors ?? []).includes("github") : false;
-    if (!r.ok) settingsError = r.error;
-  } catch (err) {
-    // One printable line: it is shown in the park row and the notification (which refuses a NUL).
-    const line = ((err instanceof Error ? err.message : String(err)).split("\n", 1)[0] ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
-    settingsError = `settings_unreadable: ${cutChars(line, 500)}`;
-  }
+  const r = readGrantSettings(store, agent);
+  const granted = "settings" in r ? (r.settings.connectors ?? []).includes("github") : false;
+  const settingsError = "settings_error" in r ? r.settings_error : undefined;
   const status = store.prepare<[], string>("SELECT status FROM connectors WHERE kind = 'github' ORDER BY id DESC LIMIT 1").pluck().get() ?? null;
   const park = (missing: NeedsGithub["missing"]): NeedsGithub => ({
     reason: "needs_github",
@@ -192,20 +232,14 @@ export interface NeedsGithubNotice {
 /**
  * Tell the owner a playbook's GitHub item parked: one notification per
  * outage. A missing grant with an unusable connector names both fixes. It
- * records one only when no `parked` row of the playbook exists after its newest item run that started a session (a skip or failed row
- * never ends an outage, nor does a time-based fire, which has no item).
+ * records one only when no `needs_github` `parked` row of the playbook exists after its newest item run that started a session
+ * (`parkedSinceLastSession`: a skip or failed row never ends an outage, nor does a time-based fire, which has no item, nor a
+ * `needs_tracker` park).
  * Called inside the `playbook-run` step, BEFORE the park row is written, so a
  * redelivery records none more.
  */
 export function notifyNeedsGithub(store: Store, n: NeedsGithubNotice, now: Date): void {
-  const parkedSinceLastSession =
-    store
-      .prepare<[number, number], number>(
-        "SELECT 1 FROM playbook_runs WHERE playbook = ? AND status = 'parked' AND id > (SELECT COALESCE(MAX(id), 0) FROM playbook_runs WHERE playbook = ? AND session_id IS NOT NULL AND item_ref IS NOT NULL) LIMIT 1",
-      )
-      .pluck()
-      .get(n.playbook, n.playbook) !== undefined;
-  if (!parkedSinceLastSession) {
+  if (!parkedSinceLastSession(store, n.playbook, "needs_github")) {
     const { park } = n;
     // A missing grant hides the connector check, and a later park in this outage
     // (`missing: "connector"`) notifies nothing: so name both fixes now.
@@ -227,6 +261,94 @@ export function notifyNeedsGithub(store: Store, n: NeedsGithubNotice, now: Date)
       now,
     );
   }
+}
+
+// ---- The tracker grant (phase 8 item 22e) ------------------------------------------------
+
+/** The notification source of a crew playbook parked for want of a tracker's read grant. */
+export const NEEDS_TRACKER_SOURCE = "kernel:needs_tracker";
+
+/** The tracker a ticket item is from, by its ref's prefix: `undefined` for a GitHub item. */
+export function trackerOfItem(item: RunItem): "jira" | "clickup" | undefined {
+  if (item.ref.startsWith("jira:")) return "jira";
+  if (item.ref.startsWith("clickup:")) return "clickup";
+  return undefined;
+}
+
+/** Why a crew member's ticket item's run parks: the park row's `result_json`. */
+export interface NeedsTracker {
+  readonly reason: "needs_tracker";
+  /** The item's tracker. */
+  readonly tracker: "jira" | "clickup";
+  /** `grant`: the member does not hold that tracker's read grant (or its settings were refused: nothing is held). */
+  readonly missing: "grant";
+  /** Set when the member's settings were refused (the refusal's code) or the read threw (settings_unreadable, then the error's first line). */
+  readonly settings_error?: string;
+}
+
+/**
+ * Whether a ticket item's run of playbook `row` must park, and why:
+ * `undefined` for a GitHub item, and for a member that holds the item's
+ * tracker read grant. "Holds" is the dry run's rule (`pollGrantGaps`,
+ * `./fit.ts`: the linked poll's need, checked by `holdsConnector`), so a dry
+ * run and a real run of the same member never disagree while its settings
+ * file reads; Wright's own playbook has no gap there. A refused or unreadable
+ * settings file holds nothing (fail closed) and its `settings_error` is
+ * carried. Never throws for a settings read.
+ */
+export function needsTracker(store: Store, row: PlaybookRow, item: RunItem): NeedsTracker | undefined {
+  const tracker = trackerOfItem(item);
+  if (tracker === undefined) return undefined;
+  const read = readGrantSettings(store, row.owning_agent);
+  const held: HeldConnectors = "settings" in read ? read.settings : {};
+  if (!pollGrantGaps(store, row, held).some((gap) => gap.kind === tracker)) return undefined;
+  return { reason: "needs_tracker", tracker, missing: "grant", ...("settings_error" in read ? { settings_error: read.settings_error } : {}) };
+}
+
+/** What `notifyNeedsTracker` names: the playbook, its row (the member and the linked poll), the item and why it parked. */
+export interface NeedsTrackerNotice {
+  readonly playbook: number;
+  readonly slug: string;
+  readonly row: PlaybookRow;
+  readonly item: RunItem;
+  readonly park: NeedsTracker;
+}
+
+/**
+ * Tell the owner a crew playbook's ticket item parked for want of the
+ * tracker's read grant: one notification per outage, the `needs_github`
+ * rule (`parkedSinceLastSession`) for `needs_tracker` parks only. The body
+ * names the owner's step in the dry run's words (`ownerStep`, through
+ * `pollGrantGaps`), never a settings-file path or a command: only the owner
+ * grants it, on Team. When the member's settings file was refused, the title
+ * names the refused file instead of a missing grant (the file may hold the
+ * grant and be refused for another field), and the body names the refusal's
+ * code. Called inside the `playbook-run` step, BEFORE the park
+ * row is written, so a redelivery records none more.
+ */
+export function notifyNeedsTracker(store: Store, n: NeedsTrackerNotice, now: Date): void {
+  if (parkedSinceLastSession(store, n.playbook, "needs_tracker")) return;
+  const { park } = n;
+  // The step's words do not depend on what is held: over no grant, the park's own gap is always there.
+  const step = pollGrantGaps(store, n.row, {}).find((gap) => gap.kind === park.tracker)?.step;
+  // `needsTracker` found this gap in the same step: none here means the linked trigger changed under the step (a store fault).
+  if (step === undefined) throw new Error(`playbook ${n.playbook}: its ${park.tracker} park has no owner step to name`);
+  const name = getAgent(store, n.row.owning_agent)?.display_name ?? n.row.owning_agent;
+  // The refusal's code only (`settings_unreadable: <first line>` names a path): the row keeps the whole error.
+  const code = park.settings_error?.split(":", 1)[0];
+  const settings = code !== undefined ? ` ${name}'s settings file was refused (${code}), so it holds no grant until that is fixed.` : "";
+  // A refused file may already carry the grant (refused for another field), so its notice blames the file, never the grant alone.
+  const cause = code !== undefined ? `${name}'s settings file was refused` : `${name} has no ${CONNECTOR_LABELS[park.tracker]} access`;
+  const until = code !== undefined ? "the settings file reads and the grant is in place" : "the grant is in place";
+  recordNotification(
+    store,
+    {
+      source: NEEDS_TRACKER_SOURCE,
+      title: cutChars(`Playbook ${n.slug} parked: ${cause}`, MAX_NOTIFICATION_TITLE),
+      body: `Playbook ${n.slug} (#${n.playbook}) did not run for ${n.item.ref}: ${step}${settings} Its items run at the first poll after ${until}.`,
+    },
+    now,
+  );
 }
 
 // ---- The skip event ---------------------------------------------------------------------

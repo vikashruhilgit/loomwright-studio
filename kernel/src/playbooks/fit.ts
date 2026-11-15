@@ -19,6 +19,9 @@
 // (`requiresConnector` / `requiresConnectorLevel`) or the poll source needs is
 // never in `proposed_update`; it is named as the owner's step on Team, in the
 // member's inspector. `kernel_agent_update` never changes a grant anyway.
+// The poll source's grant rule (`pollGrantGaps`) is shared with the dry run,
+// a real run's `needs_tracker` park (`./items.ts`) and the enable display of a
+// `no_jobs` ticket playbook (`./enable.ts`), so the three never disagree.
 //
 // The declared-jobs limit: the check sees only the jobs the playbook names. A
 // playbook whose jobs are under-declared passes the check and meets the
@@ -40,7 +43,7 @@ import { getAgent } from "../agents/registry.js";
 import { agentSettingsPath, readAgentSettings } from "../agents/settings.js";
 import type { AgentSettings } from "../agents/settings.js";
 import { CONNECTOR_LABELS, TOOL_JOBS, andList, connectorAccessText, connectorNeeds, holdsConnector, isToolJob, jobGranted, jobLackingTools } from "../features/catalogue.js";
-import type { CatalogueTool, ToolCatalogue, ToolJob } from "../features/catalogue.js";
+import type { CatalogueTool, HeldConnectors, ToolCatalogue, ToolJob } from "../features/catalogue.js";
 import { jobNeedsGaps, resolveJobNeeds } from "../features/job-needs.js";
 import type { NeedsGap, NeedsGapKind } from "../features/job-needs.js";
 import type { ConnectorKind } from "../integrations/types.js";
@@ -318,27 +321,65 @@ export function playbookFit(store: Store, row: PlaybookRow, catalogue: ToolCatal
   };
 }
 
+/** One poll-source grant a crew member lacks: the connector kind and the owner's step for it, in `ownerStep`'s words. */
+export interface PollGrantGap {
+  readonly kind: ConnectorKind;
+  readonly step: string;
+}
+
+/**
+ * The poll source's own read grant (`grantNeeds`, no job's tools) that the crew member owning `row` does not
+ * hold in `held`, each with the owner's step (phase 8 item 22e). The one rule the dry run
+ * (`pollGrantOwnerSteps`), a real run's ticket park (`needsTracker`, `./items.ts`) and the enable display of a
+ * `no_jobs` ticket playbook (`ticketPollOwnerSteps`) share, so they never disagree on what "doesn't hold" means.
+ * Empty for Wright's own playbook (no charter: this is the only Wright guard on the real-run path) and for a
+ * playbook with no poll trigger. The caller reads `held`; this reads only the registry and the linked trigger,
+ * and throws only when the trigger read throws.
+ */
+export function pollGrantGaps(store: Store, row: PlaybookRow, held: HeldConnectors): readonly PollGrantGap[] {
+  const member = getAgent(store, row.owning_agent);
+  if (member === undefined) return []; // Wright's own playbook: no charter
+  return grantNeeds(store, row, [])
+    .filter((need) => !holdsConnector(held, need))
+    .map((need) => ({ kind: need.kind, step: ownerStep(member.display_name, need) }));
+}
+
+/** The member's poll-source grant gaps, read from its settings file as the dry run reads it: unreadable settings are no gap. Never throws. */
+function readPollGrantGaps(store: Store, row: PlaybookRow): readonly PollGrantGap[] {
+  try {
+    const member = getAgent(store, row.owning_agent);
+    if (member === undefined) return [];
+    const read = memberSettings(store.dataDir, member.id);
+    if ("reason" in read) return [];
+    return pollGrantGaps(store, row, read.settings);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * The owner's steps for a crew member's `no_jobs` poll playbook (phase 8 item 22a): the poll source's own read
- * grant (`grantNeeds`, no job's tools) that the member lacks, worded by `ownerStep`. `playbookFit` still reads
- * `owner_steps: []` for `no_jobs`, and the enable's lines stay as they were; only the dry run asks this, to
+ * grant (`grantNeeds`, no job's tools) that the member lacks, worded by `ownerStep` (`pollGrantGaps`). `playbookFit` still reads
+ * `owner_steps: []` for `no_jobs`; the dry run asks this, to
  * start no review session for a member whose real run would have its poll-source calls refused (the review
  * would only spend tokens). Empty for Wright's own playbook, a playbook
  * with no poll trigger and a member's unreadable settings. Never throws: a failure to read is no step (the
  * review runs as it did).
  */
 export function pollGrantOwnerSteps(store: Store, row: PlaybookRow): readonly string[] {
-  try {
-    const member = getAgent(store, row.owning_agent);
-    if (member === undefined) return [];
-    const read = memberSettings(store.dataDir, member.id);
-    if ("reason" in read) return [];
-    return grantNeeds(store, row, [])
-      .filter((need) => !holdsConnector(read.settings, need))
-      .map((need) => ownerStep(member.display_name, need));
-  } catch {
-    return [];
-  }
+  return readPollGrantGaps(store, row).map((g) => g.step);
+}
+
+/**
+ * The owner's steps the enable display of a crew member's `no_jobs` playbook carries (phase 8 item 22e): the
+ * `pollGrantOwnerSteps` steps of a Jira or ClickUp poll only (a GitHub poll's display is as it was), read
+ * when the enable is held, never copied from the dry run. Unreadable settings are no step. Never throws. A
+ * step is the owner's to take: the enable is still held, never refused for it.
+ */
+export function ticketPollOwnerSteps(store: Store, row: PlaybookRow): readonly string[] {
+  return readPollGrantGaps(store, row)
+    .filter((g) => g.kind === "jira" || g.kind === "clickup")
+    .map((g) => g.step);
 }
 
 /** Whether `fit` leaves a gap an enable must not pass without the owner's word: `gap`, or `unchecked` (fail closed). */

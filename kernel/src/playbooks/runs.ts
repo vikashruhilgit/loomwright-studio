@@ -13,8 +13,10 @@
 // with an `item` (a polled item, phase 6 item 05: `./items.ts`) is its own
 // run: its row records the item, the owner's key may name `item.id` /
 // `item.revision`, a skip appends one `poll_item_skipped` event, the item
-// reaches the prompt only wrapped as data, and a GitHub item whose agent
-// lacks the grant or a usable connector parks (`parked`, `needs_github`). The brain's `message`
+// reaches the prompt only wrapped as data, a GitHub item whose agent
+// lacks the grant or a usable connector parks (`parked`, `needs_github`), and
+// a crew member's ticket item whose member lacks that tracker's read grant
+// parks (`parked`, `needs_tracker`). The brain's `message`
 // handler hands it to `handlePlaybookMessage` (this part claims no handler:
 // the brain owns `message`), which runs it under the playbook's own policy
 // (invariant 1): the version's model, never Wright's settings model; the
@@ -28,7 +30,9 @@
 //      the step so a redelivery records none more), agent not routed (neither
 //      `wright` nor a registered crew member), model unset, dedupe spec
 //      invalid), skip a duplicate (an item's: one `poll_item_skipped`), park
-//      a GitHub item that needs GitHub (one notification per outage), and
+//      a GitHub item that needs GitHub, or a crew member's ticket item whose
+//      member lacks the tracker's read grant (one notification per outage
+//      each), and
 //      insert exactly one run row (the refusal, skip or park, or `running`). Every refusal
 //      is a return that writes its row inside the step, never a throw (a throw
 //      rolls the step back). A redelivery replays the stored `{run_id,
@@ -84,7 +88,7 @@ import { recordNotification } from "../notifications/record.js";
 import type { SessionHandle, SessionStatus } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
 import { wallClock } from "../triggers/cron.js";
-import { appendItemSkipped, isGithubItem, itemPromptBlock, needsGithub, notifyNeedsGithub, runItemOf } from "./items.js";
+import { appendItemSkipped, isGithubItem, itemPromptBlock, needsGithub, needsTracker, notifyNeedsGithub, notifyNeedsTracker, runItemOf } from "./items.js";
 import type { RunItem } from "./items.js";
 import { getPlaybook } from "./store.js";
 import { DEDUPE_KEY_FIELDS, PLAYBOOK_RUN_KINDS } from "./types.js";
@@ -94,8 +98,9 @@ import type { DedupeKeyField, PlaybookPart, PlaybookPriority, PlaybookRunKind, P
  * `playbook_runs.status` (closed here, not in `./types.ts`; migration 13 has
  * no SQL CHECK): every write below is checked against it. `parked` is a
  * GitHub item's run whose agent lacked the grant or a usable connector
- * (`needs_github`): terminal, and never a duplicate, so the next poll's
- * message for the item is checked afresh (it runs once both are there). (An admission-parked run is another thing: it
+ * (`needs_github`), or a crew member's ticket item's run whose member lacked
+ * that tracker's read grant (`needs_tracker`): terminal, and never a duplicate, so the next poll's
+ * message for the item is checked afresh (it runs once what was missing is there). (An admission-parked run is another thing: it
  * stays `running`, with `parked` in its `result_json`.)
  */
 export const PLAYBOOK_RUN_STATUSES = Object.freeze(["running", "done", "failed", "skipped_duplicate", "skipped_not_enabled", "parked"] as const);
@@ -452,6 +457,15 @@ function decideRun(store: Store, e: PlaybookEvent, timeZone: string, now: Date):
     if (park !== undefined) {
       notifyNeedsGithub(store, { playbook: e.playbook, slug: snapshot.slug, agent: e.agent, item: e.item, park }, now);
       return row("parked", { ...park }, dedupeKey);
+    }
+  }
+  // A crew member's ticket item whose member lacks that tracker's read grant (the dry run's rule) parks
+  // the same way, before any session starts, one notification per outage (phase 8 item 22e).
+  if (e.item !== null && !isGithubItem(e.item)) {
+    const trackerPark = needsTracker(store, live, e.item);
+    if (trackerPark !== undefined) {
+      notifyNeedsTracker(store, { playbook: e.playbook, slug: snapshot.slug, row: live, item: e.item, park: trackerPark }, now);
+      return row("parked", { ...trackerPark }, dedupeKey);
     }
   }
   // f. The run.
