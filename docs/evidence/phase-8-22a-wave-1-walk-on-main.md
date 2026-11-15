@@ -178,3 +178,79 @@ Summary (Wright's word-for-word quote): Dry run 192 of version 2 completed, 5075
 Observed so far: step 1, 3, 4 (kernel side), 6, AC2, AC3 PASS; AC4 FAIL. AC5 (the grant of Read tickets to member Three and a new dry run) is walked at the fixed head, once, so the review session it runs is not spent twice.
 
 Test members and playbooks created by the walk (to be turned off at the end; Studio has no delete): members `wright-walk-22a-one`, `wright-walk-22a-two`, `wright-walk-22a-three`; playbooks 13, 14, 15 (all `draft`).
+
+## The fix (after the failing observation above was committed as `52e605a6`)
+
+Commit `a0aaa8ef`: `pollGrantOwnerSteps` in `kernel/src/playbooks/fit.ts` (the poll source's own read grant through `grantNeeds`, `holdsConnector` and `ownerStep`, never a second wording), used by `ownerStepsOf` in `kernel/src/playbooks/dry-run.ts` for a `no_jobs` fit only. `playbookFit` still returns `no_jobs` with `owner_steps: []` (its pin in `playbooks-fit.test.ts` is green) and `enable.ts` is untouched. No new `preview_incomplete` reason. `docs/architecture/dry-run.md` says so.
+
+Test: `kernel/test/playbooks-dry-run-poll.test.ts`, inside the 21e describe block, a nested describe with three cases over a real store and the shipped catalogue: AC4 (a member whose only duty is `source: "clickup"`, `jobs: []`, no grant; a throwing session starter is never called; items listed; `reviewed` null; `preview_incomplete` `{owner_step_open, fix}`; row `done`, `session_id` NULL, `tokens` 0; stored `final_text` null; the summary shows none of `owner_step_open`, `charter_gap`, `mcp__`, `kernel_`), AC5 (after the grant a new key runs the review) and a member that already holds the access (the review runs). The ClickUp fixtures of the AC9 describe (`CLICKUP_SPEC`, `task`, `listTool`, `reader`) moved to module scope to be reused, and a hoisted `vi.mock` of `createMcpTicketReader` lets a test point the dry-run tool's ticket reader at a stand-in (no override set: the real reader, as before).
+
+Pin mutation, done by hand: in `ownerStepsOf`, `if (fit.status === "no_jobs") return pollGrantOwnerSteps(store, row);` replaced by `return [];` (the base behaviour). Result: 2 failed, 51 passed: the AC4 and AC5 cases fail with "kernel_playbook_dry_run: no session may start" (the throwing starter was called). Restored; 53 passed.
+
+## Re-walk at the fixed head `a0aaa8eff7ada2cae5335045a6206477c3cecbb3`
+
+Kernel rebuilt (`npm run build`), `service install` (pid 78687; the install copy's `dist/playbooks/dry-run.js` carries `pollGrantOwnerSteps`), app repackaged (`npm run package`, exit 0).
+
+### AC4 re-walk: PASS
+
+Same member (`wright-walk-22a-three`, no ClickUp grant) and playbook 14, `studio ask` "Dry-run playbook 14 once ...":
+
+```text
+playbook_runs id 194: kind dry_run, status done, playbook 14 version 2, session_id (none), tokens 0
+  2026-11-15T02:35:52.644Z -> 2026-11-15T02:35:52.644Z
+  poll.items: clickup:86bd2djuq  "Add a README to studio-sandbox"  would run
+  poll.reviewed: null
+  poll.preview_incomplete: {"reason":"owner_step_open","fix":"Wright Walk 22a Three needs ClickUp access for watching ClickUp; only you can grant it: Team -> Wright Walk 22a Three's inspector."}
+  final_text null, usage {}
+  fit: status no_jobs, owner_steps []   (unchanged)
+Summary (Wright's word-for-word quote): Dry run 194 of version 2 completed, 0 tokens; it would do nothing that acts.
+  Next fires (UTC): none. Dedupe key for the next fire (preview): none. The poll found 1 ClickUp task: 1 would run,
+  0 would skip: clickup:86bd2djuq would run. The review was skipped, and no session started, until the owner takes
+  this step: Wright Walk 22a Three needs ClickUp access for watching ClickUp; only you can grant it: Team ->
+  Wright Walk 22a Three's inspector. This dry run still counts toward the enable; a real run would be refused until then.
+```
+
+`sessions` for that member: still 1 (session 168 from the failing run); the re-walk started none. Wright's reply named the missing ClickUp access as the owner's step in Team and said no session started.
+
+### AC5: PASS
+
+The owner's grant, `studio agents set wright-walk-22a-three connectors clickup:<the 12 tools of Read tickets>`, then `studio ask` "Dry-run playbook 14 once more (a new dry run, new key)":
+
+```text
+playbook_runs id 195: kind dry_run, status done, playbook 14 version 2, session 174, tokens 116437
+  2026-11-15T02:36:37.735Z -> 2026-11-15T02:37:06.988Z
+  poll.items: clickup:86bd2djuq  "Add a README to studio-sandbox"  would run
+  poll.reviewed: clickup:86bd2djuq; drafts: []; no preview_incomplete
+```
+
+The review ran as for any member with access (run 191, 128,356 tokens; run 193, 123,645).
+
+## Static validation
+
+```text
+cd kernel && npm ci && npm test   (final head a0aaa8ef, plus this evidence commit)
+  Test Files  137 passed | 2 skipped (139)   Tests  4739 passed | 16 skipped (4755)
+bash scripts/check-docs.sh
+  check-docs: OK
+```
+
+The suite was not run before the fix, so no before/after count is claimed; no existing test was edited, and the three new cases are the only additions to the 21e block.
+
+## Clean-up: test members and playbooks the walk created
+
+Turned off (Studio has no delete): members `wright-walk-22a-one`, `wright-walk-22a-two`, `wright-walk-22a-three` (`studio agents off`, all `off`); playbooks 13, 14, 15 (`studio playbooks off`, all `disabled`). Their three poll triggers (22, 23, 24) belong to disabled playbooks; no `playbook_runs` row appeared after run 195. Wright's thread also holds the walk's messages. Approval 41 is the one approval the walk made.
+
+## Not verified
+
+- **The Team inspector and the held card were not looked at.** The app's window did not take input from this session. One attempt to bring it forward and press the Team shortcut sent the keystroke to another application that was in front instead, so GUI driving was stopped. Step 2's card, step 4's PERMISSIONS and CONNECTORS panels, "no Ticket access still open" under Duties, and AC2's "the inspector shows the same capabilities granted" are read from the kernel data the screens draw from (`GET /agents/:id` `connectors`, `settings_error`, `tracker_access`; `GET /connectors` capabilities), not from the screens. Step 3's tick was posted as the card posts it, not clicked.
+- The app was rebuilt and opened, but the repackaged build was not opened after the fix (the fix is kernel-only).
+- AC2's "next crew message" from the owner is refused `settings_missing` by design (see AC2); the file was healed through the queue path (a message from Wright).
+
+## Findings (outside this item's scope, not changed)
+
+1. A dry-run review session cannot read a ClickUp ticket's body for any member, granted or not: its fixed read-only set does not include a ClickUp tool (runs 189, 193 and 195: `tool_not_allowed`). So the review's output for a ClickUp poll is built from the poll's title and status only. The AC4 fix removes the waste for a member with no access; it does not make the review read the ticket. Whether that is wanted is the owner's call.
+2. The 21b step 6 wording ("reads the list's open task ... no `mcp_tool_error`") is met by the poll preview; the review session's own read is denied, as in finding 1.
+
+## Verdict
+
+No `Verdict: PASS for Validation 2` line is written. Every kernel-side check passed at the final head (steps 1, 3, 6, AC2, AC3, AC4 re-walk, AC5, static validation), but the screens named under "Not verified" were not observed, and the brief's rule is that a step that could not be run is recorded and no verdict is written for it. Whoever looks at the Team inspector and the held card on the running app can add the line.
