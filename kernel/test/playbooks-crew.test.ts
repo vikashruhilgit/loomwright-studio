@@ -282,6 +282,8 @@ describe("kernel_playbook_create with agent (AC1)", () => {
   it("AC1: Wright drafts for an active crew member: the row, its linked trigger, its created event and its mirror name mason; Wright's own mirror has no agent line", async () => {
     addMember();
     const created = value<Created>(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "c1" }));
+    // AC5 (item 21d): an active member's create carries no member_off.
+    expect(created).not.toHaveProperty("member_off");
     const row = getPlaybook(store, created.id);
     expect(row).toMatchObject({ owning_agent: "mason", status: "draft", version: 1, model: PLAYBOOK_MODEL });
     expect(store.prepare<[number], string>("SELECT owning_agent FROM triggers WHERE id = ?").pluck().get(created.trigger_id)).toBe("mason");
@@ -303,22 +305,98 @@ describe("kernel_playbook_create with agent (AC1)", () => {
     }
   });
 
-  it("AC1: an unregistered agent (agent:) or an off member (agent_off:) is refused before anything is written; the same key drafts once the member is on", async () => {
+  it("AC1/AC7: an unregistered agent (agent:), a crew member's own session and a non-Wright caller are refused before anything is written; an off member is no longer refused", async () => {
     addMember();
     await setMember("mason", "off");
     const before = footprint();
     expect(errorText(await call("kernel_playbook_create", { ...DAILY, agent: "ghost", idempotency_key: "c1" }))).toMatch(
-      /^kernel_playbook_create: agent: "ghost" is not an active registered crew member/,
+      /^kernel_playbook_create: agent: "ghost" is not a registered crew member/,
     );
-    expect(errorText(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "c2" }))).toMatch(/^kernel_playbook_create: agent_off: mason is off/);
+    // A crew member's own session never drafts (mason is registered, off or not).
+    expect(errorText(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "c2" }, MASON_SESSION))).toMatch(
+      /^kernel_playbook_create: crew_cannot_draft: crew members don't draft playbooks/,
+    );
     // Only Wright names another agent: an unregistered caller's own session is refused naming the field.
     expect(errorText(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "c3" }, SCOUT_SESSION))).toMatch(
       /^kernel_playbook_create: agent: only Wright drafts a playbook for another agent/,
     );
     expect(footprint()).toEqual(before);
 
+    // The off member is no refusal: the same keys draft it (the first of the pair leaves the other refusals' keys unused).
+    const created = value<Created>(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "c2" }));
+    expect(getPlaybook(store, created.id)?.owning_agent).toBe("mason");
+  });
+});
+
+// ---- Item 21d: Wright drafts a playbook for a crew member that is off -----------------------
+
+describe("item 21d: kernel_playbook_create for an off crew member", () => {
+  interface OffCreated extends Created {
+    status: string;
+    version: number;
+    mirror: string;
+    fit?: unknown;
+    member_off?: string;
+  }
+
+  it("AC1/AC2: the draft is created and owned by the off member exactly as for an active one, and the result carries one plain-words member_off line", async () => {
+    addMember();
+    await setMember("mason", "off");
+    const created = value<OffCreated>(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "c1" }));
+    const row = getPlaybook(store, created.id);
+    expect(row).toMatchObject({ owning_agent: "mason", status: "draft", version: 1, model: PLAYBOOK_MODEL });
+    expect(store.prepare<[number], string>("SELECT owning_agent FROM triggers WHERE id = ?").pluck().get(created.trigger_id)).toBe("mason");
+    expect(linkedTriggerOf(store, row as NonNullable<typeof row>)?.id).toBe(created.trigger_id);
+    expect(events(store, "playbook_created").map((e) => e.payload)).toEqual([expect.objectContaining({ playbook_id: created.id, owning_agent: "mason", by: "wright" })]);
+    expect(readFileSync(mirrorPath(dataDir, created.slug), "utf8").split("\n")).toContain("- Agent: `mason`");
+    expect(created).toHaveProperty("fit");
+
+    const line = created.member_off ?? "";
+    expect(line).toContain("Mason");
+    expect(line).toContain("Team");
+    expect(line).toContain("inspector");
+    expect(line).toContain("Turn on");
+    for (const leak of ["kernel_", "mcp__", "agent_off", "no_dry_run", "/", ".json", ".md", "mason"]) expect(line, leak).not.toContain(leak);
+  });
+
+  it("AC5/AC6: the line is not stored in the step: a repeat under the same key after the member went off returns the first id, slug and version with member_off, and no second row", async () => {
+    addMember();
+    const first = value<OffCreated>(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "k1" }));
+    expect(first).not.toHaveProperty("member_off");
+    await setMember("mason", "off");
+    const again = value<OffCreated>(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "k1" }));
+    expect([again.id, again.slug, again.version]).toEqual([first.id, first.slug, first.version]);
+    expect(again.member_off).toContain("Mason is off.");
+    expect(count(store, "SELECT count(*) FROM playbooks")).toBe(1);
+
+    // Turned on again, a further repeat carries no line: it reflects the member's status now.
     await setMember("mason", "on");
-    expect(getPlaybook(store, value<Created>(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "c2" })).id)?.owning_agent).toBe("mason");
+    expect(value<OffCreated>(await call("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "k1" }))).not.toHaveProperty("member_off");
+  });
+
+  it("AC3/AC4: the off member's draft has its dry run refused agent_off with no session, and an enable is refused before hold for want of a dry run; no approval", async () => {
+    addMember();
+    const h = await bootManager();
+    await setMember("mason", "off");
+    const created = value<OffCreated>(await h.tool("kernel_playbook_create", { ...DAILY, agent: "mason", idempotency_key: "c1" }));
+    expect(created.member_off).toContain("Mason is off.");
+    expect(errorText(await h.tool("kernel_playbook_dry_run", { id: created.id, idempotency_key: "d1" }))).toMatch(
+      /^kernel_playbook_dry_run: agent_off: mason is off; its playbooks do not run/,
+    );
+    expect(h.started).toEqual([]);
+
+    const decision = await h.wright.gate(ENABLE, { id: created.id, idempotency_key: "e1" });
+    expect(decision.permissionDecisionReason).toContain("a dry run of version 1 is required");
+    expect(count(store, "SELECT count(*) FROM approvals")).toBe(0);
+    expect(getPlaybook(store, created.id)?.status).toBe("draft");
+  });
+
+  it("AC2: the create description carries the member_off sentence telling Wright to say the owner's step in plain words", () => {
+    const description = (playbooksContribution.tools ?? []).find((t) => t.name === "kernel_playbook_create")?.description ?? "";
+    expect(description).toContain("member_off (only when that crew member is off)");
+    expect(description).toContain("a registered crew member (active or off)");
+    expect(description).toContain("turn the member on in Team first");
+    expect(description).toContain("an enable because there is no dry run, name that same owner step");
   });
 });
 
