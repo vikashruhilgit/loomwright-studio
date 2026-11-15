@@ -162,7 +162,7 @@ function incomplete(spec: PollSpec, reason: PreviewIncompleteReason, fix: string
   return { poll: { spec, items: [], reviewed: null, drafts: [], preview_incomplete: { reason, fix } }, review: null };
 }
 
-/** The owner steps a summary names are kernel-made text (`fit.owner_steps`); a long list is cut here, never at the generic fix cut. */
+/** The owner steps a summary names are kernel-made text (`fit.owner_steps`, or a `no_jobs` poll source's access); a long list is cut here, never at the generic fix cut. */
 const OWNER_STEP_FIX_CHARS = 1_000;
 
 /**

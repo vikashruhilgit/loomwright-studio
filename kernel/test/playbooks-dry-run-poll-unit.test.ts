@@ -221,9 +221,10 @@ describe("owner_step_open", () => {
     expect(summary).toBe("Poll preview incomplete (needs_github): Add it. No session started; this dry run still counts toward the enable, and a real run parks until this is fixed.");
   });
 
-  it("the dry-run tool's description names owner_step_open and tells Wright to name fit.owner_steps as the owner's step, never propose them", () => {
+  it("the dry-run tool's description names owner_step_open and tells Wright to name poll.preview_incomplete.fix's owner steps as the owner's step, never propose them", () => {
     const description = dryRunTools[0]?.description ?? "";
     expect(description).toContain("connector_missing, needs_github, owner_step_open, rate_limited or source_error");
-    expect(description).toContain("name each of fit.owner_steps to the owner in plain words as their step, never propose them");
+    expect(description).toContain("name each owner step in poll.preview_incomplete.fix to the owner in plain words as their step, never propose them");
+    expect(description).toContain("for a no_jobs ticket poll fit.owner_steps is empty and the step is the poll source's access");
   });
 });
