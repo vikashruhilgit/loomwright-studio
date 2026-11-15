@@ -26,8 +26,9 @@
 // Crew-owned playbooks (phase 4 item 08), one rule every part uses: a
 // registered crew member's session never drafts (`refuseCrewDrafting`:
 // create, update, disable, dry run and enable refuse `crew_cannot_draft`
-// before anything is written); Wright drafts a playbook for an `active` crew
-// member (create's `agent`), and manages any registered crew member's
+// before anything is written); Wright drafts a playbook for a registered crew
+// member, `active` or `off` (create's `agent`; for an `off` one the result
+// carries `member_off`, the owner's step to turn it on first), and manages any registered crew member's
 // playbooks as well as its own (`mayManage`, `actingAgentFor`). An
 // unregistered agent id is never crew: its own playbooks stay its own, and
 // Wright's checks against them stay `not_owner`.
@@ -47,7 +48,7 @@
 // already imports) and this feature's files, never the
 // Agent SDK, the session manager or `kernel.ts`.
 import { z } from "zod";
-import { getAgent, isRoutable } from "../agents/registry.js";
+import { getAgent } from "../agents/registry.js";
 import { TOOL_JOB_IDS } from "../features/catalogue.js";
 import type { ToolJob } from "../features/catalogue.js";
 import { defineTool } from "../features/contribution.js";
@@ -330,17 +331,17 @@ export function actingAgentFor(ctx: ContributedToolContext, id: number): string 
 
 /**
  * The agent a create drafts for: the caller when `requested` is absent (or is
- * the caller, Wright); otherwise only Wright may name one, and it must be an
- * `active` registered crew member (`agent_off` for an `off` one,
- * `invalid_input` naming `agent` otherwise). Checked before the work step, so
- * a refusal writes nothing.
+ * the caller, Wright); otherwise only Wright may name one, and it must be a
+ * registered crew member, `active` or `off` (a draft starts no session; an
+ * `off` member's dry run and fires still refuse `agent_off`), else
+ * `invalid_input` naming `agent`. Checked before the work step, so a refusal
+ * writes nothing.
  */
 function draftOwner(store: Store, caller: string, requested: string | undefined): string {
   if (requested === undefined) return caller;
   if (caller !== "wright") throw new PlaybookError("invalid_input", "agent: only Wright drafts a playbook for another agent");
   if (requested === "wright") return caller;
-  if (getAgent(store, requested)?.status === "off") throw new PlaybookError("agent_off", `agent_off: ${requested} is off; turn it on before drafting its playbooks`);
-  if (!isRoutable(store, requested)) throw new PlaybookError("invalid_input", `agent: ${JSON.stringify(requested)} is not an active registered crew member`);
+  if (getAgent(store, requested) === undefined) throw new PlaybookError("invalid_input", `agent: ${JSON.stringify(requested)} is not a registered crew member`);
   return requested;
 }
 
@@ -412,6 +413,20 @@ export function withFit<T extends object>(ctx: ContributedToolContext, id: numbe
   return fit === undefined ? result : { ...result, fit };
 }
 
+/**
+ * `result` with `member_off` when `agent` is a registered crew member that is
+ * `off` now: one plain-words line (the member's display name only: no tool
+ * name, error token, path or id) telling the owner to turn it on before the
+ * playbook's dry run or enable. Read at call time after the step, never stored
+ * in it (like `fit`), so a repeat shows the member's status as it is now.
+ */
+export function withMemberOff<T extends object>(store: Store, agent: string, result: T): T & { readonly member_off?: string } {
+  const row = getAgent(store, agent);
+  if (row === undefined || row.status !== "off") return result;
+  const name = row.display_name;
+  return { ...result, member_off: `${name} is off. Before its dry run or turning this playbook on, turn ${name} on: Team, then ${name}'s inspector, then Turn on.` };
+}
+
 /** After the step: refuse a repeat the owner's off overtook, rewrite the mirror, say if that failed, and add a crew member's playbook's fit. */
 function afterStep(ctx: ContributedToolContext, result: ToolResult): ToolResult & { readonly mirror_error?: string; readonly fit?: PlaybookFit } {
   return withFit(ctx, result.id, afterPlaybookStep(ctx, result.id, result));
@@ -436,10 +451,12 @@ const create = defineTool({
     "(item.id and item.revision are a polled item's; a fire with no item refuses a key naming them). " +
     `priority: low, normal or high. model: a model id. token_limit: tokens per day. mode: draft only in phase 6 (live is refused). merge_requirement: none, studio_approval or reviews:<N> (N a whole number of at least 1): what a PR needs before it may merge, never looser than its repo's own rule (an enable is refused if it is). ${LIMITS} ` +
     "Draft a crew member's playbook only when the owner asked for one: when the owner asked only for the member, its approval is no ask for a playbook. " +
-    "agent (optional): the id of an active crew member to draft it for; it then belongs to that member, and its dry run and every fire run as that member " +
+    "agent (optional): the id of a registered crew member (active or off) to draft it for; it then belongs to that member, and its dry run and every fire run as that member " +
     "(its settings, policy and never list, its memory folder and its limits). Omitted: the playbook is yours. " +
+    "The result carries member_off (only when that crew member is off): tell the owner the same in your reply, in plain words with no tool name, error token or path: turn the member on in Team first; " +
+    "when a later dry run is refused because the member is off, or an enable because there is no dry run, name that same owner step (turning the member on in Team) first. " +
     `${JOBS_AND_FIT} ${TARGET_REPO} ` +
-    "Returns {id, slug, status: draft, version: 1, trigger_id, next_fire_at (UTC), mirror, fit (a crew member's playbook)}: mirror is the markdown file (under the Studio data dir) the owner reads. " +
+    "Returns {id, slug, status: draft, version: 1, trigger_id, next_fire_at (UTC), mirror, fit (a crew member's playbook), member_off (an off crew member's playbook)}: mirror is the markdown file (under the Studio data dir) the owner reads. " +
     REPEAT,
   shape: {
     name: z.string().max(400),
@@ -475,7 +492,7 @@ const create = defineTool({
           ctx.now(),
         ),
       );
-      return afterStep(ctx, first);
+      return withMemberOff(ctx.store, agent, afterStep(ctx, first));
     }),
 });
 
