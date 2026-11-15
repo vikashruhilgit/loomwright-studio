@@ -1,6 +1,7 @@
 # 22a — Wave 1 of phase 8 item 21 walked live on the merged main
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/283
 
 **As** the owner of Loomwright Studio,
 **I want** the crew tracker grant (21b) and the dry-run owner step (21e) walked once more in the packaged app on the merged `main`, including the cases no walk has covered,
@@ -81,3 +82,9 @@ kernel/src/playbooks/dry-run-poll.ts
 kernel/src/playbooks/fit.ts
 kernel/test/playbooks-dry-run-poll.test.ts
 docs/architecture/dry-run.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-15T11:55:09Z
+- **Brief:** .supervisor/jobs/done/2026-11-14-phase-8-22a-wave-1-walk-on-main.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/283
