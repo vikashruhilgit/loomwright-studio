@@ -253,4 +253,4 @@ Turned off (Studio has no delete): members `wright-walk-22a-one`, `wright-walk-2
 
 ## Verdict
 
-No `Verdict: PASS for Validation 2` line is written. Every kernel-side check passed at the final head (steps 1, 3, 6, AC2, AC3, AC4 re-walk, AC5, static validation), but the screens named under "Not verified" were not observed, and the brief's rule is that a step that could not be run is recorded and no verdict is written for it. Whoever looks at the Team inspector and the held card on the running app can add the line.
+No pass verdict line is written. Every kernel-side check passed at the final head (steps 1, 3, 6, AC2, AC3, AC4 re-walk, AC5, static validation), but the screens named under "Not verified" were not observed, and the brief's rule is that a step that could not be run is recorded and no verdict is written for it. Whoever looks at the Team inspector and the held card on the running app can add the verdict line.
