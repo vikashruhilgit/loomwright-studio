@@ -66,12 +66,50 @@ check-docs: OK
 
 ## Validation 2
 
-Not walked yet. The owner walks this in the running app, then the verdict line below is filled in.
+Walked on 2026-11-15 in the packaged app (`Loomwright Studio.app`, pid 31912), driven from the coordinator session through the macOS accessibility API, against the kernel built from this PR's head `4e4ac62b` and installed as the service (`npm ci`, `npm run build`, `node dist/cli/index.js service install`: "installed and loaded: kernel 0.0.0 (pid 87931)"). `sw_vers -productVersion` `26.6.2`, Node `v24.11.1`. ClickUp connected. The crew member was the walk-only member Wright Walk 22a One (`wright-walk-22a-one`, model `claude-sonnet-4-5`), not a working member.
 
-1. In Team, turn a crew member off (for example Ticket Runner).
-2. In Wright's thread, ask Wright for a playbook for that member.
-3. Check: a draft is created and owned by the member (Playbooks shows it, agent set to the member), and Wright tells you in plain words to turn the member on (Team, the member's inspector, Turn on) before its dry run, with no tool name, error code or path in the sentence.
-4. Ask Wright to dry-run it while the member is still off. Check: the dry run is refused because the member is off, no session starts, and Wright names the same step (turn the member on in Team).
-5. Turn the member on, ask for the dry run again, and check it starts as the member.
+### Step 1: the member is off: PASS
 
-Verdict: PENDING for Validation 2
+Team, Wright Walk 22a One's inspector: subtitle "Crew member · off", and the inspector ends with "Open thread" and "Turn on". (It was already off from the 22a walk's clean-up, so the toggle was not pressed here; step 5 presses it.)
+
+### Steps 2 and 3: Wright drafts for the off member and names the owner step: PASS
+
+Asked in Wright's thread: "Please draft a playbook for Wright Walk 22a One: when I send it, it reads the open ClickUp tasks tagged studio-sandbox in the Loomwright Studio list (list id 901422761392) and leaves one short comment summarising each. Only draft it; don't dry-run it or turn it on yet."
+
+```text
+events 24094 playbook_created {"playbook_id":16,"slug":"summarise-studio-sandbox-clickup-tasks","owning_agent":"wright-walk-22a-one","version":1,"by":"wright","trigger_id":25}   2026-11-15T03:43:36.995Z
+playbooks 16  owning_agent wright-walk-22a-one  status draft
+session 177's kernel_playbook_create result:
+  "member_off":"Wright Walk 22a One is off. Before its dry run or turning this playbook on, turn Wright Walk 22a One on: Team, then Wright Walk 22a One's inspector, then Turn on."
+```
+
+No `agent_off` refusal at create. Playbooks showed the draft in its "3 playbooks wait on you" banner ("Summarise studio-sandbox ClickUp tasks"). Wright's reply, under "Before a dry run or turning it on:": "**Turn the member on.** Wright Walk 22a One is currently off. Go to Team, open its inspector, and choose Turn on." No tool name, error code or path in that sentence.
+
+### Step 4: a dry run while the member is off is refused, no session: PASS
+
+Asked: "Please dry-run the Summarise studio-sandbox ClickUp tasks playbook now, as it is. Don't turn anything on." Session 178 (Wright):
+
+```text
+tool result: agent_off: wright-walk-22a-one is off; its playbooks do not run
+playbook_runs: no row for playbook 16 (latest row still 195, playbook 14)
+sessions: no new session for wright-walk-22a-one (its latest is 171, from the 22a walk)
+```
+
+Wright's reply: "The kernel refused the dry run, so nothing ran and nothing was spent. Why: ... belongs to the crew member wright-walk-22a-one, and that member is turned off. ... 1. Turn wright-walk-22a-one back on in Team's inspector, then tell me and I'll run the dry run ..." It names the same owner step. Nit, not a failure: this reply names the member by its id, where the create's `member_off` line uses the display name; the wording is Wright's, the kernel's refusal is unchanged by design.
+
+### Step 5: turned on, the dry run runs as the member: PASS (with a limit)
+
+Team inspector, "Turn on" pressed; the button then read "Turn off".
+
+```text
+events 24121 agent_status_changed {"id":"wright-walk-22a-one","old":"off","new":"active","by":"owner"}   03:45:53Z
+       24133 playbook_dry_run {"playbook_id":16,"version":1,"run_id":196,"status":"done","tokens":0,"would_do":0}   03:46:37Z
+playbook_runs 196: playbook 16 v1, dry_run, done; fit.agent wright-walk-22a-one, fit.status no_jobs
+  poll.spec {"source":"clickup.tasks","filters":{"list":"901422761392","status":"open","tags":["studio-sandbox"]}}; poll.items []
+```
+
+The dry run was not refused and ran for the member. Limit: the poll found no task, because the draft filters on ClickUp status `"open"` and the list's studio-sandbox task does not carry that status name (Wright said so in its reply and offered a new version), so no review session started under the member and nothing was reviewed. The member's own session start on a dry run with items is covered by the unchanged dry-run path (run 193 in the 22a walk); this item does not touch it.
+
+Clean-up: `studio agents off wright-walk-22a-one` (event 24139), `studio playbooks off 16` (event 24140, `disabled`).
+
+Verdict: PASS for Validation 2
