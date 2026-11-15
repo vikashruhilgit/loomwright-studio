@@ -10,7 +10,7 @@ Closing the phase-8-21 wave (PR #279, merged 2026-11-14) left gaps: 21b's final 
 - [ ] .supervisor/requirements/phase-8-22/2026-11-14-230550-a-wave-1-of-phase-8-21-walked-live-on-the-merged-main.md
 - [ ] .supervisor/requirements/phase-8-22/2026-11-14-230616-b-a-tick-on-a-grant-already-held-records-nothing.md
 - [ ] .supervisor/requirements/phase-8-22/2026-11-14-230617-c-jira-capabilities-read-from-a-live-jira-connection.md (proposed: waits for a Jira connection)
-- [ ] .supervisor/requirements/phase-8-22/2026-11-15-160000-e-a-member-without-tracker-access-never-starts-a-ticket-run.md (proposed: waits for PR #283; added 2026-11-15 from #283's review)
+- [ ] .supervisor/requirements/phase-8-22/2026-11-15-160000-e-a-member-without-tracker-access-never-starts-a-ticket-run.md (added 2026-11-15 from #283's review; ready since #283 merged)
 
 ## Order
 No item depends on another; no two share a file.
@@ -30,4 +30,3 @@ none recorded
 
 ## Revisit when
 22c: when Jira is connected in Integrations.
-22e: when PR #283 merges.

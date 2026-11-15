@@ -1,8 +1,8 @@
 # 22e — A crew member without tracker access never starts a ticket run, and the enable card says why
 
-## Status: proposed
+## Status: ready
 
-**Proposed, not ready (2026-11-15):** this item reuses `pollGrantOwnerSteps` (`kernel/src/playbooks/fit.ts`), which PR #283 (phase 8 item 22a) adds and which is not on `main` yet. Mark it `ready` once #283 merges, after re-checking the line numbers below against the merged `main`.
+**Ready (2026-11-15):** PR #283 merged (`48de35ff`), so `pollGrantOwnerSteps` is on `main`. Every line cited below was re-checked on `main` `787c00f6` (after #282 and #283) and is unchanged.
 
 **As** the owner of Loomwright Studio,
 **I want** a crew member's ClickUp or Jira ticket run to park, not start, when the member can't read that tracker, and the enable card to name that missing access on its own line,
@@ -14,7 +14,7 @@ PR #283's review drain (phase 8 item 22a, 2026-11-15) fixed this gap for the dry
 
 **Real runs: reproduced by test.** Real runs check access only for GitHub items. `runs.ts:450-456` calls `needsGithub` only when `isGithubItem(e.item)` (`items.ts:126`), and `items.ts:19` says it outright: "A Jira or ClickUp item is not a GitHub item ..., so it never parks `needs_github`". Nothing parks a ticket item for a missing tracker grant. A throwaway vitest case on `main` `1949901e` (in `kernel/test/playbooks-runs-items.test.ts`'s harness, not committed) set up crew member `mason` with no `connectors` and an enabled playbook keyed `[playbook.id, item.id, item.revision]`, then queued two revisions of a `clickup:` item, one `jira:` item and one `github:` item. Result: the three ticket items each started a session and ended `done`, and only the GitHub item parked. So an enabled playbook starts one session per new ticket or revision under that key (not one per poll, since a `done` run dedupes). Each session's tracker calls are refused, because a crew session gets only the tools its member holds. That claim comes from the code and #283's own reasoning; no real run has been observed. For cost: the 22a walk's run 192 was a dry-run review for a member without ClickUp access and spent 50,752 tokens. It was not a real run, and real-run cost hasn't been measured.
 
-**The enable card: read from code.** `charterLines` returns nothing for a `no_jobs` fit (`enable.ts:290`), and its `owner step:` lines come only from `fit.owner_steps` (`enable.ts:293`). `playbookFit` sets that to `[]` for `no_jobs` before it reads any grant (`fit.ts:258` on the #283 head `bd6dfba1`). So a `no_jobs` card never has an `owner step:` line. After #283 the card does carry the step in one place: inside its `dry run: <summary>` line (`enable.ts:318`). That works because the stored summary of an `owner_step_open` dry run says "until the owner takes this step: <step>" (`dry-run-poll.ts:447` on the #283 head). But that text is frozen at dry-run time. A grant removed after the dry run leaves the card silent. A grant added after it leaves the card naming a step that's already done. And a playbook with jobs gets the same step as its own `owner step:` line. This half is a consistency and staleness fix, not a bug proven by a run.
+**The enable card: read from code.** `charterLines` returns nothing for a `no_jobs` fit (`enable.ts:290`), and its `owner step:` lines come only from `fit.owner_steps` (`enable.ts:293`). `playbookFit` sets that to `[]` for `no_jobs` before it reads any grant (`fit.ts:258`). So a `no_jobs` card never has an `owner step:` line. After #283 the card does carry the step in one place: inside its `dry run: <summary>` line (`enable.ts:318`). That works because the stored summary of an `owner_step_open` dry run says "until the owner takes this step: <step>" (`dry-run-poll.ts:447`). But that text is frozen at dry-run time. A grant removed after the dry run leaves the card silent. A grant added after it leaves the card naming a step that's already done. And a playbook with jobs gets the same step as its own `owner step:` line. This half is a consistency and staleness fix, not a bug proven by a run.
 
 The kernel adds the mechanism: a park and a display line built from the member's current grant. The owner keeps the policy: whether to grant access and whether to enable anyway. A tracker grant stays the owner's to give. Kernel text names it as the owner's step and never proposes it (`kernel_agent_update` can't carry a connector grant).
 
@@ -55,7 +55,7 @@ none recorded
 
 ## Dependencies
 
-- Depends on: PR #283 (phase 8 item 22a) merged, for `pollGrantOwnerSteps`.
+- Depends on: none (PR #283, which adds `pollGrantOwnerSteps`, merged as `48de35ff`).
 
 ## Risks
 
@@ -68,7 +68,7 @@ none recorded
 
 ## Handoff
 
-- `/automate --folder .supervisor/requirements/phase-8-22` once this item is `ready`.
+- `/automate --folder .supervisor/requirements/phase-8-22` (this item is `ready`).
 
 ## Validation (must pass before merge)
 1. **Static (kernel suite and docs):** run `cd kernel && npm ci && npm test` with new cases in `kernel/test/playbooks-runs-items.test.ts` (AC1 to AC3, AC6, AC7) and `kernel/test/playbooks-fit.test.ts` (AC4, AC5, AC8). At least one AC1 case must fail without the change. Then run `bash scripts/check-docs.sh`.
