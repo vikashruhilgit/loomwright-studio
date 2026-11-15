@@ -236,13 +236,42 @@ bash scripts/check-docs.sh
 
 The suite was not run before the fix, so no before/after count is claimed; no existing test was edited, and the three new cases are the only additions to the 21e block.
 
+## The screens, looked at on the running app (2026-11-15, after the lane stopped)
+
+Driven from the coordinator session through the macOS accessibility API on the packaged app already running (`release/mac-arm64/Loomwright Studio.app`, pid 31912) against the installed kernel (pid 78687, started 2026-11-15T02:35:01Z from `.../app/0.0.0/dist/daemon.js`, installed one minute after the fix commit `a0aaa8ef`). Each line below is what the screen showed.
+
+### Step 4 and AC2: the Team inspector of Wright Walk 22a One: PASS
+
+- DUTIES: "Read ClickUp tickets in the Loomwright Studio list and comment on them." No "Ticket access still open" line.
+- PERMISSIONS (enforced by the kernel): "No kernel jobs granted.", then a collapsed "Kernel tool names, as enforced". No raw tool name above it.
+- CONNECTORS (granted per agent): GitHub "None · connected"; ClickUp "17 of 58 tools granted". "Read tickets" ticked, `granted`; "Comment on tickets" ticked, `granted`, tagged "changes things"; "Change a ticket's status or fields", "Create tickets", "Delete or merge tickets, or delete comments", "Read and send chat messages" unticked, `not granted`, each tagged "changes things"; every capability's "Tool names" collapsed; "21 other tools · no capability covers these" collapsed. This is AC2's "the inspector shows the same capabilities granted" after the settings file came back.
+
+### Steps 2 and 3: the held card, then ticking it: PASS
+
+A new member was asked of Wright in the app's Chat ("Please create a crew member named Wright Walk 22a Four: a careful ClickUp helper whose one duty is to read tickets in the Loomwright Studio ClickUp list and comment on them. Its tracker is ClickUp. No kernel jobs, no GitHub access, and do not draft a playbook for it."). Wright's session 175 held approval 42, `kernel_agent_create`. The card in Approvals showed:
+
+- "The kernel creates this crew member when you allow it." Display: "Create crew member wright-walk-22a-four ("Wright Walk 22a Four", turtle crew-teal), proposed by Wright", "Also uses Read.", NEVER DOES in words ("Push to a git remote; Define shell aliases; Open pull requests; ..."), LIMITS "200,000 tokens a day · 1 session at once · delegates 1 level deep". No raw tool name in the Display.
+- CHECKED BY THE KERNEL BEFORE YOU SEE IT: `Covered` "duty 1 with no tool (it needs no kernel tool): Read tickets in the Loomwright Studio ClickUp list and comment on them."; `Flagged` "duty 1: Wright Walk 22a Four can't read ClickUp tickets yet: it has no ClickUp access (only you can grant it)" with a "Choose access" button.
+- "Choose access" opened: "Tick what wright-walk-22a-four may do in ClickUp. It is granted as your own grant when you allow once; nothing is ticked for you." Every capability started unticked (`not granted`), the write ones tagged "changes things", each tool list collapsed under "Tool names".
+
+"Read tickets" and "Comment on tickets" were ticked on the card (each then read `granted`), and the owner clicked "Allow once" in the app (the session driving the app does not approve). Then:
+
+```text
+events 24056 agent_created {"id":"wright-walk-22a-four","by":"wright","approval_id":42}
+       24057 agent_settings_set {"id":"wright-walk-22a-four","field":"connectors","old":null,"new":{"clickup":[ ...17 tools... ]}}
+       24059 approval_decided {"id":42,"decision":"once","by":"owner","action":"kernel_agent_create", ...}   (all 2026-11-15T03:36:00.374Z)
+studio agents show wright-walk-22a-four  connectors.clickup = the same 17 tools as Wright Walk 22a One (Read tickets 12, Comment on tickets 5)
+```
+
+The Team inspector of Wright Walk 22a Four then showed ClickUp "17 of 58 tools granted", "Read tickets" and "Comment on tickets" `granted`, the rest `not granted`. Clean-up: `studio agents off wright-walk-22a-four` ("turned off").
+
 ## Clean-up: test members and playbooks the walk created
 
 Turned off (Studio has no delete): members `wright-walk-22a-one`, `wright-walk-22a-two`, `wright-walk-22a-three` (`studio agents off`, all `off`); playbooks 13, 14, 15 (`studio playbooks off`, all `disabled`). Their three poll triggers (22, 23, 24) belong to disabled playbooks; no `playbook_runs` row appeared after run 195. Wright's thread also holds the walk's messages. Approval 41 is the one approval the walk made.
 
 ## Not verified
 
-- **The Team inspector and the held card were not looked at.** The app's window did not take input from this session. One attempt to bring it forward and press the Team shortcut sent the keystroke to another application that was in front instead, so GUI driving was stopped. Step 2's card, step 4's PERMISSIONS and CONNECTORS panels, "no Ticket access still open" under Duties, and AC2's "the inspector shows the same capabilities granted" are read from the kernel data the screens draw from (`GET /agents/:id` `connectors`, `settings_error`, `tracker_access`; `GET /connectors` capabilities), not from the screens. Step 3's tick was posted as the card posts it, not clicked.
+- ~~The Team inspector and the held card were not looked at.~~ Looked at afterwards on the running app: see "The screens, looked at on the running app". The lane session itself could not drive the window.
 - The app was rebuilt and opened, but the repackaged build was not opened after the fix (the fix is kernel-only).
 - AC2's "next crew message" from the owner is refused `settings_missing` by design (see AC2); the file was healed through the queue path (a message from Wright).
 
@@ -253,4 +282,6 @@ Turned off (Studio has no delete): members `wright-walk-22a-one`, `wright-walk-2
 
 ## Verdict
 
-No pass verdict line is written. Every kernel-side check passed at the final head (steps 1, 3, 6, AC2, AC3, AC4 re-walk, AC5, static validation), but the screens named under "Not verified" were not observed, and the brief's rule is that a step that could not be run is recorded and no verdict is written for it. Whoever looks at the Team inspector and the held card on the running app can add the verdict line.
+Every check of AC1 to AC5 passed at the final head `a0aaa8ef` (kernel side above), and the screens that were first left unobserved (step 2's held card and its ticks, step 4's inspector, AC2's inspector) were looked at on the running app and match.
+
+Verdict: PASS for Validation 2
