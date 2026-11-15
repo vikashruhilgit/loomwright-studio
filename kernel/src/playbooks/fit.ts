@@ -318,6 +318,28 @@ export function playbookFit(store: Store, row: PlaybookRow, catalogue: ToolCatal
   };
 }
 
+/**
+ * The owner's steps for a crew member's `no_jobs` poll playbook (phase 8 item 22a): the poll source's own read
+ * grant (`grantNeeds`, no job's tools) that the member lacks, worded by `ownerStep`. `playbookFit` still reads
+ * `owner_steps: []` for `no_jobs`, and the enable's lines stay as they were; only the dry run asks this, to
+ * start no review session that cannot read what the poll listed. Empty for Wright's own playbook, a playbook
+ * with no poll trigger and a member's unreadable settings. Never throws: a failure to read is no step (the
+ * review runs as it did).
+ */
+export function pollGrantOwnerSteps(store: Store, row: PlaybookRow): readonly string[] {
+  try {
+    const member = getAgent(store, row.owning_agent);
+    if (member === undefined) return [];
+    const read = memberSettings(store.dataDir, member.id);
+    if ("reason" in read) return [];
+    return grantNeeds(store, row, [])
+      .filter((need) => !holdsConnector(read.settings, need))
+      .map((need) => ownerStep(member.display_name, need));
+  } catch {
+    return [];
+  }
+}
+
 /** Whether `fit` leaves a gap an enable must not pass without the owner's word: `gap`, or `unchecked` (fail closed). */
 export function fitGapOpen(fit: PlaybookFit | undefined): fit is PlaybookFit & { readonly status: "gap" | "unchecked" } {
   return fit !== undefined && (fit.status === "gap" || fit.status === "unchecked");

@@ -86,7 +86,7 @@ import { closedAction, formatPollSummary, pollOf, previewPoll, readDryRunDrafts,
 import type { PollDryRun } from "./dry-run-poll.js";
 import { itemPromptBlock } from "./items.js";
 import type { MirrorDryRun } from "./mirror.js";
-import { playbookFit } from "./fit.js";
+import { playbookFit, pollGrantOwnerSteps } from "./fit.js";
 import type { PlaybookFit } from "./fit.js";
 import { PlaybookError, getPlaybook, linkedTriggerOf, refuseIfOwnerTurnedOff } from "./store.js";
 import type { PlaybookRow } from "./store.js";
@@ -494,11 +494,16 @@ function refusedOf(fit: PlaybookFit | undefined): string[] {
 /**
  * The owner's steps (`fit.owner_steps`: a connector grant only the owner can
  * give) that stop a review from acting, verbatim; empty for Wright's own
- * playbook (no fit), an `unchecked` or `no_jobs` fit, or one with none open.
+ * playbook (no fit), an `unchecked` fit, or one with none open. A `no_jobs` fit
+ * has none of a job's, but a poll source's own read grant the member lacks
+ * (`pollGrantOwnerSteps`, phase 8 item 22a) stops the review just as well: the
+ * session could not read what the poll listed.
  * Refused calls no grant can close (`closable: false`) are not owner steps.
  */
-function ownerStepsOf(fit: PlaybookFit | undefined): readonly string[] {
-  return fit !== undefined && (fit.status === "fits" || fit.status === "gap") ? fit.owner_steps : [];
+function ownerStepsOf(fit: PlaybookFit | undefined, store: Store, row: PlaybookRow): readonly string[] {
+  if (fit === undefined) return [];
+  if (fit.status === "no_jobs") return pollGrantOwnerSteps(store, row);
+  return fit.status === "fits" || fit.status === "gap" ? fit.owner_steps : [];
 }
 
 /**
@@ -629,7 +634,7 @@ const dryRunTool = defineTool({
           if (plan !== undefined && plan.review === null) return finishWithoutSession(ctx, row, trigger, plan.poll, fit);
           // A crew member's playbook with an owner step open: the poll's items stay listed, but a real run would be refused,
           // so a review session could not act and its tokens would only buy a misleading cause. The kernel decides: no session starts.
-          const ownerSteps = ownerStepsOf(fit);
+          const ownerSteps = ownerStepsOf(fit, ctx.store, row);
           if (plan !== undefined && ownerSteps.length > 0) return finishWithoutSession(ctx, row, trigger, withOwnerStepOpen(plan, ownerSteps).poll, fit);
           phase = "starting";
           // The step's first effect: an admission refusal releases the step (nothing to repeat).
