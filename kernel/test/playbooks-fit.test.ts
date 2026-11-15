@@ -651,3 +651,107 @@ describe("one 'job is granted' rule with the charter readiness check (`jobGrante
     expect(fit?.proposed_update?.changes.tool_policy.allowedTools).toEqual(["Read", ...READ_ONLY, ...merge]);
   });
 });
+
+// ---- Phase 8 item 22e: the enable card of a no_jobs ticket playbook names the tracker grant ----------
+
+describe("phase 8 item 22e: a no_jobs ticket playbook's enable display carries the owner's tracker step, read at hold time", () => {
+  const CLICKUP_STEP = "Mason needs ClickUp access for watching ClickUp; only you can grant it: Team → Mason's inspector.";
+  const JIRA_STEP = "Mason needs Jira access for watching Jira; only you can grant it: Team → Mason's inspector.";
+  const POLLS = {
+    clickup: JSON.stringify({ source: "clickup.tasks", filters: { list: "901" }, interval_seconds: 300 }),
+    jira: JSON.stringify({ source: "jira.issues", filters: { site: "acme.atlassian.net" }, interval_seconds: 300 }),
+    github: JSON.stringify({ source: "github.pulls", repos: ["o/r"], filters: {}, interval_seconds: 300 }),
+  } as const;
+  /** The owner's grant on Team: GitHub (as `addMember` grants) plus the ClickUp and Jira server tools. */
+  const ALL_GRANTS = { github: "read", clickup: ["clickup_filter_tasks", "clickup_get_task"], jira: ["searchJiraIssuesUsingJql"] };
+
+  /** Mason's draft over `poll` naming `jobs` (none when undefined), with a target repo the connector reaches and a `done` dry run at its version whose summary says nothing of a grant. */
+  function ticketDraft(poll: keyof typeof POLLS, jobs?: readonly ToolJob[]): number {
+    const t0 = now().toISOString();
+    if (store.prepare("SELECT count(*) FROM connectors").pluck().get() === 0) {
+      store
+        .prepare("INSERT INTO connectors (kind, status, account_login, reachable_repos_json, created_at, updated_at) VALUES ('github', 'connected', 'owner', ?, ?, ?)")
+        .run(JSON.stringify(["o/r"]), t0, t0);
+      for (const kind of ["clickup", "jira"]) store.prepare("INSERT INTO mcp_connections (kind, server_url, status) VALUES (?, 'https://mcp.example.test', 'connected')").run(kind);
+    }
+    const { playbook } = createPlaybook(
+      store,
+      {
+        agent: "mason",
+        name: `Tickets ${poll} ${jobs?.join(" ") ?? "none"}`,
+        intent: "Work each ticket and open a pull request.",
+        trigger: { kind: "poll", spec: POLLS[poll] },
+        model: PLAYBOOK_MODEL,
+        ...(poll === "github" ? {} : { target_repo: "o/r" }),
+        ...(jobs === undefined ? {} : { jobs }),
+      },
+      now(),
+    );
+    store
+      .prepare("INSERT INTO playbook_runs (playbook, version, kind, status, result_json, ended_at) VALUES (?, ?, 'dry_run', 'done', ?, ?)")
+      .run(playbook.id, playbook.version, JSON.stringify({ summary: "reviewed one ticket" }), t0);
+    return playbook.id;
+  }
+
+  const holdOf = (id: number, extra: Record<string, unknown> = {}) => held(ENABLE, { id, idempotency_key: `e-${id}-${Math.random()}`, ...extra }, WRIGHT_SESSION) as { display?: string; refuse?: string; subjectVersion?: number };
+  const ownerStepLines = (display: string | undefined) => (display ?? "").split("\n").filter((l) => l.startsWith("owner step: "));
+
+  it("AC4 + AC5: a member without ClickUp access: the held display carries the step in the dry run's words; once granted, none; the enable is held, never refused, and the approval enables it", async () => {
+    addMember([]);
+    const id = ticketDraft("clickup");
+    const row = getPlaybook(store, id);
+    expect(row === undefined ? undefined : playbookFit(store, row, CATALOGUE)).toMatchObject({ status: "no_jobs", owner_steps: [] });
+
+    const hold = holdOf(id);
+    expect(hold.refuse).toBeUndefined();
+    expect(hold.subjectVersion).toBe(1);
+    expect(ownerStepLines(hold.display)).toEqual([`owner step: ${CLICKUP_STEP}`]);
+    expect(hold.display).not.toContain("charter");
+    // AC9: the line names the owner's step; it proposes no grant.
+    expect(hold.display).not.toContain("kernel_agent_update");
+
+    // Granted on Team after the dry run: read at hold time, so no line now.
+    grant(ALL_GRANTS);
+    // The grant reads (an unreadable file would show no line either: that is the other case's).
+    expect(readAgentSettings(dataDir, "mason")).toMatchObject({ ok: true, settings: { connectors: ["github", "jira", "clickup"] } });
+    const granted = holdOf(id);
+    expect(granted.refuse).toBeUndefined();
+    expect(ownerStepLines(granted.display)).toEqual([]);
+
+    // AC5: no charter_gap and no enable_anyway: the owner's approval enables it with the grant missing again.
+    grant(["github"]);
+    expect(ownerStepLines(holdOf(id).display)).toEqual([`owner step: ${CLICKUP_STEP}`]);
+    expect(applier(ENABLE, { id, idempotency_key: "enable-ticket" }, approvalNow(80, 1), store, now())).toMatchObject({ applied: expect.stringContaining("enabled") });
+    expect(getPlaybook(store, id)?.status).toBe("enabled");
+  });
+
+  it("AC4: a Jira poll gets the Jira step; unreadable settings and a GitHub poll get no line, and both are still held", async () => {
+    addMember([]);
+    const jira = ticketDraft("jira");
+    expect(ownerStepLines(holdOf(jira).display)).toEqual([`owner step: ${JIRA_STEP}`]);
+
+    // A GitHub poll's no_jobs display is as it was (out of scope), even for a member with no GitHub grant.
+    grant(undefined);
+    const pulls = ticketDraft("github");
+    const pullsHold = holdOf(pulls);
+    expect(pullsHold.refuse).toBeUndefined();
+    expect(ownerStepLines(pullsHold.display)).toEqual([]);
+
+    // A settings file that can't be read is no line (the dry run's rule), never a throw.
+    writeFileSync(agentSettingsPath(dataDir, "mason"), "{ not json");
+    const unreadable = holdOf(jira);
+    expect(unreadable.refuse).toBeUndefined();
+    expect(ownerStepLines(unreadable.display)).toEqual([]);
+  });
+
+  it("AC8: a ClickUp playbook that names jobs shows its ClickUp owner step exactly once (from fit.owner_steps)", async () => {
+    addMember([]);
+    const id = ticketDraft("clickup", ["automate_tickets"]);
+    const hold = holdOf(id, { enable_anyway: true });
+    expect(hold.refuse).toBeUndefined();
+    expect(hold.display).toContain("jobs: Hand tickets to /automate");
+    const lines = ownerStepLines(hold.display);
+    expect(lines.filter((l) => l === `owner step: ${CLICKUP_STEP}`)).toHaveLength(1);
+    expect(new Set(lines).size).toBe(lines.length);
+  });
+});

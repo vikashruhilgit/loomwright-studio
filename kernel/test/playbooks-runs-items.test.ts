@@ -4,7 +4,9 @@
 // `item.revision` (the kernel never adds them); a skip appends one
 // `poll_item_skipped` event; the item reaches the prompt only wrapped as
 // untrusted data; a GitHub item whose agent lacks the grant or a usable
-// connector parks `needs_github` with one notification per outage. Item
+// connector parks `needs_github` with one notification per outage, and a crew
+// member's ticket item whose member lacks that tracker's read grant parks
+// `needs_tracker` the same way (phase 8 item 22e). Item
 // messages are queued by hand, as the poll trigger (item 04) will queue them.
 // The event loop over a temp data dir, an injected clock and a stand-in
 // `EventSessions`: never the real SDK, a model, a process or GitHub.
@@ -22,8 +24,22 @@ import { EventLoop } from "../src/loop/loop.js";
 import { enqueueEvent, getQueueRow, toQueuedEvent } from "../src/loop/queue.js";
 import { runStep, runStepAsync } from "../src/loop/steps.js";
 import type { EventContext, EventSessions } from "../src/loop/types.js";
-import { createPlaybook } from "../src/playbooks/index.js";
-import { CLICKUP_ITEM_REF, GITHUB_ITEM_REF, JIRA_ITEM_REF, MAX_ITEM_BLOCK_CHARS, NEEDS_GITHUB_SOURCE, isGithubItem, itemPromptBlock, needsGithub, runItemOf } from "../src/playbooks/items.js";
+import { pollGrantOwnerSteps } from "../src/playbooks/fit.js";
+import { createPlaybook, getPlaybook } from "../src/playbooks/index.js";
+import {
+  CLICKUP_ITEM_REF,
+  GITHUB_ITEM_REF,
+  JIRA_ITEM_REF,
+  MAX_ITEM_BLOCK_CHARS,
+  NEEDS_GITHUB_SOURCE,
+  isGithubItem,
+  itemPromptBlock,
+  needsGithub,
+  needsTracker,
+  notifyNeedsTracker,
+  runItemOf,
+  trackerOfItem,
+} from "../src/playbooks/items.js";
 import type { RunItem } from "../src/playbooks/items.js";
 import { PLAYBOOK_RUN_STATUSES, crewPlaybookPrompt, evaluateDedupeKey, playbookPrompt } from "../src/playbooks/runs.js";
 import type { SessionHandle, SessionStatus, StartSessionParams } from "../src/sessions/index.js";
@@ -103,22 +119,45 @@ function addMember(id = "mason"): void {
   if (!r.ok || r.filesError !== null) throw new Error(`createAgent ${id}: ${JSON.stringify(r)}`);
 }
 
-/** Grant crew member `id` the `github` connector in its own settings file. */
-function grantMember(id = "mason"): void {
+/**
+ * Grant crew member `id` `connectors` (the `github` connector by default; `null` removes the key: no grant) in its own settings
+ * file, as the owner does on Team. An MCP kind's grant is the object form naming its tools (`CLICKUP_GRANT`).
+ */
+function grantMember(id = "mason", connectors: unknown = ["github"]): void {
   const file = agentSettingsPath(dataDir, id);
-  const settings = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-  writeFileSync(file, `${JSON.stringify({ ...settings, connectors: ["github"] }, null, 2)}\n`);
+  const { connectors: _old, ...settings } = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  writeFileSync(file, `${JSON.stringify({ ...settings, ...(connectors === null ? {} : { connectors }) }, null, 2)}\n`);
 }
 
-/** An enabled playbook of `agent` keyed by `dedupe` (its trigger fires at 23:00: never due here). */
-function playbook(o: { dedupe?: readonly string[]; agent?: string; intent?: string } = {}): { id: number; slug: string; triggerId: number } {
+/** The owner's ClickUp read grant: the object form, naming the server tools (an MCP kind in the array form is refused). */
+const CLICKUP_GRANT = { clickup: ["clickup_filter_tasks", "clickup_get_task"] };
+
+/** A playbook trigger as an agent gives it. */
+interface TriggerInput {
+  readonly kind: string;
+  readonly spec: string;
+  readonly tz?: string;
+}
+
+/** The linked ClickUp and Jira poll triggers a ticket playbook has (never due here: the loop fires no trigger). */
+const CLICKUP_POLL: TriggerInput = { kind: "poll", spec: JSON.stringify({ source: "clickup.tasks", filters: { list: "901" }, interval_seconds: 300 }) };
+const JIRA_POLL: TriggerInput = { kind: "poll", spec: JSON.stringify({ source: "jira.issues", filters: { site: "acme.atlassian.net" }, interval_seconds: 300 }) };
+
+/** An enabled playbook of `agent` keyed by `dedupe`, linked to `trigger` (by default a cron at 23:00: never due here). */
+function playbook(o: { dedupe?: readonly string[]; agent?: string; intent?: string; trigger?: TriggerInput } = {}): { id: number; slug: string; triggerId: number } {
+  // A ticket poll is created only over a connected tracker connection (`poll_connector_missing` otherwise).
+  for (const kind of ["clickup", "jira"] as const) {
+    if (o.trigger?.kind === "poll" && o.trigger.spec.includes(`"source":"${kind === "jira" ? "jira.issues" : "clickup.tasks"}"`)) {
+      store.prepare("INSERT INTO mcp_connections (kind, server_url, status) VALUES (?, 'https://mcp.example.test', 'connected')").run(kind);
+    }
+  }
   const change = createPlaybook(
     store,
     {
       agent: o.agent ?? "wright",
       name: "Review pull requests",
       intent: o.intent ?? "Review the pull request.",
-      trigger: { kind: "cron", spec: "0 23 * * *", tz: "UTC" },
+      trigger: o.trigger ?? { kind: "cron", spec: "0 23 * * *", tz: "UTC" },
       priority: "normal",
       model: PLAYBOOK_MODEL,
       ...(o.dedupe === undefined ? {} : { dedupe_key: o.dedupe }),
@@ -819,6 +858,219 @@ describe("a Jira or ClickUp item: its ref shape, its status, and no GitHub need 
     expect(runs()).toEqual([expect.objectContaining({ status: "running", item_ref: JIRA, item_revision: item.revision, dedupe_key: key(p, item) })]);
     expect(needsGithubNotifications()).toEqual([]);
     expect(count(store, "SELECT count(*) FROM playbook_runs WHERE status = 'parked'")).toBe(0);
+  });
+});
+
+// ---- Phase 8 item 22e: a crew member without the tracker's read grant parks needs_tracker ------------
+
+describe("a crew member's ticket item whose member lacks the tracker's read grant parks needs_tracker (phase 8 item 22e)", () => {
+  // The playbooks here link a `clickup.tasks` (or `jira.issues`) poll trigger, as a real ticket playbook does: the park reads the
+  // linked poll's need (`pollGrantGaps`, the dry run's rule), so a cron-linked playbook given a ticket item by hand would not park.
+  const STEP = "Mason needs ClickUp access for watching ClickUp; only you can grant it: Team → Mason's inspector.";
+  const JIRA_STEP = "Mason needs Jira access for watching Jira; only you can grant it: Team → Mason's inspector.";
+  const PARKED = '{"reason":"needs_tracker","tracker":"clickup","missing":"grant"}';
+
+  const ticket = (id: string, revision: string): RunItem => ({ ref: `clickup:${id}`, revision, title: `Task ${id}`, url: `https://app.clickup.com/t/${id}`, status: "open" });
+  const issue = (key: string, revision: string): RunItem => ({ ref: `jira:acme.atlassian.net/${key}`, revision, title: `Issue ${key}`, url: `https://acme.atlassian.net/browse/${key}` });
+  // The literal source, never the imported constant: the pin is the string the owner's notifications carry.
+  const trackerNotifications = () => store.prepare<[], { title: string; body: string }>("SELECT title, body FROM notifications WHERE source = 'kernel:needs_tracker' ORDER BY id").all();
+  const rowOf = (p: Pb) => {
+    const r = getPlaybook(store, p.id);
+    if (r === undefined) throw new Error(`no playbook ${p.id}`);
+    return r;
+  };
+
+  it("AC1 + AC2: a clickup: item of a member with no ClickUp grant parks needs_tracker: no session, no tokens, one notice in the dry run's words", async () => {
+    addMember();
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    const sessions = stubSessions({ ending: "held" });
+    const result = await poll(p, [ticket("a1", "r1")], "2026-10-14T08:00:00.000Z", sessions, "mason");
+    expect(result.failed).toBe(0);
+    expect(sessions.starts).toEqual([]);
+    expect(count(store, "SELECT count(*) FROM sessions")).toBe(0);
+    expect(count(store, "SELECT count(*) FROM playbook_runs WHERE tokens IS NOT NULL AND tokens > 0")).toBe(0);
+    expect(runs()).toEqual([
+      expect.objectContaining({
+        status: "parked",
+        session_id: null,
+        item_ref: "clickup:a1",
+        item_revision: "r1",
+        dedupe_key: key(p, ticket("a1", "r1")),
+        result_json: PARKED,
+        ended_at: "2026-10-14T08:00:00.000Z",
+      }),
+    ]);
+    // The same rule as the dry run: its owner step is the notice's.
+    expect(pollGrantOwnerSteps(store, rowOf(p))).toEqual([STEP]);
+    expect(trackerNotifications()).toEqual([
+      {
+        title: `Playbook ${p.slug} parked: Mason has no ClickUp access`,
+        body: `Playbook ${p.slug} (#${p.id}) did not run for clickup:a1: ${STEP} Its items run at the first poll after the grant is in place.`,
+      },
+    ]);
+    // AC2, AC9: never a settings-file path, a command, or a grant proposed.
+    const body = trackerNotifications()[0]?.body ?? "";
+    expect(body).not.toContain(agentSettingsPath(dataDir, "mason"));
+    expect(body).not.toMatch(/studio |kernel_agent_update|"connectors"/);
+    expect(needsGithubNotifications()).toEqual([]);
+  });
+
+  it("AC1: a jira: item of a member with no Jira grant parks needs_tracker naming Jira", async () => {
+    addMember();
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: JIRA_POLL });
+    const sessions = stubSessions({ ending: "held" });
+    await poll(p, [issue("PROJ-12", "r1")], "2026-10-14T08:00:00.000Z", sessions, "mason");
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toEqual([expect.objectContaining({ status: "parked", session_id: null, item_ref: "jira:acme.atlassian.net/PROJ-12", result_json: '{"reason":"needs_tracker","tracker":"jira","missing":"grant"}' })]);
+    expect(trackerNotifications()).toEqual([
+      {
+        title: `Playbook ${p.slug} parked: Mason has no Jira access`,
+        body: `Playbook ${p.slug} (#${p.id}) did not run for jira:acme.atlassian.net/PROJ-12: ${JIRA_STEP} Its items run at the first poll after the grant is in place.`,
+      },
+    ]);
+  });
+
+  it("AC1 + AC2 + AC3: one notice per outage (two items, two polls, a redelivery); after the grant the same items start sessions; an unchanged done item is skipped quietly in a new outage, which notifies again", async () => {
+    addMember();
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    const sessions = stubSessions({ ending: "completed" });
+    setClock("2026-10-14T08:00:00.000Z");
+    const first = queueItem(p, ticket("a1", "r1"), "2026-10-14T08:00:00.000Z", "mason");
+    queueItem(p, ticket("b2", "r1"), "2026-10-14T08:00:00.000Z", "mason");
+    await tick(sessions);
+    expect(statusOf()).toEqual([
+      ["clickup:a1", "parked"],
+      ["clickup:b2", "parked"],
+    ]);
+    expect(trackerNotifications()).toHaveLength(1);
+    // A redelivery replays the stored decision: no second row, no second notice.
+    await deliver(first, sessions);
+    expect(runs()).toHaveLength(2);
+    expect(trackerNotifications()).toHaveLength(1);
+    // The next poll, still ungranted: parked again (never a duplicate), notifying nothing more.
+    await poll(p, [ticket("a1", "r1"), ticket("b2", "r1")], "2026-10-14T08:05:00.000Z", sessions, "mason");
+    expect(statusOf().slice(2)).toEqual([
+      ["clickup:a1", "parked"],
+      ["clickup:b2", "parked"],
+    ]);
+    expect(trackerNotifications()).toHaveLength(1);
+    expect(sessions.starts).toEqual([]);
+
+    // AC3: the owner grants ClickUp on Team: the next poll's same items run.
+    grantMember("mason", CLICKUP_GRANT);
+    await poll(p, [ticket("a1", "r1"), ticket("b2", "r1")], "2026-10-14T08:10:00.000Z", sessions, "mason");
+    await settled();
+    expect(sessions.starts.map((s) => s.agent)).toEqual(["mason", "mason"]);
+    expect(statusOf().slice(4)).toEqual([
+      ["clickup:a1", "done"],
+      ["clickup:b2", "done"],
+    ]);
+
+    // The grant is lost again: the unchanged done item is skipped (the check runs after the dedupe key), a new one parks and notifies.
+    grantMember("mason", null);
+    await poll(p, [ticket("a1", "r1"), ticket("c3", "r1")], "2026-10-14T08:15:00.000Z", sessions, "mason");
+    expect(statusOf().slice(6)).toEqual([
+      ["clickup:a1", "skipped_duplicate"],
+      ["clickup:c3", "parked"],
+    ]);
+    expect(trackerNotifications()).toHaveLength(2);
+    expect(sessions.starts).toHaveLength(2);
+  });
+
+  it("AC2: the outage is per reason: a needs_github park of the same playbook neither swallows the first needs_tracker notice nor is ended by it", async () => {
+    addMember();
+    connector("connected");
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    const sessions = stubSessions({ ending: "held" });
+    await poll(p, [pr(1, "aaa")], "2026-10-14T08:00:00.000Z", sessions, "mason");
+    await poll(p, [ticket("a1", "r1")], "2026-10-14T08:05:00.000Z", sessions, "mason");
+    await poll(p, [pr(2, "bbb"), ticket("b2", "r1")], "2026-10-14T08:10:00.000Z", sessions, "mason");
+    expect(runs().map((r) => [r.item_ref, r.status, (JSON.parse(r.result_json ?? "{}") as { reason?: string }).reason])).toEqual([
+      ["github:o/r#1", "parked", "needs_github"],
+      ["clickup:a1", "parked", "needs_tracker"],
+      ["github:o/r#2", "parked", "needs_github"],
+      ["clickup:b2", "parked", "needs_tracker"],
+    ]);
+    expect(needsGithubNotifications()).toHaveLength(1);
+    expect(trackerNotifications()).toHaveLength(1);
+    expect(sessions.starts).toEqual([]);
+  });
+
+  it("AC6: a refused settings file parks (fail closed) with settings_error, the step does not throw, and the notice names the code only", async () => {
+    addMember();
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    writeFileSync(agentSettingsPath(dataDir, "mason"), "{ not json");
+    const sessions = stubSessions({ ending: "held" });
+    const result = await poll(p, [ticket("a1", "r1")], "2026-10-14T08:00:00.000Z", sessions, "mason");
+    expect(result.failed).toBe(0);
+    expect(sessions.starts).toEqual([]);
+    expect(runs()[0]).toMatchObject({ status: "parked", item_ref: "clickup:a1" });
+    expect(JSON.parse(runs()[0]?.result_json ?? "null")).toEqual({ reason: "needs_tracker", tracker: "clickup", missing: "grant", settings_error: "settings_invalid" });
+    expect(trackerNotifications()[0]?.body).toBe(
+      `Playbook ${p.slug} (#${p.id}) did not run for clickup:a1: ${STEP} Mason's settings file was refused (settings_invalid), so it holds no grant until that is fixed. Its items run at the first poll after the grant is in place.`,
+    );
+
+    // A missing file is refused too (settings_missing): still parked, never a throw.
+    rmSync(agentSettingsPath(dataDir, "mason"));
+    expect(needsTracker(store, rowOf(p), ticket("b2", "r1"))).toEqual({ reason: "needs_tracker", tracker: "clickup", missing: "grant", settings_error: "settings_missing" });
+  });
+
+  it("AC2, AC6: a settings_unreadable error is named by its code alone, never the path its first line carries", () => {
+    addMember();
+    const p = playbook({ agent: "mason", trigger: CLICKUP_POLL });
+    const path = agentSettingsPath(dataDir, "mason");
+    const park = { reason: "needs_tracker", tracker: "clickup", missing: "grant", settings_error: `settings_unreadable: EACCES: permission denied, open '${path}'` } as const;
+    notifyNeedsTracker(store, { playbook: p.id, slug: p.slug, row: rowOf(p), item: ticket("a1", "r1"), park }, now());
+    const body = trackerNotifications()[0]?.body ?? "";
+    expect(body).toContain("Mason's settings file was refused (settings_unreadable), so it holds no grant until that is fixed.");
+    expect(body).not.toContain(path);
+  });
+
+  it("AC7: a member holding the ClickUp grant runs as today (no park, no notice)", async () => {
+    addMember();
+    grantMember("mason", CLICKUP_GRANT);
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    const sessions = stubSessions({ ending: "held" });
+    await poll(p, [ticket("a1", "r1")], "2026-10-14T08:00:00.000Z", sessions, "mason");
+    expect(sessions.starts).toHaveLength(1);
+    expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: 1, item_ref: "clickup:a1" })]);
+    expect(trackerNotifications()).toEqual([]);
+    expect(needsTracker(store, rowOf(p), ticket("a1", "r1"))).toBeUndefined();
+  });
+
+  it("AC7: Wright's own ClickUp playbook's clickup: item still starts a session with no grant (no charter: no needs_tracker park)", async () => {
+    setWright(null);
+    const p = playbook({ dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    const sessions = stubSessions({ ending: "held" });
+    await poll(p, [ticket("a1", "r1")], "2026-10-14T08:00:00.000Z", sessions);
+    expect(sessions.starts).toHaveLength(1);
+    expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: 1, item_ref: "clickup:a1" })]);
+    expect(trackerNotifications()).toEqual([]);
+  });
+
+  it("AC7: a GitHub item of the same ungranted crew member still parks needs_github (never needs_tracker), with today's notice", async () => {
+    addMember();
+    connector("connected");
+    const p = playbook({ agent: "mason", dedupe: BY_REVISION, trigger: CLICKUP_POLL });
+    const sessions = stubSessions({ ending: "held" });
+    await poll(p, [pr(1, "aaa")], "2026-10-14T08:00:00.000Z", sessions, "mason");
+    expect(sessions.starts).toEqual([]);
+    expect(runs()).toEqual([expect.objectContaining({ status: "parked", item_ref: "github:o/r#1", result_json: '{"reason":"needs_github","missing":"grant","connector_status":"connected"}' })]);
+    expect(needsGithubNotifications().map((n) => n.title)).toEqual([`Playbook ${p.slug} parked: mason has no GitHub grant`]);
+    expect(trackerNotifications()).toEqual([]);
+    expect(needsTracker(store, rowOf(p), pr(1, "aaa"))).toBeUndefined();
+    expect([trackerOfItem(pr(1, "aaa")), trackerOfItem(ticket("a1", "r")), trackerOfItem(issue("A-1", "r"))]).toEqual([undefined, "clickup", "jira"]);
+  });
+
+  it("AC7: a time-based fire (no item) of the ungranted member's ClickUp playbook starts as today", async () => {
+    addMember();
+    const p = playbook({ agent: "mason", dedupe: ["playbook.id", "trigger.scheduled_at"], trigger: CLICKUP_POLL });
+    const sessions = stubSessions({ ending: "held" });
+    enqueueEvent(store, { kind: "message", payload: { agent: "mason", playbook: p.id, version: 1, trigger_id: p.triggerId, scheduled_at: "2026-10-14T08:00:00.000Z" }, priority: "normal" }, now());
+    await tick(sessions);
+    expect(sessions.starts).toHaveLength(1);
+    expect(runs()).toEqual([expect.objectContaining({ status: "running", session_id: 1, item_ref: null })]);
+    expect(trackerNotifications()).toEqual([]);
   });
 });
 

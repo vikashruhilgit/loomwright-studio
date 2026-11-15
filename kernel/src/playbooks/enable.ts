@@ -30,7 +30,9 @@
 //   every policy value with `(proposed)` where Wright set it, and the dry
 //   run's summary; for a playbook that names jobs, its jobs and the fit, and
 //   with `enable_anyway` over an open gap, that gap and that the owner is
-//   enabling it anyway, so the owner's approval records the choice) and the
+//   enabling it anyway, so the owner's approval records the choice; for a
+//   crew playbook that names no jobs and polls Jira or ClickUp, an `owner
+//   step:` line per tracker grant its member lacks at hold time) and the
 //   version as the approval's `subject_version`.
 // - `applyOnApproval`, which the approvals decision runs when the owner
 //   approves the held call `once`: `enableApproved` re-checks the playbook
@@ -77,7 +79,7 @@ import type { Store } from "../store/store.js";
 import { CREW_CANNOT_DRAFT_DETAIL, afterPlaybookStep, mayManage, named, refuseCrewDrafting, syncMirror } from "./drafts.js";
 import { DRY_RUN_TOOL_NAME, latestDryRun } from "./dry-run.js";
 import type { DryRunRecord } from "./dry-run.js";
-import { fitGapOpen, playbookFit } from "./fit.js";
+import { fitGapOpen, playbookFit, ticketPollOwnerSteps } from "./fit.js";
 import type { PlaybookFit } from "./fit.js";
 import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, parseMergeRequirement, playbookJobsOf, refuseIfOwnerTurnedOff } from "./store.js";
 import type { PlaybookRow } from "./store.js";
@@ -281,13 +283,17 @@ function scheduleText(trigger: ReturnType<typeof linkedTriggerOf>): string {
 }
 
 /**
- * The display's charter lines for a playbook that names jobs (none
- * otherwise, so such a display is as it always was): the jobs, then the fit's
+ * The display's charter lines for a playbook that names jobs: the jobs, then the fit's
  * lines; over an open gap with `enableAnyway`, that the owner is enabling it
- * anyway; then the owner's connector steps.
+ * anyway; then the owner's connector steps. A crew `no_jobs` playbook gets
+ * only an `owner step:` line per Jira or ClickUp poll grant its member lacks
+ * now, at hold time (`ticketPollOwnerSteps`, phase 8 item 22e; never the dry
+ * run's copy): the owner's step, which holds the enable, never refuses it. Any
+ * other display is as it always was.
  */
-function charterLines(row: PlaybookRow, fit: PlaybookFit | undefined, enableAnyway: boolean): string[] {
-  if (fit === undefined || fit.status === "no_jobs") return [];
+function charterLines(store: Store, row: PlaybookRow, fit: PlaybookFit | undefined, enableAnyway: boolean): string[] {
+  if (fit === undefined) return [];
+  if (fit.status === "no_jobs") return ticketPollOwnerSteps(store, row).map((step) => `owner step: ${step}`);
   const lines = [`jobs: ${playbookJobsOf(row).map((job) => TOOL_JOBS[job]).join(", ")}`, ...fit.lines.map((l) => `charter: ${l}`)];
   if (fitGapOpen(fit) && enableAnyway) lines.push("charter gap: open; the owner is enabling this playbook anyway, with the gap open");
   lines.push(...fit.owner_steps.map((step) => `owner step: ${step}`));
@@ -316,7 +322,7 @@ export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunReco
     valueLine("effort", row.effort, row.effort_set_by),
     valueLine("api_key_fallback", row.api_key_fallback_json, row.api_key_fallback_set_by),
     `dry run: ${dryRun.summary}`,
-    ...charterLines(row, fit, enableAnyway),
+    ...charterLines(store, row, fit, enableAnyway),
   ].join("\n");
 }
 
