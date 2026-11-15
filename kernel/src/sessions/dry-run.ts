@@ -12,12 +12,14 @@ import type { WouldDoEntry } from "./types.js";
  * The tools a dry-run session may run by name, whatever their input: the
  * three file readers and the kernel's Loomwright contract reader. Closed: a
  * name is added only by a kernel change, never by a policy or a playbook.
- * The kernel's own list/get tools are read-only too (`isDryRunReadOnlyKernelTool`).
+ * The kernel's own list/get tools are read-only too (`isDryRunReadOnlyKernelTool`),
+ * and so is an MCP connector's read-only proxy (`isDryRunReadOnlyMcpProxy`).
  * Every other tool is "would do": `Write`, `Edit`, `NotebookEdit`,
  * `WebFetch`, `WebSearch`, `Task`, every other `kernel_*` tool (`kernel_notify`,
  * `kernel_approval_request`, `kernel_schedule_wakeup`, `kernel_request_stop`,
  * each `*_create` / `*_update` / `*_register` / `*_remove` / `*_disable` /
- * `*_enable` / `*_dry_run`) and any tool of another MCP server.
+ * `*_enable` / `*_dry_run`, every `kernel_mcp_w_*` proxy) and any tool of
+ * another MCP server.
  */
 export const DRY_RUN_READ_ONLY_TOOLS: readonly string[] = Object.freeze([
   "Read",
@@ -56,6 +58,26 @@ export const DRY_RUN_GITHUB_READ_TOOLS: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * An MCP connector's read-only proxy tool (phase 8 item 22f), the session name
+ * `mcp__kernel__kernel_mcp_r_<kind>_<tool>`, where `<kind>` and `<tool>` are
+ * lower-case alphanumeric words joined by single underscores. The kernel fixed
+ * the `r_` from the server's `readOnlyHint` when the connector was connected
+ * (`integrations/mcp/tools.ts`), the same prefix the rail reads as ordinary
+ * (`MCP_READ_PROXY_PREFIX` in `policy.ts`): every name this accepts is one the
+ * rail answers `ordinary`, never `outward`. A separate rule, never added to
+ * `DRY_RUN_READ_ONLY_TOOLS`: the whole name must match, so another server's
+ * `kernel_mcp_r_` name, a bare one and every `kernel_mcp_w_` name are not
+ * read-only. The session still lists one only for an agent the owner granted
+ * that server tool, and its own policy must still allow it.
+ */
+const MCP_READ_PROXY_TOOL = /^mcp__kernel__kernel_mcp_r_[a-z0-9]+_[a-z0-9]+(?:_[a-z0-9]+)*$/;
+
+/** Whether `toolName` is an MCP connector's read-only proxy tool (`MCP_READ_PROXY_TOOL`). */
+export function isDryRunReadOnlyMcpProxy(toolName: string): boolean {
+  return MCP_READ_PROXY_TOOL.test(toolName);
+}
+
+/**
  * The programs a dry-run session's Bash command may start with, matched
  * against the command's FIRST shell word exactly (`shellWords`, case-sensitive,
  * no path: `/bin/cat`, `./ls` and `CAT` are not in the set). Each one only
@@ -87,7 +109,12 @@ export function isDryRunReadOnly(toolName: string, toolInput: unknown): boolean 
     const command = bashCommandOf(toolInput);
     return command !== undefined && isDryRunReadOnlyBash(command);
   }
-  return DRY_RUN_READ_ONLY_TOOLS.includes(toolName) || DRY_RUN_GITHUB_READ_TOOLS.includes(toolName) || isDryRunReadOnlyKernelTool(toolName);
+  return (
+    DRY_RUN_READ_ONLY_TOOLS.includes(toolName) ||
+    DRY_RUN_GITHUB_READ_TOOLS.includes(toolName) ||
+    isDryRunReadOnlyKernelTool(toolName) ||
+    isDryRunReadOnlyMcpProxy(toolName)
+  );
 }
 
 /**

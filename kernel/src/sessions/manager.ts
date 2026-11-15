@@ -162,6 +162,12 @@ function checkedVerdict(value: unknown): HeldToolVerdict | undefined {
  * it back: a session that started as a dry run stays one on every resume.
  */
 const DRY_RUN_EVENT = "session_dry_run";
+/**
+ * The session name prefix of an MCP connector's proxy tools (`mcp__kernel__`
+ * plus the kernel's `kernel_mcp_`): the only names `mcpProxyToolsFor` may add
+ * to a session's `allowedTools` (`#grantedProxyTools`).
+ */
+const MCP_PROXY_SESSION_PREFIX = "mcp__kernel__kernel_mcp_";
 /** The bundled CLI's executable name; the reaper kills only groups led by it (or leaderless). */
 const CLI_BASENAME = "claude";
 /**
@@ -700,6 +706,7 @@ export class SessionManager {
   readonly #mcpServers: SessionManagerOptions["mcpServers"];
   readonly #heldToolCheck: HeldToolCheck | undefined;
   readonly #connectorsFor: SessionManagerOptions["connectorsFor"];
+  readonly #mcpProxyToolsFor: SessionManagerOptions["mcpProxyToolsFor"];
   readonly #githubWriteFor: SessionManagerOptions["githubWriteFor"];
   /** The GitHub token of each live, write-granted session (`github-session-auth.ts`). */
   readonly #github: GithubSessionAuth;
@@ -744,6 +751,7 @@ export class SessionManager {
     this.#mcpServers = options.mcpServers;
     this.#heldToolCheck = options.heldToolCheck;
     this.#connectorsFor = options.connectorsFor;
+    this.#mcpProxyToolsFor = options.mcpProxyToolsFor;
 
     this.#query = deps.query ?? sdkQuery;
     this.#spawn = deps.spawn ?? spawnInNewProcessGroup;
@@ -3060,19 +3068,42 @@ export class SessionManager {
    * 8 item 04) is set only when `githubToken` says this session was minted its
    * down-scoped token (`#githubWriteQualifies` decided that from the stored
    * mode and the owner's grant) and the agent holds `github`; it is the only
-   * place the flag is ever set.
+   * place the flag is ever set. `allowedTools` gains the proxy tools the
+   * session lists (`#grantedProxyTools` over these same `connectors`, phase 8
+   * item 22f), deduplicated and frozen; with none it is the caller's, as
+   * before. The names live only on this object: never the settings file, the
+   * charter or a stored row.
    */
   #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null, forceDraft = false, githubToken = false): ToolPolicy {
-    const connectors = this.#grantedConnectors(agent);
+    const connectors = Object.freeze([...new Set(this.#grantedConnectors(agent))]);
     let mode: PlaybookMode | undefined = forceDraft ? "draft" : undefined;
     if (!forceDraft && playbook !== null) mode = this.#storedMode(playbook);
     const githubWrite = githubToken && connectors.includes("github");
+    const proxies = this.#grantedProxyTools(agent, connectors);
     return Object.freeze({
       ...policy,
+      ...(proxies.length === 0 ? {} : { allowedTools: Object.freeze([...new Set([...policy.allowedTools, ...proxies])]) }),
       ...(mode === undefined ? {} : { mode }),
-      connectors: Object.freeze([...new Set(connectors)]),
+      connectors,
       ...(githubWrite ? { githubWrite: true } : {}),
     });
+  }
+
+  /**
+   * `mcpProxyToolsFor(agent, connectors)`: the session-facing proxy names it
+   * answers, only those under `mcp__kernel__kernel_mcp_` (the option can never
+   * add another tool). `[]` with no option, no agent, a lookup that throws or
+   * an answer that is not an array (fail closed).
+   */
+  #grantedProxyTools(agent: string | null, connectors: readonly ConnectorKind[]): readonly string[] {
+    if (agent === null || this.#mcpProxyToolsFor === undefined) return [];
+    try {
+      const named: unknown = this.#mcpProxyToolsFor(agent, connectors);
+      if (Array.isArray(named)) return (named as unknown[]).filter((n): n is string => typeof n === "string" && n.startsWith(MCP_PROXY_SESSION_PREFIX));
+    } catch {
+      // Fail closed: no grant, so no proxy name joins the policy.
+    }
+    return [];
   }
 
   /** `connectorsFor(agent)`: the known kinds it answers, `[]` with no option, no agent, or a lookup that throws (fail closed). */

@@ -21,7 +21,10 @@ import {
   isDryRunReadOnly,
   isDryRunReadOnlyBash,
   isDryRunReadOnlyKernelTool,
+  isDryRunReadOnlyMcpProxy,
 } from "../src/sessions/dry-run.js";
+import { draftDenyReason } from "../src/sessions/draft-mode.js";
+import { classifyToolCall } from "../src/sessions/policy.js";
 import { SessionManager } from "../src/sessions/manager.js";
 import { SessionError } from "../src/sessions/types.js";
 import type { DryRunReport, SessionHandle, SessionManagerOptions, StartSessionParams, ToolPolicy } from "../src/sessions/types.js";
@@ -153,6 +156,37 @@ describe("dry-run.ts: the read-only sets", () => {
     ]) {
       expect(isDryRunReadOnlyKernelTool(name), name).toBe(false);
     }
+  });
+
+  it("22f AC8: the MCP read-proxy predicate accepts only mcp__kernel__kernel_mcp_r_<kind>_<tool>, separate from the closed list, and the rail reads each as ordinary", () => {
+    const accepted = [`${K}kernel_mcp_r_jira_get_issue`, `${K}kernel_mcp_r_jira_search_issues`, `${K}kernel_mcp_r_clickup_get_task`, `${K}kernel_mcp_r_clickup_x1`];
+    for (const name of accepted) {
+      expect(isDryRunReadOnlyMcpProxy(name), name).toBe(true);
+      expect(isDryRunReadOnly(name, { arguments_json: "{}" }), name).toBe(true);
+      // Every name it accepts is one the rail answers ordinary, never outward.
+      expect(classifyToolCall(name, { arguments_json: "{}" }, { dataDir: join(tmp, "data"), homeDir: home, cwd: tmp }), name).toEqual({ kind: "ordinary" });
+    }
+    for (const name of [
+      // Only the `^` anchor rejects this one.
+      `x${K}kernel_mcp_r_jira_get_issue`,
+      "mcp__other__kernel_mcp_r_x",
+      "kernel_mcp_r_x",
+      "kernel_mcp_r_jira_get_issue",
+      `${K}kernel_mcp_w_jira_create_issue`,
+      `${K}kernel_mcp_jira_get_issue`,
+      `${K}kernel_mcp_r_jira`,
+      `${K}kernel_mcp_r_jira_`,
+      `${K}kernel_mcp_r__jira_get`,
+      `${K}kernel_mcp_r_jira__get`,
+      `${K}kernel_mcp_r_Jira_get`,
+      `${K}kernel_mcp_r_jira_get_issue x`,
+      `${K}kernel_mcp_r_jira-get`,
+    ]) {
+      expect(isDryRunReadOnlyMcpProxy(name), name).toBe(false);
+      expect(isDryRunReadOnly(name, {}), name).toBe(false);
+    }
+    // The closed list is untouched: no proxy name joins it.
+    expect(DRY_RUN_READ_ONLY_TOOLS.some((t) => t.includes("kernel_mcp_"))).toBe(false);
   });
 
   it("DRY_RUN_READ_ONLY_BASH is the closed conservative set, frozen; programs that can write, send or run others are out", () => {
@@ -387,6 +421,74 @@ describe("a dry-run session reads, and records every action as would-do", () => 
     const [entry] = (await reportOf(s.handle)).wouldDo;
     expect(entry?.input_summary).toHaveLength(500);
     expect(entry?.input_summary).toBe(t.decisions()[0]?.command);
+  });
+});
+
+describe("22f AC4: a granted MCP proxy in each kind of session (the grant is the permission; a write is never sent)", () => {
+  const R = `${K}kernel_mcp_r_jira_search_issues`;
+  const W = `${K}kernel_mcp_w_jira_create_issue`;
+  const ARGS = { arguments_json: '{"summary":"x"}' };
+  // The member's own policy names no proxy: the manager's `mcpProxyToolsFor` option is what grants them.
+  const MEMBER: ToolPolicy = { allowedTools: ["Read"], allowedBashPrefixes: [] };
+  const granted = (): ReturnType<typeof setup> => setup({ mcpProxyToolsFor: () => [R, W] });
+  const playbook = (t: ReturnType<typeof setup>): number =>
+    Number(t.store.prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, version) VALUES ('pb', 'pb', 'scout', 'Review', 1)").run().lastInsertRowid);
+  const drafts = (t: ReturnType<typeof setup>): { tool: string; payload_json: string }[] =>
+    t.store.prepare<[], { tool: string; payload_json: string }>("SELECT tool, payload_json FROM draft_outputs ORDER BY id").all();
+
+  it("without the grant, both proxies are refused by the policy, as before 22f", async () => {
+    const t = setup();
+    const s = await t.session(MEMBER, { agent: "scout", dryRun: true });
+    for (const tool of [R, W]) expect((await s.gate(tool, ARGS)).permissionDecisionReason, tool).toMatch(/^tool_not_allowed/);
+    s.finish();
+    expect((await reportOf(s.handle)).wouldDo).toEqual([]);
+  });
+
+  it("a real run holds the write as mcp_write (an approval, nothing sent) and runs the read", async () => {
+    const t = granted();
+    const s = await t.session(MEMBER, { agent: "scout" });
+    expect((await s.gate(W, ARGS)).permissionDecisionReason).toMatch(/^approval_required: held as approval 1; it did not run/);
+    expect(t.approvals().map((a) => [a.action, a.status])).toEqual([["mcp_write", "pending"]]);
+    expect((await s.gate(R, ARGS)).permissionDecision).toBe("allow");
+  });
+
+  it("a dry run without forceDraft records the write as would-do held (mcp_write, dry_run), writes no approval, and runs the read", async () => {
+    const t = granted();
+    const s = await t.session(MEMBER, { agent: "scout", dryRun: true });
+    expect((await s.gate(W, ARGS)).permissionDecisionReason).toBe(DRY_RUN_DENY_MESSAGE);
+    expect(await s.gate(R, ARGS)).toEqual({ hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "tool_allowed" });
+    s.finish();
+    expect((await reportOf(s.handle)).wouldDo).toEqual([{ tool: W, input_summary: JSON.stringify(ARGS), would: "held", reason: "dry_run", action: "mcp_write" }]);
+    expect(t.approvals()).toEqual([]);
+  });
+
+  it("a poll review (forced draft) records the write as one draft, not sent and not would-do, and runs the read", async () => {
+    const t = granted();
+    const s = await t.session(MEMBER, { agent: "scout", dryRun: true, forceDraft: true, playbook: playbook(t), playbookVersion: 1 });
+    expect((await s.gate(W, ARGS)).permissionDecisionReason).toBe(draftDenyReason(1));
+    expect((await s.gate(R, ARGS)).permissionDecision).toBe("allow");
+    s.finish();
+    expect(drafts(t).map((d) => d.tool)).toEqual(["mcp_write"]);
+    expect((await reportOf(s.handle)).wouldDo).toEqual([]);
+    expect(t.approvals()).toEqual([]);
+  });
+
+  it("a never list with mcp_write denies the write agent_boundary in a real run, a dry run and a poll review, with no approval, draft or would-do entry", async () => {
+    const t = granted();
+    const never: ToolPolicy = { ...MEMBER, never: ["mcp_write"] };
+    const real = await t.session(never, { agent: "scout" });
+    const dry = await t.session(never, { agent: "scout", dryRun: true });
+    const poll = await t.session(never, { agent: "scout", dryRun: true, forceDraft: true, playbook: playbook(t), playbookVersion: 1 });
+    for (const s of [real, dry, poll]) {
+      expect((await s.gate(W, ARGS)).permissionDecisionReason).toMatch(/^agent_boundary: mcp_write is in this agent's never list/);
+      expect((await s.gate(R, ARGS)).permissionDecision).toBe("allow");
+    }
+    dry.finish();
+    poll.finish();
+    expect((await reportOf(dry.handle)).wouldDo).toEqual([]);
+    expect((await reportOf(poll.handle)).wouldDo).toEqual([]);
+    expect(t.approvals()).toEqual([]);
+    expect(drafts(t)).toEqual([]);
   });
 });
 

@@ -10,19 +10,21 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, HookInput, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agentSettingsPath, createAgent } from "../src/agents/index.js";
+import { agentFilePaths, agentSettingsPath, createAgent } from "../src/agents/index.js";
 import { rosterRoutes } from "../src/agents/roster.js";
 import { decideApproval, listApprovals } from "../src/approvals/index.js";
 import { defaultWrightSettingsJson } from "../src/brain/index.js";
-import { mcpToolGrantsFor, startKernel } from "../src/kernel.js";
+import { mcpProxyToolsFor, mcpToolGrantsFor, startKernel } from "../src/kernel.js";
 import type { Kernel } from "../src/kernel.js";
 import { toolsForConnectors } from "../src/integrations/tool-filter.js";
 import { draftDecision } from "../src/sessions/draft-mode.js";
 import { classifyToolCall } from "../src/sessions/policy.js";
-import type { ToolPolicy } from "../src/sessions/types.js";
-import { approvalApplierOf } from "../src/tools/server.js";
+import { DRY_RUN_DENY_MESSAGE } from "../src/sessions/dry-run.js";
+import { SessionManager } from "../src/sessions/manager.js";
+import type { DryRunReport, SessionHandle, StartSessionParams, ToolPolicy } from "../src/sessions/types.js";
+import { approvalApplierOf, kernelToolCatalogue } from "../src/tools/server.js";
 import { startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
 import { WRITE_ARG } from "../src/auth/keychain.js";
@@ -1290,12 +1292,12 @@ describe("a session of an agent granted MCP tools (AC2, AC3, AC9, AC10)", () => 
   const settingsFile = (id: string): string => agentSettingsPath(dataDir, id);
 
   /** Start a session for `agent`; the tool names its kernel MCP server lists, and the launch. */
-  async function start(agent: string, policy: ToolPolicy): Promise<{ listed: string[]; call: FakeCall }> {
+  async function start(agent: string, policy: ToolPolicy, overrides: Partial<StartSessionParams> = {}): Promise<{ listed: string[]; call: FakeCall; handle: SessionHandle }> {
     const before = fakes.calls.length;
-    await kernel.sessions.startSession({ agent, prompt: "Hi.", model: MODEL, permissionMode: "default", cwd: tmp, policy, closeInputOnResult: false });
+    const handle = await kernel.sessions.startSession({ agent, prompt: "Hi.", model: MODEL, permissionMode: "default", cwd: tmp, policy, closeInputOnResult: false, ...overrides });
     const call = fakes.calls[before] as FakeCall;
     const server = (call.options.mcpServers as Record<string, { instance: unknown }> | undefined)?.kernel;
-    return { listed: Object.keys((server?.instance as { _registeredTools: Record<string, unknown> })._registeredTools), call };
+    return { listed: Object.keys((server?.instance as { _registeredTools: Record<string, unknown> })._registeredTools), call, handle };
   }
   const mcpNames = (listed: string[]): string[] => listed.filter((n) => n.startsWith("kernel_mcp_"));
   const POLICY: ToolPolicy = { allowedTools: ["Read", READ_FULL, WRITE_FULL], allowedBashPrefixes: [] };
@@ -1445,5 +1447,222 @@ describe("a session of an agent granted MCP tools (AC2, AC3, AC9, AC10)", () => 
     const sha2 = createHash("sha256").update(readFileSync(settingsFile("scout"))).digest("hex");
     const refused = await gate(wright.call, UPDATE, { id: "scout", changes: { connectors: { jira: ["x"] } }, expected_sha256: sha2, idempotency_key: "u2" });
     expect(refused.permissionDecisionReason).toMatch(/^kernel_agent_update: invalid input: /);
+  });
+
+  // ---- phase 8 item 22f: the owner's proxy grant is the session's permission -------------------------------------------------
+  // The 22a member's policy: it names no proxy. Every case below would be `tool_not_allowed` without item 22f.
+  const READ_ONLY: ToolPolicy = { allowedTools: ["Read"], allowedBashPrefixes: [] };
+  const CLICKUP_READ = "mcp__kernel__kernel_mcp_r_clickup_search_issues";
+  const CLICKUP_WRITE = "mcp__kernel__kernel_mcp_w_clickup_create_issue";
+
+  /** Connect ClickUp too, against the same fake server (its row lists the same two tools as Jira's). */
+  const connectClickup = async (): Promise<void> => {
+    const opened = await r.connector.connect(kernel.store, "clickup", env.now);
+    if (!opened.ok) throw new Error(`connect refused: ${opened.error}`);
+    await r.f.browse(opened.authorize_url);
+    expect((await opened.done).ok).toBe(true);
+  };
+  /** A poll playbook row owned by `agent` (`draft`, the column's default), as the dry-run tool's review session names it. */
+  const pollPlaybook = (agent: string, slug: string): number =>
+    Number(
+      kernel.store
+        .prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, version) VALUES (?, ?, ?, 'Review each ticket the poll lists.', 1)")
+        .run(slug, slug, agent).lastInsertRowid,
+    );
+  /** The review session a poll playbook's dry run starts (`playbooks/dry-run.ts`): a forced-draft dry run for the playbook. */
+  const review = (playbook: number): Partial<StartSessionParams> => ({ dryRun: true, forceDraft: true, playbook, playbookVersion: 1 });
+  /** End a launch attempt (one assistant turn, one success) and read its dry-run report. */
+  const finishDry = async (s: { call: FakeCall; handle: SessionHandle }): Promise<DryRunReport> => {
+    s.call.stream.push({ type: "assistant", message: { content: [{ type: "text", text: "ok" }] }, parent_tool_use_id: null } as unknown as SDKMessage);
+    s.call.stream.push({ type: "result", subtype: "success", is_error: false, result: "DONE", modelUsage: {} } as unknown as SDKMessage);
+    s.call.stream.end();
+    await s.handle.done;
+    const report = await s.handle.dryRun;
+    if (report === null || report === undefined) throw new Error("no dry-run report");
+    return report;
+  };
+  /** Call the proxy named `sessionName` as the kernel builds it from the same row and grant, over the fake Keychain (never the real one). */
+  const callProxy = async (agent: string, sessionName: string): Promise<unknown> => {
+    const built = mcpProxyTools(kernel.store, mcpToolGrantsFor(dataDir)(agent), { keychain: r.kc.reader, http: { allowLoopbackHttp: true } });
+    const tool = built.find((t) => `mcp__kernel__${t.name}` === sessionName);
+    if (tool === undefined) throw new Error(`no proxy ${sessionName}`);
+    const ctx = { store: kernel.store, sessions: kernel.sessions, sessionId: 1, now: env.now, stepKey: (k: string) => k } as unknown as ContributedToolContext;
+    return tool.handler({ arguments_json: '{"q":"TICKET-1"}' } as never, ctx);
+  };
+  const serverCalls = (): unknown[] => r.f.mcpCalls.filter((m) => m.method === "tools/call");
+  const decisionsOf = (sessionId: number): unknown[] =>
+    kernel.store
+      .prepare<[number], string>("SELECT payload_json FROM events WHERE kind = 'tool_decision' AND session_id = ? ORDER BY id")
+      .pluck()
+      .all(sessionId)
+      .map((p) => JSON.parse(p) as unknown);
+
+  it("22f AC1: a granted member's ClickUp dry-run review is allowed the read proxy its policy does not name, the call reaches the server, and no would-do entry is recorded", async () => {
+    await connectClickup();
+    create("scout");
+    expect((await setConnectors("scout", "clickup:search_issues")).status).toBe(200);
+    expect(READ_ONLY.allowedTools).not.toContain(CLICKUP_READ);
+    const s = await start("scout", READ_ONLY, review(pollPlaybook("scout", "clickup-tasks")));
+    expect(mcpNames(s.listed)).toEqual(["kernel_mcp_r_clickup_search_issues"]);
+    // On `main` before 22f this is `deny` / `tool_not_allowed` (gate 1), and with gate 1 open `deny` / `dry_run` (gate 2).
+    expect(await gate(s.call, CLICKUP_READ, { arguments_json: '{"q":"TICKET-1"}' })).toEqual({ hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "tool_allowed" });
+    expect(decisionsOf(s.handle.id)).toEqual([{ tool: CLICKUP_READ, decision: "allow", reason: "tool_allowed", tool_use_id: "toolu_1" }]);
+    // The allowed call reaches the (fake) ClickUp server through the same row and grant.
+    expect(String(await callProxy("scout", CLICKUP_READ))).toContain("<untrusted-data");
+    expect(serverCalls()).toMatchObject([{ name: "search_issues", arguments: { q: "TICKET-1" } }]);
+    const report = await finishDry(s);
+    expect(report.wouldDo).toEqual([]);
+    expect(listApprovals(kernel.store, { all: true })).toEqual([]);
+  });
+
+  it("22f AC2: the same member's real playbook-run session and chat session are allowed the read proxy too (a dry run and a real run never disagree)", async () => {
+    await connectClickup();
+    create("scout");
+    await setConnectors("scout", "clickup:search_issues");
+    const pb = pollPlaybook("scout", "clickup-tasks");
+    const dry = await start("scout", READ_ONLY, review(pb));
+    const real = await start("scout", READ_ONLY, { playbook: pb, playbookVersion: 1 });
+    const chat = await start("scout", READ_ONLY);
+    for (const [label, s] of [["dry", dry], ["real", real], ["chat", chat]] as const) {
+      expect((await gate(s.call, CLICKUP_READ, { arguments_json: "{}" })).permissionDecision, label).toBe("allow");
+    }
+    expect(listApprovals(kernel.store, { all: true })).toEqual([]);
+  });
+
+  it("22f AC3: the same holds for Jira over its fake server: dry-run review, real run and chat are all allowed the read proxy", async () => {
+    create("scout");
+    await setConnectors("scout", "jira:search_issues");
+    const pb = pollPlaybook("scout", "jira-issues");
+    const dry = await start("scout", READ_ONLY, review(pb));
+    for (const s of [dry, await start("scout", READ_ONLY, { playbook: pb, playbookVersion: 1 }), await start("scout", READ_ONLY)]) {
+      expect((await gate(s.call, READ_FULL, { arguments_json: "{}" })).permissionDecision).toBe("allow");
+    }
+    expect(String(await callProxy("scout", READ_FULL))).toContain("<untrusted-data");
+    expect(serverCalls()).toMatchObject([{ name: "search_issues" }]);
+    expect((await finishDry(dry)).wouldDo).toEqual([]);
+  });
+
+  it("22f AC5: a session gains exactly the proxy tools it lists: never a tool the grant does not name, a kind not in connectors, or a row not in use", async () => {
+    create("scout");
+    await setConnectors("scout", "jira:search_issues");
+    const namesFor = mcpProxyToolsFor(dataDir, kernel.store);
+    const s = await start("scout", READ_ONLY);
+    // The names are the listing's, session-facing.
+    expect(namesFor("scout", ["jira"])).toEqual(mcpNames(s.listed).map((n) => `mcp__kernel__${n}`));
+    expect(namesFor("scout", ["jira"])).toEqual([READ_FULL]);
+    // A tool the grant does not name (create_issue, on the same row) is not added, and stays tool_not_allowed.
+    expect((await gate(s.call, WRITE_FULL, { arguments_json: "{}" })).permissionDecisionReason).toMatch(/^tool_not_allowed/);
+    // A kind not in the session's connectors adds nothing, though the grant names its tool.
+    expect(namesFor("scout", [])).toEqual([]);
+    expect(namesFor("scout", ["clickup", "github"])).toEqual([]);
+    // A grant for a kind with no row adds nothing.
+    await setConnectors("scout", "clickup:search_issues");
+    expect(namesFor("scout", ["jira", "clickup"])).toEqual([READ_FULL]);
+    // A row not in use (expired, disconnected, none) adds nothing: the call is tool_not_allowed as before 22f.
+    for (const status of ["expired", "disconnected", null]) {
+      if (status === null) kernel.store.prepare("DELETE FROM mcp_connections WHERE kind = 'jira'").run();
+      else kernel.store.prepare("UPDATE mcp_connections SET status = ? WHERE kind = 'jira'").run(status);
+      expect(namesFor("scout", ["jira"]), String(status)).toEqual([]);
+      const later = await start("scout", READ_ONLY);
+      expect((await gate(later.call, READ_FULL, { arguments_json: "{}" })).permissionDecisionReason, String(status)).toMatch(/^tool_not_allowed/);
+    }
+  });
+
+  it("22f AC7: a refused or unreadable settings file adds no name, and a grant read that throws (or answers no array, or a non-proxy name) adds none either", async () => {
+    create("scout");
+    await setConnectors("scout", "jira:search_issues");
+    const namesFor = mcpProxyToolsFor(dataDir, kernel.store);
+    expect(namesFor("scout", ["jira"])).toEqual([READ_FULL]);
+    expect(namesFor("nobody", ["jira"])).toEqual([]);
+    expect(namesFor("Not An Id", ["jira"])).toEqual([]);
+    writeFileSync(settingsFile("scout"), "not json");
+    expect(namesFor("scout", ["jira"])).toEqual([]);
+    writeFileSync(settingsFile("scout"), JSON.stringify({ ...(JSON.parse(defaultWrightSettingsJson()) as object), model: MODEL, connectors: { jira: "search_issues" } }));
+    expect(namesFor("scout", ["jira"])).toEqual([]);
+    rmSync(settingsFile("scout"));
+    expect(namesFor("scout", ["jira"])).toEqual([]);
+
+    // The manager's side: a lookup that throws, answers no array, or names a tool outside mcp__kernel__kernel_mcp_ adds none.
+    const answers: (() => unknown)[] = [
+      () => {
+        throw new Error("settings read failed");
+      },
+      () => "mcp__kernel__kernel_mcp_r_jira_search_issues",
+      () => ({ 0: READ_FULL }),
+      () => ["Write", "Bash", "mcp__kernel__kernel_task_create", "mcp__other__kernel_mcp_r_jira_x", "kernel_mcp_r_jira_search_issues", 7, null],
+    ];
+    const own = fakeSessions();
+    for (const answer of answers) {
+      const manager = new SessionManager(
+        {
+          store: env.store,
+          authProvider: stubProvider(),
+          loomwrightPath: makePluginDir(tmp),
+          stopGraceMs: 10,
+          baseEnv: { PATH: "/usr/bin" },
+          mcpProxyToolsFor: answer as unknown as (agent: string) => readonly string[],
+        },
+        { ...own.deps, homeDir: join(tmp, "home") },
+      );
+      cleanups.push(async () => void (await manager.stopAll({ mode: "shutdown" })));
+      const before = own.calls.length;
+      await manager.startSession({ agent: "scout", prompt: "Hi.", model: MODEL, permissionMode: "default", cwd: tmp, policy: READ_ONLY, closeInputOnResult: false });
+      const call = own.calls[before] as FakeCall;
+      for (const tool of [READ_FULL, "Write", "mcp__kernel__kernel_task_create", "mcp__other__kernel_mcp_r_jira_x"]) {
+        expect((await gate(call, tool, {})).permissionDecisionReason, tool).toMatch(/^tool_not_allowed/);
+      }
+    }
+  });
+
+  it("22f AC9: the names are never written (settings file, charter, inspector, session row), and a grant change applies at the next start only", async () => {
+    create("scout");
+    await setConnectors("scout", "jira:search_issues");
+    const files = agentFilePaths(dataDir, "scout").all;
+    const bytes = (): string[] => files.map((f) => readFileSync(f).toString("base64"));
+    const showRoute = rosterRoutes.find((x) => x.method === "GET" && x.path === "/agents/:id");
+    if (showRoute === undefined) throw new Error("no show route");
+    const catalogue = kernelToolCatalogue(kernel.contributions.tools) ?? undefined;
+    const inspector = async (): Promise<unknown> => {
+      const res = await showRoute.handler({ params: { id: "scout" }, query: {}, body: undefined, store: kernel.store, now: env.now, ...(catalogue === undefined ? {} : { catalogue }) });
+      const body = res.body as { settings: unknown; charter: unknown; jobs: unknown };
+      return { settings: body.settings, charter: body.charter, jobs: body.jobs };
+    };
+    const filesBefore = bytes();
+    const inspectorBefore = await inspector();
+    const first = await start("scout", READ_ONLY);
+    expect((await gate(first.call, READ_FULL, { arguments_json: "{}" })).permissionDecision).toBe("allow");
+    expect(bytes()).toEqual(filesBefore);
+    expect(await inspector()).toEqual(inspectorBefore);
+    expect(JSON.stringify(kernel.store.prepare("SELECT * FROM sessions").all())).not.toContain("kernel_mcp_");
+    expect(JSON.stringify(inspectorBefore)).not.toContain(READ_FULL);
+    // The write proxy is not granted yet: refused by the policy.
+    expect((await gate(first.call, WRITE_FULL, { arguments_json: "{}" })).permissionDecisionReason).toMatch(/^tool_not_allowed/);
+    // Granting it applies at the NEXT start: that session's write is held (mcp_write), the earlier session's policy is unchanged.
+    await setConnectors("scout", "jira:search_issues,create_issue");
+    const second = await start("scout", READ_ONLY);
+    expect((await gate(second.call, WRITE_FULL, { arguments_json: "{}" })).permissionDecisionReason).toMatch(/^approval_required: held as approval 1/);
+    expect(listApprovals(kernel.store)[0]).toMatchObject({ action: "mcp_write", status: "pending" });
+    expect((await gate(first.call, WRITE_FULL, { arguments_json: "{}" })).permissionDecisionReason).toMatch(/^tool_not_allowed/);
+    expect(serverCalls()).toEqual([]);
+  });
+
+  it("22f AC10: Wright's own sessions gain no proxy name even with a grant, and a member with no MCP grant behaves as before", async () => {
+    // Wright granted Jira's read tool in its own file: its session lists the tool, but its policy is still only its own allowedTools.
+    const wrightFile = settingsFile("wright");
+    writeFileSync(wrightFile, `${JSON.stringify({ ...(JSON.parse(readFileSync(wrightFile, "utf8")) as object), connectors: { jira: ["search_issues"] } }, null, 2)}\n`);
+    expect(mcpToolGrantsFor(dataDir)("wright")).toEqual({ jira: ["search_issues"] });
+    expect(mcpProxyToolsFor(dataDir, kernel.store)("wright", ["jira"])).toEqual([]);
+    const wright = await start("wright", READ_ONLY);
+    expect(mcpNames(wright.listed)).toEqual([READ]);
+    expect((await gate(wright.call, READ_FULL, { arguments_json: "{}" })).permissionDecisionReason).toMatch(/^tool_not_allowed/);
+    // With the proxy in its own allowedTools, Wright is allowed it as before 22f.
+    const named = await start("wright", { allowedTools: ["Read", READ_FULL], allowedBashPrefixes: [] });
+    expect((await gate(named.call, READ_FULL, { arguments_json: "{}" })).permissionDecision).toBe("allow");
+    // A member with no MCP grant gains nothing.
+    create("plain");
+    expect(mcpProxyToolsFor(dataDir, kernel.store)("plain", ["jira"])).toEqual([]);
+    const plain = await start("plain", READ_ONLY);
+    expect(mcpNames(plain.listed)).toEqual([]);
+    expect((await gate(plain.call, READ_FULL, { arguments_json: "{}" })).permissionDecisionReason).toMatch(/^tool_not_allowed/);
   });
 });
