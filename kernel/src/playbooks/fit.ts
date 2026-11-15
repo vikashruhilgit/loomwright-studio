@@ -322,7 +322,8 @@ export function playbookFit(store: Store, row: PlaybookRow, catalogue: ToolCatal
  * The owner's steps for a crew member's `no_jobs` poll playbook (phase 8 item 22a): the poll source's own read
  * grant (`grantNeeds`, no job's tools) that the member lacks, worded by `ownerStep`. `playbookFit` still reads
  * `owner_steps: []` for `no_jobs`, and the enable's lines stay as they were; only the dry run asks this, to
- * start no review session that cannot read what the poll listed. Empty for Wright's own playbook, a playbook
+ * start no review session for a member whose real run would have its poll-source calls refused (the review
+ * would only spend tokens). Empty for Wright's own playbook, a playbook
  * with no poll trigger and a member's unreadable settings. Never throws: a failure to read is no step (the
  * review runs as it did).
  */

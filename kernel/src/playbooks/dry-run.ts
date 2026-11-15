@@ -497,7 +497,8 @@ function refusedOf(fit: PlaybookFit | undefined): string[] {
  * playbook (no fit), an `unchecked` fit, or one with none open. A `no_jobs` fit
  * has none of a job's, but a poll source's own read grant the member lacks
  * (`pollGrantOwnerSteps`, phase 8 item 22a) stops the review just as well: the
- * session could not read what the poll listed.
+ * member's real run would have its calls to the poll source refused, so the
+ * review would only spend tokens.
  * Refused calls no grant can close (`closable: false`) are not owner steps.
  */
 function ownerStepsOf(fit: PlaybookFit | undefined, store: Store, row: PlaybookRow): readonly string[] {

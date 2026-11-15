@@ -228,13 +228,29 @@ The review ran as for any member with access (run 191, 128,356 tokens; run 193, 
 ## Static validation
 
 ```text
-cd kernel && npm ci && npm test   (final head a0aaa8ef, plus this evidence commit)
+cd kernel && npm ci && npm test   (at a0aaa8ef, plus that evidence commit)
   Test Files  137 passed | 2 skipped (139)   Tests  4739 passed | 16 skipped (4755)
 bash scripts/check-docs.sh
   check-docs: OK
 ```
 
-The suite was not run before the fix, so no before/after count is claimed; no existing test was edited, and the three new cases are the only additions to the 21e block.
+The suite was not run before the fix, so no before/after count is claimed. At `a0aaa8ef` no existing test was edited, and the three new cases were the only additions to the 21e block.
+
+### Later commits on this branch, and the suite at the PR's head
+
+- `a9bda4d7` (Phase 4.5 review iteration 1): comments, `docs/architecture/dry-run.md`, and the dry-run tool's description (the text Wright reads) now name the owner step from `poll.preview_incomplete.fix`, not `fit.owner_steps`. It changes no kernel logic. It edits one existing test: `kernel/test/playbooks-dry-run-poll-unit.test.ts:224-228`, the description test, is renamed and its `fit.owner_steps` assertion replaced by two on the new wording.
+- The drain's review of `a9bda4d7` (MEDIUM, fixed in the commit that adds this entry): the reason given for skipping the review said the session "cannot read what the poll listed". No dry-run review reads a ticket's body, granted or not (runs 193 and 195, Findings 1), so the reason now rests on the real run: its poll-source calls would be refused, and the review would only spend tokens (`dry-run.md`, the `pollGrantOwnerSteps` comment in `fit.ts`, the `ownerStepsOf` comment in `dry-run.ts`). Comments and docs only.
+
+Run at `a9bda4d7` plus that wording fix, on 2026-11-15:
+
+```text
+cd kernel && npm ci && npm test
+  Test Files  137 passed | 2 skipped (139)   Tests  4739 passed | 16 skipped (4755)
+cd kernel && npx tsc -p tsconfig.json
+  exit 0, no output
+bash scripts/check-docs.sh
+  check-docs: OK
+```
 
 ## The screens, looked at on the running app (2026-11-15, after the lane stopped)
 
@@ -282,6 +298,6 @@ Turned off (Studio has no delete): members `wright-walk-22a-one`, `wright-walk-2
 
 ## Verdict
 
-Every check of AC1 to AC5 passed at the final head `a0aaa8ef` (kernel side above), and the screens that were first left unobserved (step 2's held card and its ticks, step 4's inspector, AC2's inspector) were looked at on the running app and match.
+Every check of AC1 to AC5 passed at `a0aaa8ef`, the last commit that changes kernel logic (kernel side above; the later commits change wording, comments and one test, and the suite is green at the PR's head), and the screens that were first left unobserved (step 2's held card and its ticks, step 4's inspector, AC2's inspector) were looked at on the running app and match.
 
 Verdict: PASS for Validation 2
