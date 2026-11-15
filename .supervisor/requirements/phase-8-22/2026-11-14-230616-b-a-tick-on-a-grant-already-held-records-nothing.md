@@ -1,6 +1,8 @@
 # 22b — A tick on a grant already held records nothing
 
-## Status: ready
+## Status: parked
+
+**Not a bug (2026-11-15).** Launch Pad returned LP-NO-GO for this item and the owner aborted it. Verified on `main` at `1949901e`: a tick that adds no tool already records nothing and names no grant, also on a hand-edited file. `mergeUpdate` builds `merged.text` as a fresh rendering (`JSON.stringify(next, null, 2)`, `kernel/src/agents/charter-tools.ts`), `withConnectors` re-renders the same parsed file, and `mergeConnectorsGrant` returns the stored grant unchanged when nothing is added (`kernel/src/agents/settings.ts:233`), so `text !== merged.text` is false. The premise came from a static CI-review finding on PR #278 and was persisted without a reproduction; the process gap is filed as vikashruhilgit/loomwright#919. Kept parked so no folder run queues it again.
 
 **As** the owner of Loomwright Studio,
 **I want** an approval that ticks a tracker capability my crew member already holds to change nothing and say nothing was granted,
