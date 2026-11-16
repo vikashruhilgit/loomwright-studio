@@ -25,7 +25,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage, HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentMemoryDir, agentSettingsPath } from "../src/agents/index.js";
@@ -700,7 +700,8 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
       githubClient: new FakeGitHubClient({ tokenInfo: { login: "o", expires_at: null, permissions: null }, repos: [{ full_name: REPO, private: false }] }),
     };
     // The token mint is a daemon-wired option the typed `sessions` slot does not name (the exit walk passes it the same way).
-    const pluginDir = makePluginDir(tmp);
+    // The install under the home dir's .claude/, as on the owner's machine (item 23a): CI must run the shape that ships.
+    const pluginDir = makePluginDir(join(home, ".claude", "plugins", "cache"));
     writeFileSync(join(pluginDir, "scripts", "automate-next-step.sh"), "#!/bin/bash\n");
     const sessionOptions = { loomwrightPath: pluginDir, stopGraceMs: 10, sessionTokenMint };
     const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: sessionOptions, contributions }, d);
@@ -711,7 +712,8 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     const workspaces: Record<string, string> = {};
     const playbooks: Record<string, number> = {};
     // mason takes no boundary; ranger never pushes.
-    for (const [id, never] of [["mason", []], ["ranger", ["git_push"]]] as const) {
+    // ranger blocks settings_write as Wright's drafted charters do (item 23a): a driver call must still run.
+    for (const [id, never] of [["mason", []], ["ranger", ["git_push", "settings_write"]]] as const) {
       const workspace = makeCheckout(tmp, `ws-${id}`, `https://github.com/${REPO}.git`);
       workspaces[id] = workspace;
       expect(createAgent(store, dataDir, charter(id, workspace, never), { by: "owner", homeDir: home }, new Date(START))).toMatchObject({ ok: true, filesError: null });
@@ -833,6 +835,30 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(await run("Edit", { file_path: runFile, old_string: "mode: safe", new_string: "mode: auto-merge" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
     // The run session's decisions are recorded against the run session.
     expect(decisions(r, l.runId).map((p) => [p.tool, p.decision])).toEqual(expect.arrayContaining([["Skill", "allow"], ["Bash", "allow"], ["Bash", "deny"]]));
+  });
+
+  it("item 23a: with the install under ~/.claude and settings_write blocked, the run's admitted driver calls run; any other ~/.claude touch is still settings_write", async () => {
+    const r = await rig();
+    // The helper exists before the launch, so the manager admits it at its exact path.
+    const helpers = join(r.pluginDir, "scripts", "automate-helpers.sh");
+    writeFileSync(helpers, "#!/bin/bash\n");
+    const l = await launch(r, "ranger");
+    const run = gateOf(l.run);
+    const next = join(r.pluginDir, "scripts", "automate-next-step.sh");
+    const automateDir = join(r.workspaces["ranger"] as string, ".supervisor", "automate");
+    expect(r.pluginDir).toContain(`${sep}.claude${sep}`);
+    for (const command of [`bash ${helpers} lane-info`, `bash ${helpers} meta-entry`, `bash ${next} --resume ${automateDir} --session-id s1 --mode safe --inline-phases`]) {
+      expect(await run("Bash", { command }), command).toMatchObject({ permissionDecision: "allow" });
+    }
+    const BLOCKED = { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("settings_write") };
+    const claudeDir = join(r.pluginDir, "..", "..", "..");
+    // Another word naming ~/.claude in an admitted call is still read.
+    expect(await run("Bash", { command: `bash ${helpers} meta-entry ${join(claudeDir, "settings.json")}` })).toMatchObject(BLOCKED);
+    // Writing under ~/.claude, the install included, is still settings_write.
+    expect(await run("Write", { file_path: join(claudeDir, "settings.json"), content: "{}" })).toMatchObject(BLOCKED);
+    expect(await run("Write", { file_path: helpers, content: "#!/bin/bash\nrm -rf /\n" })).toMatchObject(BLOCKED);
+    // A non-admitted script under the install is not exempt (and not admitted either).
+    expect(await run("Bash", { command: `bash ${join(r.pluginDir, "scripts", "automate-lanes.sh")} lane-launch x` })).toMatchObject({ permissionDecision: "deny" });
   });
 
   it("review iteration 4: a run session never checks out a ref that would replace or add a run-state file; the gate asks git", async () => {

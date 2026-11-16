@@ -2825,7 +2825,7 @@ export class SessionManager {
           // The rail applies only after the policy allowed: it never widens a policy.
           const rail: ToolCallClass =
             d.decision === "allow"
-              ? classifyToolCall(input.tool_name, input.tool_input, { dataDir: this.#store.dataDir, homeDir: this.#homeDir, cwd: input.cwd })
+              ? classifyToolCall(input.tool_name, input.tool_input, { dataDir: this.#store.dataDir, homeDir: this.#homeDir, cwd: input.cwd, admittedScriptPaths: live.policy.admittedScriptPaths })
               : { kind: "ordinary" };
           // The never boundary is read first for an outward call: before the dry-run branch and any hold or grant.
           const boundary = rail.kind === "outward" ? boundaryDecision(live.policy, rail) : undefined;

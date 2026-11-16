@@ -1103,3 +1103,34 @@ describe("checkoutTargets: the words a run session's checkout could check out (r
     expect(decideToolUse(p, "Bash", { command: "gh pr view 7" })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
   });
 });
+
+describe("classifyToolCall: an admitted Loomwright script's own path is not an outward target (item 23a)", () => {
+  const home = "/Users/o";
+  const helpers = `${home}/.claude/plugins/cache/atelier/loomwright/17.38.0/scripts/automate-helpers.sh`;
+  const rail = { dataDir: "/data", homeDir: home, cwd: "/work", admittedScriptPaths: [helpers] };
+  const bare = { dataDir: "/data", homeDir: home, cwd: "/work" };
+
+  it("reads `bash <admitted path> …` as ordinary, unquoted or double-quoted", () => {
+    expect(classifyToolCall("Bash", { command: `bash ${helpers} lane-info` }, rail)).toEqual({ kind: "ordinary" });
+    expect(classifyToolCall("Bash", { command: `bash "${helpers}" meta-entry` }, rail)).toEqual({ kind: "ordinary" });
+  });
+
+  it("still reads it as settings_write with no admitted paths (the bug, before the manager passes them)", () => {
+    expect(classifyToolCall("Bash", { command: `bash ${helpers} lane-info` }, bare)).toMatchObject({ kind: "outward", action: "Bash naming ~/.claude/" });
+  });
+
+  it("exempts only that one word: another ~/.claude word, another program or a path that differs is still read", () => {
+    expect(classifyToolCall("Bash", { command: `bash ${helpers} meta-entry ${home}/.claude/settings.json` }, rail)).toMatchObject({ kind: "outward" });
+    expect(classifyToolCall("Bash", { command: `/bin/bash ${helpers} lane-info` }, rail)).toMatchObject({ kind: "outward" });
+    expect(classifyToolCall("Bash", { command: `bash ${helpers}x lane-info` }, rail)).toMatchObject({ kind: "outward" });
+    expect(classifyToolCall("Bash", { command: `cat ${helpers}` }, rail)).toMatchObject({ kind: "outward" });
+  });
+
+  it("never exempts a write: Write or Edit of the admitted script is still settings_write", () => {
+    expect(classifyToolCall("Write", { file_path: helpers, content: "x" }, rail)).toMatchObject({ kind: "outward" });
+  });
+
+  it("keeps the merge block and the outward git forms in an admitted call's other words", () => {
+    expect(classifyToolCall("Bash", { command: "gh pr merge 7 --squash" }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
+  });
+});
