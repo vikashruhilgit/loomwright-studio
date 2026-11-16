@@ -204,6 +204,56 @@ describe("decideToolUse: Loomwright driver scripts by exact path (AC15)", () => 
       expect(runBash(command), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
     }
   });
+
+  it("denies an admitted script's merging, pushing or spawning subcommand however it is spelled (review iteration 1)", () => {
+    const meta = `${install}/scripts/meta-sync.sh`;
+    const both: ToolPolicy = { ...run, admittedScriptPaths: [next, helpers, meta] };
+    const bash = (command: string) => decideToolUse(both, "Bash", { command });
+    // The reproduction: the plugin's one `gh pr merge --squash` is `gate-eval`, reading a ctx file the session can write.
+    for (const command of [
+      `bash ${helpers} gate-eval https://github.com/o/r/pull/1 /tmp/ctx.json --root /x`,
+      `bash "${helpers}" gate-eval https://github.com/o/r/pull/1 /tmp/ctx.json`,
+      `bash ${helpers}  gate-eval https://github.com/o/r/pull/1 /tmp/ctx.json`,
+      `bash ${helpers} \tgate-eval x y`,
+      `bash ${helpers} trail-pr /w/run.md --reason done`,
+      `bash ${helpers} closeout /w/run.md item https://github.com/o/r/pull/1`,
+      `bash ${helpers} closeout-others /w/.supervisor/automate`,
+      `bash ${helpers} finalize-empty /w/run.md`,
+      `bash ${helpers} wave-build /w/run.md`,
+      `bash ${helpers} lane-launch /w-lanes/r/L1 --owner-command x`,
+      `bash ${helpers} lane-create /w/run.md item 1`,
+      `bash ${helpers} phase-launch x`,
+      `bash ${helpers} lane-convert-ready /w-lanes/r/L1`,
+      // A spelling bash would turn into a denied name is refused too (fail closed).
+      `bash ${helpers} "gate-eval" x y`,
+      `bash ${helpers} 'gate-eval' x y`,
+      `bash ${helpers} gate\\-eval x y`,
+      `bash ${helpers} gate-ev?l x y`,
+      `bash ${helpers} gate-eva[l] x y`,
+      `bash ${helpers} {gate-eval,} x y`,
+      `bash ${helpers} gate"-eval" x y`,
+      // meta-sync.sh reads its subcommand at any position.
+      `bash ${meta} push`,
+      `bash ${meta} --root /w push`,
+      `bash ${meta} --root "/w" status`,
+    ]) {
+      expect(bash(command), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+    // The legitimate calls still run: the drivers, the start's own helper calls, and a denied name as a later argument of automate-helpers.sh.
+    for (const command of [
+      `bash ${next} --resume /w/.supervisor/automate --run latest`,
+      `bash ${next} --merge-parked /w/.supervisor/automate --run r1`,
+      `bash ${helpers} meta-entry`,
+      `bash ${helpers} lane-info`,
+      `bash ${helpers} resume-glob /w/.supervisor/automate --finalize`,
+      `bash ${helpers} progress-append /w/run.md "closeout gate-eval trail-pr"`,
+      `bash ${helpers}`,
+      `bash ${meta} pull --root /w`,
+      `bash ${meta} status`,
+    ]) {
+      expect(bash(command), command).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    }
+  });
 });
 
 describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {

@@ -8,7 +8,9 @@
 // reuses the row's recorded `loomwright_path`, so an update is picked up at the
 // next launch, never mid-session). `decideToolUse` (`policy.ts`) then admits
 // `bash <path>` or `bash "<path>"`, optionally followed by arguments, only for a
-// path in that set, and only after its shell-metacharacter check.
+// path in that set, only after its shell-metacharacter check, and never with a
+// subcommand that merges, pushes or starts an unowned process
+// (`LOOMWRIGHT_DENIED_SUBCOMMANDS`).
 //
 // It never admits a prefix: not `bash`, and not `bash <install>/scripts/`. A
 // name is kept only when its path has no `..` segment, is a regular file, and
@@ -94,6 +96,72 @@ export function loomwrightScriptPaths(installPath: string, names: readonly strin
   return { ok: true, paths: Object.freeze(paths) };
 }
 
+/**
+ * The subcommands an admitted script may never run when the SESSION calls it
+ * directly, by script basename (fixed: part of the safety kernel, the same in
+ * every run policy). Read from the Loomwright 17.38.0 install: each one merges,
+ * pushes, opens a PR, or starts a headless `claude` or a detached watcher the
+ * kernel does not own. The drivers (`automate-next-step.sh`,
+ * `review-heal-next-step.sh`) still call them internally where Loomwright's
+ * own flow needs them (the `--merge-parked` gate's `gate-eval`, a close-out's
+ * trail PR), which the rail never sees; only the session's own direct call is
+ * refused.
+ *
+ * - `automate-helpers.sh` reads only its first argument as the subcommand
+ *   (`main "$@"`): `gate-eval` (the plugin's one `gh pr merge --squash`);
+ *   `trail-pr` (commit, `git push`, `gh pr create`) and the three that reach it
+ *   (`closeout`, `closeout-others`, `finalize-empty`); `wave-build` (forwarded
+ *   to `automate-wave.sh`: `git push -u`, `gh pr create`); and every
+ *   subcommand it forwards to `automate-lanes.sh` except the read-only
+ *   `lane-info` the start runs (`lane-launch`, `lane-answer`, `phase-launch`
+ *   and `phase-answer` start or resume headless `claude -p`; `lane-create`
+ *   clones; `lane-convert-ready` and `lane-remove` run `trail-pr`; the rest are
+ *   `--parallel` coordinator steps a safe-mode run never takes).
+ * - `meta-sync.sh` takes its subcommand at any position, so any argument
+ *   word `push` is refused (it pushes the metadata branch).
+ */
+type DeniedSubcommands = { readonly anyPosition: boolean; readonly subcommands: readonly string[] };
+
+const LANE_FORWARDED_SUBCOMMANDS: readonly string[] = [
+  "lane-create", "lane-launch", "relay-hook", "lane-answer", "lane-remove", "lane-convert-ready", "lane-park", "init-check",
+  "pick-guard", "branch-check", "lane-status", "lane-feed", "lane-readiness", "lane-drain-check", "validation-gate",
+  "lane-park-notify", "lane-wait", "phase-check", "phase-launch", "phase-wait", "phase-answer", "fleet-closeout", "wave-plan",
+];
+
+export const LOOMWRIGHT_DENIED_SUBCOMMANDS: Readonly<Record<string, DeniedSubcommands>> = Object.freeze({
+  "automate-helpers.sh": Object.freeze({
+    anyPosition: false,
+    subcommands: Object.freeze(["gate-eval", "trail-pr", "closeout", "closeout-others", "finalize-empty", "wave-build", ...LANE_FORWARDED_SUBCOMMANDS]),
+  }),
+  "meta-sync.sh": Object.freeze({ anyPosition: true, subcommands: Object.freeze(["push"]) }),
+});
+
+/**
+ * An argument word bash passes on exactly as written: no quote, backslash,
+ * glob (`*`, `?`, `[`), brace or tilde, so a denied subcommand cannot be
+ * spelled past the check (`"gate-eval"`, `gate-ev?l`, `{gate-eval,}`).
+ */
+const PLAIN_WORD = /^[A-Za-z0-9_./@%+=:,-]*$/;
+
+/**
+ * True when `args` (the text after the script's path, as the session wrote it)
+ * asks `script` for a subcommand `LOOMWRIGHT_DENIED_SUBCOMMANDS` refuses, or
+ * when a word that must be read is not a `PLAIN_WORD` (fail closed: bash could
+ * read it as a denied name). Pure: no I/O.
+ */
+function asksDeniedSubcommand(script: string, args: string): boolean {
+  const denied = LOOMWRIGHT_DENIED_SUBCOMMANDS[basenameOf(script)];
+  if (denied === undefined) return false;
+  const words = args.split(/[ \t]+/).filter((w) => w !== "");
+  const read = denied.anyPosition ? words : words.slice(0, 1);
+  return read.some((w) => !PLAIN_WORD.test(w) || denied.subcommands.includes(w));
+}
+
+/** The last `/`-separated segment of an absolute path (pure; `node:path`'s `basename` reads the same here). */
+function basenameOf(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
 /** The program word a driver call starts with, and the one space after it. */
 const BASH_WORD = "bash ";
 
@@ -113,9 +181,12 @@ const PLAIN_PATH = /^\/[A-Za-z0-9_./@%+=:,-]*$/;
  * double-quoted one is absolute too (the session's cwd never picks the file)
  * and holds no backslash, `$` or backtick. A single-quoted path,
  * another program, a flag before the path (`bash -c`, `bash -x`), a second
- * space, or anything glued to the closing quote is no match. The caller runs
- * the shell-metacharacter check first (`decideToolUse`): this does not read
- * the arguments.
+ * space, or anything glued to the closing quote is no match. Nor is a call
+ * that asks the script for a subcommand `LOOMWRIGHT_DENIED_SUBCOMMANDS`
+ * refuses (the caller then denies it `bash_prefix_not_allowed`, as for any
+ * unlisted command). The caller runs the shell-metacharacter check first
+ * (`decideToolUse`); beyond the denied subcommands this does not read the
+ * arguments.
  */
 export function matchLoomwrightScript(command: string, admitted: readonly string[]): string | undefined {
   if (admitted.length === 0 || !command.startsWith(BASH_WORD)) return undefined;
@@ -135,5 +206,6 @@ export function matchLoomwrightScript(command: string, admitted: readonly string
     after = space === -1 ? "" : rest.slice(space);
   }
   if (after !== "" && !after.startsWith(" ")) return undefined;
-  return admitted.includes(path) ? path : undefined;
+  if (!admitted.includes(path)) return undefined;
+  return asksDeniedSubcommand(path, after) ? undefined : path;
 }

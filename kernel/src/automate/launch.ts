@@ -172,14 +172,22 @@ const RUN_TOOLS: readonly string[] = Object.freeze(["Skill", "Read", "Write", "E
  * leaving out `test-*.sh`, the Loomwright-repo-only scripts (`bump-version.sh`,
  * `release-refold.sh`, `check-doc-currency.sh`, `build-capabilities.sh`) and the
  * host project's `ci-local.sh`; plus `review-heal-next-step.sh`, which the run's
- * review-heal drain calls. A script the run calls by another path, or that is not
- * listed, stays denied (a live-run finding, never a wider grant).
+ * review-heal drain calls. Also left out, because each acts past the kernel when
+ * the session calls it directly and safe mode (inline phases, no lanes)
+ * never needs it: `automate-lanes.sh` (`lane-launch` starts headless `claude -p`
+ * lanes, invariant 2), `automate-wave.sh` (`wave-build` pushes and opens a PR
+ * past the approval gate), `automate-merge-watch.sh` (a detached
+ * watcher whose close-out pushes a trail PR and posts a webhook; the driver arms
+ * it itself) and `lane-sampler.sh` (a `--parallel` lane sampler that posts a
+ * webhook). An admitted script's own merging, pushing or spawning subcommands are
+ * refused too (`LOOMWRIGHT_DENIED_SUBCOMMANDS`, `sessions/loomwright-scripts.ts`).
+ * A script the run calls by another path, or that is not listed, stays denied (a
+ * live-run finding, never a wider grant).
  */
 const AUTOMATE_RUN_SCRIPTS: readonly string[] = Object.freeze([
-  "automate-dismissed.sh", "automate-helpers.sh", "automate-lanes.sh", "automate-merge-watch.sh", "automate-next-step.sh",
-  "automate-wave.sh", "classify-risk.sh", "fix-floor.sh", "guard-lane-wait-armed.sh", "lane-policy.sh", "lane-sampler.sh",
-  "meta-sync.sh", "progress-line-match.sh", "read-token-ledger.sh", "resolve-base-branch.sh", "review-heal-next-step.sh",
-  "rules-gate-verdict.sh", "run-lock.sh",
+  "automate-dismissed.sh", "automate-helpers.sh", "automate-next-step.sh", "classify-risk.sh", "fix-floor.sh",
+  "guard-lane-wait-armed.sh", "lane-policy.sh", "meta-sync.sh", "progress-line-match.sh", "read-token-ledger.sh",
+  "resolve-base-branch.sh", "review-heal-next-step.sh", "rules-gate-verdict.sh", "run-lock.sh",
 ]);
 
 /**
@@ -207,6 +215,8 @@ export const AUTOMATE_RUN_POLICY: ToolPolicy = Object.freeze({
  * `dispatch-pr-review.sh` and `dispatch-pr-postmortem.sh` each start a detached
  * headless `claude` process (a session the kernel does not own, invariant 2),
  * and `send-webhook.sh` posts outward past the approval gate (invariant 3).
+ * `automate-helpers.sh`'s merging, pushing and spawning subcommands are refused
+ * here as in every run policy (`LOOMWRIGHT_DENIED_SUBCOMMANDS`).
  */
 const REVIEW_PR_RUN_SCRIPTS: readonly string[] = Object.freeze([
   "automate-helpers.sh", "ci-run-probe.sh", "classify-bot-review.sh", "drain-gh-read.sh", "drain-rounds.sh",
@@ -228,17 +238,14 @@ export const REVIEW_PR_RUN_POLICY: ToolPolicy = Object.freeze({
 
 /**
  * The scripts `/loomwright:automate --merge-parked <run_id>` calls, by basename
- * (AC15). The same derivation as `AUTOMATE_RUN_SCRIPTS` (the same command file,
- * skill and driver), without `review-heal-next-step.sh` (a merge runs no drain) and
- * without `automate-lanes.sh`, which starts headless `claude` lane processes: the
- * driver refuses a merge of a lane or a `--parallel` parent, so a merge never needs it.
+ * (AC15). `AUTOMATE_RUN_SCRIPTS` (the same command file, skill and driver, and the
+ * same exclusions) without `review-heal-next-step.sh` (a merge runs no drain). The
+ * merge itself is Loomwright's `gate-eval` inside the driver; the session's own
+ * `automate-helpers.sh gate-eval` is refused (`LOOMWRIGHT_DENIED_SUBCOMMANDS`).
  */
-const MERGE_PARKED_RUN_SCRIPTS: readonly string[] = Object.freeze([
-  "automate-dismissed.sh", "automate-helpers.sh", "automate-merge-watch.sh", "automate-next-step.sh",
-  "automate-wave.sh", "classify-risk.sh", "fix-floor.sh", "guard-lane-wait-armed.sh", "lane-policy.sh", "lane-sampler.sh",
-  "meta-sync.sh", "progress-line-match.sh", "read-token-ledger.sh", "resolve-base-branch.sh",
-  "rules-gate-verdict.sh", "run-lock.sh",
-]);
+const MERGE_PARKED_RUN_SCRIPTS: readonly string[] = Object.freeze(
+  AUTOMATE_RUN_SCRIPTS.filter((name) => name !== "review-heal-next-step.sh"),
+);
 
 /**
  * The `merge_parked` run session's policy: what Loomwright's merge of ONE parked

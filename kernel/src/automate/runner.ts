@@ -218,7 +218,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
     name: "kernel_automate_merge_check",
     job: "ask_for_merge",
     description:
-      "Read-only. Whether Loomwright may merge one parked pull request now. Answers go, or wait / park with the reason. On go the kernel queues the merge and starts it as its own session (run: started_by_kernel): /loomwright:automate --merge-parked <run_id>, with the extra flag only where the owner recorded one for a repository GitHub cannot protect, shown as invocation for display. Do not run it yourself, and end your turn. It answers go only when the owner's approval rule for the repository is met at the head Loomwright marked READY, no run is live and the item is parked awaiting_merge. You never merge: Loomwright's own gate decides.",
+      "Whether Loomwright may merge one parked pull request now. It reads only; on go it queues the kernel's run. Answers go, or wait / park with the reason. On go the kernel queues the merge and starts it as its own session (run: started_by_kernel): /loomwright:automate --merge-parked <run_id>, with the extra flag only where the owner recorded one for a repository GitHub cannot protect, shown as invocation for display. Do not run it yourself, and end your turn. It answers go only when the owner's approval rule for the repository is met at the head Loomwright marked READY, no run is live and the item is parked awaiting_merge. You never merge: Loomwright's own gate decides.",
     shape: { repo: repoShape, pr: prShape },
     requiresConnector: "github",
     requiresConnectorLevel: "write",

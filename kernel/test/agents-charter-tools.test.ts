@@ -1023,7 +1023,7 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect(plain(shown).slice(0, 10)).toEqual([
       'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
       "job: Ask for a merge",
-      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "  - Whether Loomwright may merge one parked pull request now.",
       "job: Read a PR",
       "  - Read one pull request's metadata and description from GitHub (read-only).",
       "job: General",
@@ -1062,7 +1062,7 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect(plain(heldDisplay(h.store))).toEqual([
       `Update crew member mason ("Mason"), settings sha256 ${sha256.slice(0, 12)}, proposed by Wright`,
       "job: Ask for a merge (added)",
-      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "  - Whether Loomwright may merge one parked pull request now.",
       "  - Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio.",
       "job: Read a PR",
       "  - Read one pull request's metadata and description from GitHub (read-only).",

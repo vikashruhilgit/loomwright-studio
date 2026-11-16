@@ -18,14 +18,14 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HookCallback, HookInput, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
 import { SessionManager } from "../src/sessions/index.js";
 import { LoomwrightSessionError } from "../src/sessions/loomwright-path.js";
 import { Store } from "../src/store/index.js";
 import { events } from "./loop-helpers.js";
-import { fakeSessions, startParams, stubProvider } from "./session-fakes.js";
+import { bashGate, fakeSessions, startParams, stubProvider } from "./session-fakes.js";
 import type { FakeCall } from "./session-fakes.js";
 import {
   EXIT_TEST_KEY,
@@ -263,13 +263,6 @@ describe("a resumed run session keeps its recorded install's admitted scripts (A
     return new SessionManager({ store, authProvider: stubProvider(), loomwrightPath, stopGraceMs: 10, baseEnv: { PATH: "/usr/bin" } }, { ...fakes.deps, homeDir: join(tmp, "home") });
   }
 
-  function bashGate(call: FakeCall) {
-    const hook = call.options.hooks?.PreToolUse?.[0]?.hooks[0] as HookCallback;
-    return async (command: string) => {
-      const input = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, tool_use_id: "toolu_1", session_id: "s", transcript_path: "/dev/null", cwd } as unknown as HookInput;
-      return ((await hook(input, "toolu_1", { signal: new AbortController().signal })) as { hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string } }).hookSpecificOutput;
-    };
-  }
 
   /** Start a run session on `first`, end its attempt, and leave the row `interrupted`, as a kernel kill leaves it. */
   async function interruptedRun(first: string, fakes: ReturnType<typeof fakeSessions>): Promise<number> {
@@ -291,7 +284,7 @@ describe("a resumed run session keeps its recorded install's admitted scripts (A
     const handle = await restarted.resumeSession(id, { permissionMode: "default", cwd, policy: AUTOMATE_RUN_POLICY, closeInputOnResult: false });
     const call = fakes.calls[fakes.calls.length - 1] as FakeCall;
     expect(call.options.plugins).toEqual([{ type: "local", path: old.dir }]);
-    const gate = bashGate(call);
+    const gate = bashGate(call, cwd);
     expect(await gate(`bash ${old.next} --resume ${join(cwd, ".supervisor", "automate")}`)).toMatchObject({ permissionDecision: "allow" });
     expect(await gate(`bash ${now.next} --resume ${join(cwd, ".supervisor", "automate")}`)).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
     // A resume attempt that ends before any output is retried, so this one produces output and a result first.

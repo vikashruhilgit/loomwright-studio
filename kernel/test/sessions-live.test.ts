@@ -22,7 +22,6 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SUBSCRIPTION_TOKEN_ID, selectAuthProvider } from "../src/auth/index.js";
 import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
@@ -34,7 +33,7 @@ import type { ToolPolicy } from "../src/sessions/types.js";
 import { Store } from "../src/store/index.js";
 import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer } from "../src/tools/server.js";
 import { count, events } from "./loop-helpers.js";
-import { fakeSessions, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
+import { bashGate, fakeSessions, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
 import type { FakeCall } from "./session-fakes.js";
 
 const LIVE = process.env.STUDIO_LIVE === "1";
@@ -64,14 +63,6 @@ describe("a started run session's admitted Loomwright scripts (AC15/AC16, on fak
     return { fakes, manager };
   }
 
-  /** `call`'s PreToolUse gate for a Bash command, as the CLI would call it from `tmp`. */
-  function bashGate(call: FakeCall) {
-    const hook = call.options.hooks?.PreToolUse?.[0]?.hooks[0] as HookCallback;
-    return async (command: string) => {
-      const input = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, tool_use_id: "toolu_1", session_id: "s", transcript_path: "/dev/null", cwd: tmp } as unknown as HookInput;
-      return ((await hook(input, "toolu_1", { signal: new AbortController().signal })) as { hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string } }).hookSpecificOutput;
-    };
-  }
 
   it("holds the exact paths built from the session's own loomwrightPath: the run's drivers are admitted, nothing else", async () => {
     const next = join(pluginDir, "scripts", "automate-next-step.sh");
@@ -83,7 +74,7 @@ describe("a started run session's admitted Loomwright scripts (AC15/AC16, on fak
     // The SDK loads the same install string the admitted set is built from.
     const call = fakes.calls[0] as FakeCall;
     expect(call.options.plugins).toEqual([{ type: "local", path: pluginDir }]);
-    const gate = bashGate(call);
+    const gate = bashGate(call, tmp);
     expect(await gate(`bash ${next} --resume ${join(tmp, ".supervisor", "automate")}`)).toMatchObject({ permissionDecision: "allow" });
     expect(await gate(`bash "${helpers}" meta-entry`)).toMatchObject({ permissionDecision: "allow" });
     for (const command of [`bash ${unlisted}`, `bash ${join(tmp, "scripts", "automate-next-step.sh")}`, "bash -c id", `bash ${pluginDir}/scripts/../scripts/automate-next-step.sh`]) {
@@ -114,7 +105,7 @@ describe("a started run session's admitted Loomwright scripts (AC15/AC16, on fak
     const { fakes, manager } = setup();
     const policy = { allowedTools: ["Bash"], allowedBashPrefixes: [], admittedScriptPaths: [evil] } as ToolPolicy;
     const handle = await manager.startSession(startParams(tmp, { policy, closeInputOnResult: false }));
-    expect(await bashGate(fakes.calls[0] as FakeCall)(`bash ${evil}`)).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
+    expect(await bashGate(fakes.calls[0] as FakeCall, tmp)(`bash ${evil}`)).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
     (fakes.calls[0] as FakeCall).stream.end();
     await handle.done;
   });

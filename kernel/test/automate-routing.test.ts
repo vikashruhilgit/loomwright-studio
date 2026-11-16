@@ -126,7 +126,9 @@ describe("the routing part", () => {
     // Phase 8 item 22g: the old "starts no session" sentence is gone, and no route tells the session to run the command itself.
     expect(description).not.toContain("starts no session and pushes nothing");
     expect(description).not.toContain("run in this session");
-    expect(description.startsWith("Read-only.")).toBe(true);
+    // Review iteration 1: no longer "Read-only." (a fix queues the kernel's run); it says it reads only and queues.
+    expect(description.startsWith("Read-only.")).toBe(false);
+    expect(description).toContain("It reads only; on a fix it queues the kernel's run.");
   });
 
   it("refuses a repo that is not <owner>/<repo> and a pr that is not a positive integer, before any read", async () => {

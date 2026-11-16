@@ -85,16 +85,16 @@ describe("the catalogue covers every registered tool (AC1, AC6)", () => {
     }
   });
 
-  it("AC1: every tool has a non-empty purpose that is never just Read-only. (the three Read-only. tools use their next sentence, marked read only)", () => {
+  it("AC1: every tool has a non-empty purpose that is never just Read-only. (a Read-only. tool uses its next sentence, marked read only)", () => {
     for (const t of CATALOGUE.tools) {
       expect(t.purpose.trim(), t.name).not.toBe("");
       expect(t.purpose, t.name).not.toMatch(/^Read-only\./);
       expect(t.purpose, t.name).not.toMatch(/\n/);
     }
     const purpose = (name: string) => CATALOGUE.tools.find((t) => t.name === name)?.purpose;
-    expect(purpose("kernel_automate_merge_check")).toBe("Whether Loomwright may merge one parked pull request now (read only).");
+    expect(purpose("kernel_automate_merge_check")).toBe("Whether Loomwright may merge one parked pull request now.");
     expect(purpose("kernel_pr_route")).toBe(
-      "Where a comment on a pull request may be acted on, read fresh on every call (run state and the pull request's author, never a stored copy) (read only).",
+      "Where a comment on a pull request may be acted on, read fresh on every call (run state and the pull request's author, never a stored copy).",
     );
     expect(purpose("kernel_automate_state")).toMatch(/^Loomwright's \/automate state for your workspace that is a clone of the repo: .* \(read only\)\.$/);
     // Every purpose is its own tool's description's first sentence (or, after Read-only., the next): one source, never rewritten.
@@ -242,7 +242,7 @@ describe("the catalogue in Wright's drafting context (AC2, AC9)", () => {
     const job = (id: string) => lines.indexOf(`Job ${id} "${TOOL_JOBS[id as keyof typeof TOOL_JOBS]}":`);
     expect(lines.slice(job("ask_for_merge"), job("ask_for_merge") + 3)).toEqual([
       'Job ask_for_merge "Ask for a merge":',
-      "- kernel_automate_merge_check: Whether Loomwright may merge one parked pull request now (read only). [needs the github connector's write grant]",
+      "- kernel_automate_merge_check: Whether Loomwright may merge one parked pull request now. [needs the github connector's write grant]",
       "- kernel_merge_approval_request: Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio. [needs the github connector's write grant]",
     ]);
     expect(lines).toContain("- kernel_github_pr_get: Read one pull request's metadata and description from GitHub (read-only). [needs the github connector grant]");
@@ -293,7 +293,7 @@ describe("the job-grouped display lines (AC3's grouping, AC9's fallback)", () =>
     const granted = ["Read", `${K}kernel_task_list`, `${K}kernel_github_pr_comments`, `${K}kernel_automate_merge_check`, `${K}kernel_github_pr_get`, `${K}kernel_mcp_jira_x`, `${K}kernel_github_pr_get`];
     expect(jobDisplayLines(granted, CATALOGUE)).toEqual([
       "job: Ask for a merge",
-      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "  - Whether Loomwright may merge one parked pull request now.",
       "job: Read a PR",
       "  - Read one pull request's metadata and description from GitHub (read-only).",
       "  - Read the comments on one pull request from GitHub (read-only): the conversation's comments, then the review comments on files.",
@@ -313,7 +313,7 @@ describe("the job-grouped display lines (AC3's grouping, AC9's fallback)", () =>
     expect(lines).toContain("  - Read one pull request's metadata and description from GitHub (read-only).");
     expect(lines).toContain(`  - Read the comments on one pull request from GitHub (read-only): the conversation's comments, then the review comments on files.${DISPLAY_ADDED}`);
     // Under an added job only the job line is marked.
-    expect(lines[1]).toBe("  - Whether Loomwright may merge one parked pull request now (read only).");
+    expect(lines[1]).toBe("  - Whether Loomwright may merge one parked pull request now.");
     expect(lines.slice(-2)).toEqual(["  - kernel_mcp_old", `  - kernel_mcp_new${DISPLAY_ADDED}`]);
     // The compact form: one mark per job, an added job's or (no purpose line to mark) a kept job's that gains a tool (General's swap gains kernel_task_get).
     expect(jobDisplayLines(next, CATALOGUE, false, held)).toEqual([

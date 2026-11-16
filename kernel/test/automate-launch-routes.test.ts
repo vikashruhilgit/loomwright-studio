@@ -41,7 +41,7 @@ import type { GitHubPull, GitHubPullMergeState } from "../src/integrations/types
 import { EventLoop, enqueueEvent, getQueueRow, getWorkStep } from "../src/loop/index.js";
 import type { EventSessions } from "../src/loop/types.js";
 import { AdmissionRefusedError, SessionError, SessionManager, decideToolUse } from "../src/sessions/index.js";
-import type { SessionHandle, SessionRow, StartSessionParams } from "../src/sessions/index.js";
+import type { SessionHandle, SessionRow, StartSessionParams, ToolPolicy } from "../src/sessions/index.js";
 import { LoomwrightSessionError } from "../src/sessions/index.js";
 import type { SessionTokenMint } from "../src/sessions/github-session-auth.js";
 import { classifyToolCall } from "../src/sessions/policy.js";
@@ -216,6 +216,10 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
       // Each starts a detached headless `claude` (a session the kernel does not own) or posts outward past the gate.
       for (const s of ["dispatch-pr-review.sh", "dispatch-pr-postmortem.sh", "send-webhook.sh", "automate-lanes.sh"]) expect(list, `${name} ${s}`).not.toContain(s);
     }
+    // Review iteration 1: none of the three admits a script that pushes, spawns a lane or a detached watcher, or posts a webhook.
+    for (const [name, list] of [["automate", AUTOMATE_RUN_POLICY.loomwrightScripts ?? []], ["review", review], ["merge", merge]] as const) {
+      for (const s of ["automate-lanes.sh", "automate-wave.sh", "automate-merge-watch.sh", "lane-sampler.sh", "automate-trail.sh"]) expect(list, `${name} ${s}`).not.toContain(s);
+    }
     // A merge runs no drain.
     expect(merge).not.toContain("review-heal-next-step.sh");
     // A name list admits nothing by itself: with no admitted paths (the manager's alone), a driver call is denied.
@@ -230,6 +234,22 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
     }
     expect(classifyToolCall("Bash", { command: "git push origin feature/x" }, rail)).toMatchObject({ kind: "outward", action: "git push" });
     expect(classifyToolCall("Bash", { command: "gh pr merge 7 --squash" }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
+  });
+
+  it("deny the session's own `automate-helpers.sh gate-eval` (the plugin's only merge) in every run policy, and still admit the drivers' first calls (review iteration 1)", () => {
+    const install = "/lw";
+    const withPaths = (policy: ToolPolicy): ToolPolicy => ({ ...policy, admittedScriptPaths: (policy.loomwrightScripts ?? []).map((n) => `${install}/scripts/${n}`) });
+    const helpers = `${install}/scripts/automate-helpers.sh`;
+    for (const [name, policy] of [["automate", AUTOMATE_RUN_POLICY], ["review", REVIEW_PR_RUN_POLICY], ["merge", MERGE_PARKED_RUN_POLICY]] as const) {
+      const p = withPaths(policy);
+      for (const sub of ["gate-eval https://github.com/o/r/pull/1 /tmp/ctx.json --root /x", "trail-pr /w/run.md --reason done", "closeout-others /w/.supervisor/automate", "wave-build /w/run.md", "lane-launch /w-lanes/r/L1"]) {
+        expect(decideToolUse(p, "Bash", { command: `bash ${helpers} ${sub}` }), `${name} ${sub}`).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+      }
+      expect(decideToolUse(p, "Bash", { command: `bash ${helpers} meta-entry` }), name).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    }
+    expect(decideToolUse(withPaths(AUTOMATE_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/automate-next-step.sh --resume /w/.supervisor/automate` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(decideToolUse(withPaths(MERGE_PARKED_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/automate-next-step.sh --merge-parked /w/.supervisor/automate --run r1` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(decideToolUse(withPaths(REVIEW_PR_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/review-heal-next-step.sh --pr https://github.com/o/r/pull/7` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
   });
 
   it("build the prompts from checked fields only", () => {
