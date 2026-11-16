@@ -1,4 +1,4 @@
-// Phase 8 item 22g, subtask 2: the kernel launches the triage fix and the merge (D44's path, D45 proposed).
+// Phase 8 item 22g, subtask 2: the kernel launches the triage fix and the merge (D44's path, D45).
 //
 //   - AC1: `kernel_pr_route` answering `automate_fix` (or `review_pr`) to a live, write-granted playbook session
 //     queues one `automate_run` event of kind `review_pr`, and the kernel starts ONE session with the prompt

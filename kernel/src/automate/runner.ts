@@ -6,7 +6,7 @@
 // brain's handler routes that event to `./launch.ts`, which starts the `/automate`
 // run as its own kernel session (D44, which supersedes D43's "the session runs
 // `/automate` itself"). The merge check's `go` queues the kernel's
-// `merge_parked` run the same way (proposed D45, phase 8 item 22g): one `message` event whose
+// `merge_parked` run the same way (D45, phase 8 item 22g): one `message` event whose
 // `automate_run` payload is the kind, the repo, the PR, the parked run's id, the
 // checkout and the calling session's attribution, so the kernel starts
 // `/loomwright:automate --merge-parked <run_id>` as its own session and the crew
@@ -230,7 +230,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
         { store: ctx.store, now: ctx.now, ...(deps.client === undefined ? {} : { client: deps.client }) },
       );
       if (answer.answer !== "go") return { repo: args.repo, pr: args.pr, ...answer };
-      // `go`: the kernel's merge run (proposed D45, extending D44's path). The payload carries the run id `mergeCheck` read (an `isRunId`),
+      // `go`: the kernel's merge run (D45, extending D44's path). The payload carries the run id `mergeCheck` read (an `isRunId`),
       // never a flag: the launch reads `loomwrightMergeFlags` for the repo again when it starts the session.
       const run: MergeParkedRunPayload = {
         kind: "merge_parked",

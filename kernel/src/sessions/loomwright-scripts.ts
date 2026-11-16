@@ -1,5 +1,5 @@
 // The Loomwright driver and helper scripts a kernel run policy admits, by exact
-// path (proposed D45, phase 8 item 22g, AC15/AC16). A run policy constant names its scripts
+// path (D45, phase 8 item 22g, AC15/AC16). A run policy constant names its scripts
 // by basename (`ToolPolicy.loomwrightScripts`, for example `AUTOMATE_RUN_POLICY`
 // in `automate/launch.ts`); the session manager turns those names plus the
 // install the session itself loads (its `loomwrightPath`, the one passed to

@@ -2,7 +2,7 @@
 // "the playbook's own run session runs `/automate`; no kernel tool or approval
 // starts a session"): the KERNEL starts Loomwright's commands for a live
 // playbook's crew member, as ordinary kernel-owned SDK sessions. Three kinds
-// (D44, extended by proposed D45 to `review_pr` and `merge_parked`; phase 8
+// (D44, extended by D45 to `review_pr` and `merge_parked`; phase 8
 // item 22g), one path, one payload key and one work step:
 //   - `backlog`: `/automate` over the tickets `kernel_automate_prepare` wrote
 //     (the default when the payload names no `kind`, so an event queued before
