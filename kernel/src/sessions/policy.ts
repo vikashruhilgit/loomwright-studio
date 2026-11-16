@@ -1,5 +1,6 @@
 import { basename, resolve } from "node:path";
 import { firmlinkForms, withoutFirmlink } from "../protected-paths.js";
+import { matchLoomwrightScript } from "./loomwright-scripts.js";
 import type { ToolPolicy } from "./types.js";
 
 export type ToolDecisionReason =
@@ -62,6 +63,12 @@ const SHELL_METACHARACTERS = /[;&|<>()$`\n\r]/;
  *   string, contains no shell metacharacter, and equals an allowlisted prefix
  *   or starts with it followed by a space. Empty or whitespace-only prefixes
  *   are ignored (they would match anything starting with a space).
+ * - A run policy's Loomwright scripts (phase 8 item 22g): with no shell
+ *   metacharacter, `bash <path>` or `bash "<path>"` (then nothing or a space
+ *   and arguments) is allowed (`bash_prefix_allowed`) only when `<path>` is
+ *   exactly one of `admittedScriptPaths`, which the session manager alone
+ *   fills (`matchLoomwrightScript`, `loomwright-scripts.ts`). `bash` itself is
+ *   never a prefix here.
  * - Allowing a program that runs other programs grants arbitrary execution
  *   through its arguments, with no metacharacter needed: `find` (`-exec`),
  *   `xargs`, `env`, `git` (aliases, `-c`, hooks), `npx`, `npm` (scripts),
@@ -78,6 +85,8 @@ export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: u
     const command = bashCommandOf(toolInput);
     if (command === undefined) return { decision: "deny", reason: "bash_command_not_string" };
     if (SHELL_METACHARACTERS.test(command)) return { decision: "deny", reason: "bash_shell_metacharacter" };
+    // A Loomwright driver by exact path (AC15), after the metacharacter check: never a `bash` prefix.
+    if (matchLoomwrightScript(command, policy.admittedScriptPaths ?? []) !== undefined) return { decision: "allow", reason: "bash_prefix_allowed" };
     const allowed = policy.allowedBashPrefixes.some(
       (prefix) => prefix.trim() !== "" && (command === prefix || command.startsWith(`${prefix} `)),
     );
@@ -1185,11 +1194,16 @@ function ghApiForm(args: readonly string[]): string | undefined {
   return verb === "GET" ? "gh api (flag unread)" : `gh api ${verb}`;
 }
 
-/** A defensive, frozen copy: later changes to the caller's arrays cannot reach the gate. `never` is copied only when present. */
+/**
+ * A defensive, frozen copy: later changes to the caller's arrays cannot reach the gate. `never` and
+ * `loomwrightScripts` are copied only when present; the manager-filled fields (`mode`, `connectors`,
+ * `githubWrite`, `admittedScriptPaths`) never are, so a caller's value is dropped.
+ */
 export function freezePolicy(policy: ToolPolicy): ToolPolicy {
   return Object.freeze({
     allowedTools: Object.freeze([...policy.allowedTools]),
     allowedBashPrefixes: Object.freeze([...policy.allowedBashPrefixes]),
     ...(policy.never === undefined ? {} : { never: Object.freeze([...policy.never]) }),
+    ...(policy.loomwrightScripts === undefined ? {} : { loomwrightScripts: Object.freeze([...policy.loomwrightScripts]) }),
   });
 }
