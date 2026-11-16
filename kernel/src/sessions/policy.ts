@@ -38,7 +38,15 @@ export type ToolDecisionReason =
    * (`githubCliDecision`): the agent reads GitHub through the kernel's tools.
    * The hook's reason is `GITHUB_CLI_DENY_REASON`.
    */
-  | "use_kernel_github_tools";
+  | "use_kernel_github_tools"
+  /**
+   * In a Loomwright run policy (`loomwrightScripts` set): a Write, Edit or
+   * NotebookEdit of a Loomwright run file or driver sidecar, or a Bash command
+   * that could change one (`touchesLoomwrightRunState`). Loomwright's driver
+   * reads the run's mode, trust and READY head from them, so only its own
+   * admitted scripts write them, never the session.
+   */
+  | "loomwright_run_state";
 
 export interface ToolDecision {
   readonly decision: "allow" | "deny";
@@ -81,22 +89,93 @@ const SHELL_METACHARACTERS = /[;&|<>()$`\n\r]/;
  * never executed or interpolated.
  */
 export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: unknown): ToolDecision {
+  const runPolicy = (policy.loomwrightScripts ?? []).length > 0;
   if (toolName === "Bash") {
     const command = bashCommandOf(toolInput);
     if (command === undefined) return { decision: "deny", reason: "bash_command_not_string" };
     if (SHELL_METACHARACTERS.test(command)) return { decision: "deny", reason: "bash_shell_metacharacter" };
     // A Loomwright driver by exact path (AC15), after the metacharacter check: never a `bash` prefix.
-    if (matchLoomwrightScript(command, policy.admittedScriptPaths ?? [], policy.loomwrightDriverProfile) !== undefined) return { decision: "allow", reason: "bash_prefix_allowed" };
+    if (matchLoomwrightScript(command, policy.admittedScriptPaths ?? [], policy.loomwrightDriverProfile, policy.loomwrightRunId) !== undefined) {
+      return { decision: "allow", reason: "bash_prefix_allowed" };
+    }
     const allowed = policy.allowedBashPrefixes.some(
       (prefix) => prefix.trim() !== "" && (command === prefix || command.startsWith(`${prefix} `)),
     );
-    return allowed
-      ? { decision: "allow", reason: "bash_prefix_allowed" }
-      : { decision: "deny", reason: "bash_prefix_not_allowed" };
+    if (!allowed) return { decision: "deny", reason: "bash_prefix_not_allowed" };
+    if (runPolicy && bashTouchesLoomwrightRunState(command)) return { decision: "deny", reason: "loomwright_run_state" };
+    return { decision: "allow", reason: "bash_prefix_allowed" };
   }
-  return policy.allowedTools.includes(toolName)
-    ? { decision: "allow", reason: "tool_allowed" }
-    : { decision: "deny", reason: "tool_not_allowed" };
+  if (!policy.allowedTools.includes(toolName)) return { decision: "deny", reason: "tool_not_allowed" };
+  if (runPolicy && writesLoomwrightRunState(toolName, toolInput)) return { decision: "deny", reason: "loomwright_run_state" };
+  return { decision: "allow", reason: "tool_allowed" };
+}
+
+// ---- Loomwright run state: written by Loomwright's scripts only (phase 8 item 22g, review iteration 3) ----
+
+/**
+ * Whether `name` (one path segment, case-folded) is a file Loomwright's driver
+ * trusts for a run's gate inputs, read from the 17.38.0 driver
+ * (`automate-next-step.sh`): the run file `<run_id>.md` (its `## Run Config`
+ * holds the mode and `trust_unprotected`, its `## Current` the `ready_sha`),
+ * and the `<run_id>.next-step.json` sidecar (`flag_mode`,
+ * `flag_trust_unprotected`). A run id holds no `.` in the ids the driver mints,
+ * so `<run_id>.md` is a name with exactly one `.`; the result sidecars
+ * (`<run_id>.supervisor-result.md` and the like) have two and stay writable.
+ */
+function isLoomwrightRunStateName(name: string): boolean {
+  return /^[^.]+\.md$/.test(name) || name.endsWith(".next-step.json");
+}
+
+/** The path segments `/.supervisor/automate/` (case-folded: APFS compares case-insensitively by default). */
+const RUN_STATE_DIR = [".supervisor", "automate"] as const;
+
+/**
+ * Whether a Write, Edit or NotebookEdit call's path is a run-state file:
+ * `…/.supervisor/automate/<name>` with `isLoomwrightRunStateName(name)`, after
+ * `..` is applied (a relative path is read from a root, so its own segments
+ * decide). Literal: a tool's path is never shell-expanded. Pure.
+ */
+function writesLoomwrightRunState(toolName: string, toolInput: unknown): boolean {
+  const field = Object.prototype.hasOwnProperty.call(WRITE_TOOLS, toolName) ? WRITE_TOOLS[toolName] : undefined;
+  if (field === undefined || typeof toolInput !== "object" || toolInput === null) return false;
+  const raw = (toolInput as Record<string, unknown>)[field];
+  if (typeof raw !== "string" || raw === "") return false;
+  const segs = resolve("/", raw.toLowerCase()).split("/").filter((s) => s !== "");
+  const n = segs.length;
+  return n >= 3 && segs[n - 3] === RUN_STATE_DIR[0] && segs[n - 2] === RUN_STATE_DIR[1] && isLoomwrightRunStateName(segs[n - 1] as string);
+}
+
+/**
+ * The run policy's Bash prefixes whose programs only read (or wait): a word
+ * naming run state is fine for them. Every other allowed program (`git`,
+ * `gh`, `mkdir`) could change a file it names (`git checkout <rev> -- <path>`,
+ * `git stash`, `gh pr checkout`), so for those a word that could reach run
+ * state is denied.
+ */
+const READ_ONLY_PROGRAMS: readonly string[] = ["ls", "cat", "pwd", "date", "test", "wc", "head", "tail", "grep", "sleep", "jq"];
+
+/**
+ * Whether an allowed Bash command could change run state: its program is not
+ * in `READ_ONLY_PROGRAMS`, and one of its words (case-folded) names the
+ * `.supervisor` directory itself, or names `supervisor` with `automate` or
+ * with a glob or brace character the shell could expand into it. Fails
+ * closed on spelling (any word mentioning both counts, flags included).
+ * Honest limit: a whole-tree form that names neither (`git checkout -- .`,
+ * `git stash`) is not read here; it can only restore content git already
+ * holds, and the session cannot put forged content at a run-state path,
+ * since every direct write there is denied. Pure.
+ */
+function bashTouchesLoomwrightRunState(command: string): boolean {
+  const words = shellWords(command).filter((w) => w !== "");
+  const program = words[0];
+  if (program === undefined || READ_ONLY_PROGRAMS.includes(basename(program).toLowerCase())) return false;
+  return words.slice(1).some((word) => {
+    const w = word.toLowerCase();
+    if (!w.includes("supervisor")) return false;
+    if (w.includes("automate") || /[*?[\]{}]/.test(w)) return true;
+    const segs = w.split("/").filter((s) => s !== "" && s !== ".");
+    return segs[segs.length - 1] === RUN_STATE_DIR[0];
+  });
 }
 
 /** `tool_input.command` when `tool_input` is an object whose `command` is a string. */
@@ -1196,7 +1275,7 @@ function ghApiForm(args: readonly string[]): string | undefined {
 
 /**
  * A defensive, frozen copy: later changes to the caller's arrays cannot reach the gate. `never`,
- * `loomwrightScripts` and `loomwrightDriverProfile` are copied only when present; the manager-filled fields (`mode`, `connectors`,
+ * `loomwrightScripts`, `loomwrightDriverProfile` and `loomwrightRunId` are copied only when present; the manager-filled fields (`mode`, `connectors`,
  * `githubWrite`, `admittedScriptPaths`) never are, so a caller's value is dropped.
  */
 export function freezePolicy(policy: ToolPolicy): ToolPolicy {
@@ -1206,5 +1285,6 @@ export function freezePolicy(policy: ToolPolicy): ToolPolicy {
     ...(policy.never === undefined ? {} : { never: Object.freeze([...policy.never]) }),
     ...(policy.loomwrightScripts === undefined ? {} : { loomwrightScripts: Object.freeze([...policy.loomwrightScripts]) }),
     ...(policy.loomwrightDriverProfile === undefined ? {} : { loomwrightDriverProfile: policy.loomwrightDriverProfile }),
+    ...(policy.loomwrightRunId === undefined ? {} : { loomwrightRunId: policy.loomwrightRunId }),
   });
 }

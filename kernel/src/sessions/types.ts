@@ -127,6 +127,16 @@ export interface ToolPolicy {
    */
   readonly loomwrightDriverProfile?: LoomwrightDriverProfile;
   /**
+   * The one Loomwright run a merge run may act on (phase 8 item 22g, review
+   * iteration 3): the parked run's id the kernel launched
+   * `--merge-parked <run_id>` for. Under a merge profile every driver `--run`
+   * must equal it and every `<run_file> --result` must name `<run_id>.md`
+   * (`matchLoomwrightScript`); a merge profile without it admits neither (fail
+   * closed). Set only by the kernel's launch (`automate/launch.ts`) from the
+   * checked payload, never by a charter or settings file.
+   */
+  readonly loomwrightRunId?: string;
+  /**
    * The exact absolute paths `bash <path>` may run (`matchLoomwrightScript`,
    * `loomwright-scripts.ts`): `loomwrightScripts` under the install the
    * session loads, each a regular file whose realpath is that install's

@@ -250,7 +250,7 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
       expect(decideToolUse(p, "Bash", { command: `bash ${helpers} meta-entry` }), name).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     }
     expect(decideToolUse(withPaths(AUTOMATE_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/automate-next-step.sh --resume /w/.supervisor/automate` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
-    expect(decideToolUse(withPaths(MERGE_PARKED_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/automate-next-step.sh --merge-parked /w/.supervisor/automate --run r1` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(decideToolUse(withPaths({ ...MERGE_PARKED_RUN_POLICY, loomwrightRunId: "r1" }), "Bash", { command: `bash ${install}/scripts/automate-next-step.sh --merge-parked /w/.supervisor/automate --run r1` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     expect(decideToolUse(withPaths(REVIEW_PR_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/review-heal-next-step.sh --pr https://github.com/o/r/pull/7` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
   });
 
@@ -273,8 +273,9 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
     for (const args of [`${rf} --start pick --mode auto-merge`, "--resume /w/.supervisor/automate --run r1 --session-id s --mode auto-merge", "--merge-parked /w/.supervisor/automate --run r1 --session-id s --trust-unprotected"]) {
       expect(decide(MERGE_PARKED_RUN_POLICY, args), args).toEqual(DENY);
     }
-    expect(decide(MERGE_PARKED_RUN_POLICY, "--merge-parked .supervisor/automate --run r1 --session-id s")).toEqual(ALLOW);
-    expect(decide(MERGE_PARKED_TRUSTED_RUN_POLICY, "--merge-parked .supervisor/automate --run r1 --session-id s --trust-unprotected")).toEqual(ALLOW);
+    const pin = (policy: ToolPolicy): ToolPolicy => ({ ...policy, loomwrightRunId: "r1" });
+    expect(decide(pin(MERGE_PARKED_RUN_POLICY), "--merge-parked .supervisor/automate --run r1 --session-id s")).toEqual(ALLOW);
+    expect(decide(pin(MERGE_PARKED_TRUSTED_RUN_POLICY), "--merge-parked .supervisor/automate --run r1 --session-id s --trust-unprotected")).toEqual(ALLOW);
     expect(decide(MERGE_PARKED_TRUSTED_RUN_POLICY, `${rf} --start pick --trust-unprotected`)).toEqual(DENY);
     expect(Object.isFrozen(MERGE_PARKED_TRUSTED_RUN_POLICY)).toBe(true);
     expect({ ...MERGE_PARKED_TRUSTED_RUN_POLICY, loomwrightDriverProfile: "merge_parked" }).toEqual(MERGE_PARKED_RUN_POLICY);
@@ -337,6 +338,7 @@ describe("handleAutomateRun starts the review-pr and merge-parked sessions", () 
       allowedBashPrefixes: [...MERGE_PARKED_RUN_POLICY.allowedBashPrefixes],
       loomwrightScripts: [...(MERGE_PARKED_RUN_POLICY.loomwrightScripts ?? [])],
       loomwrightDriverProfile: "merge_parked",
+      loomwrightRunId: PARKED_RUN_ID,
     });
     expect(stepOf(id)).toEqual({ session_id: 101 });
   });

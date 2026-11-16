@@ -272,6 +272,8 @@ describe("decideToolUse: automate-next-step.sh's merge, mode and trust options b
     loomwrightScripts: ["automate-next-step.sh", "review-heal-next-step.sh"],
     admittedScriptPaths: [next, review],
     ...(profile === undefined ? {} : { loomwrightDriverProfile: profile }),
+    // A merge run is always launched pinned to its parked run (review iteration 3).
+    ...(profile === "merge_parked" || profile === "merge_parked_trust_unprotected" ? { loomwrightRunId: "r1" } : {}),
   });
   const decide = (profile: LoomwrightDriverProfile | undefined, command: string) => decideToolUse(policyOf(profile), "Bash", { command });
   const ALLOW = { decision: "allow", reason: "bash_prefix_allowed" };
@@ -852,5 +854,149 @@ describe("draftPayloadOf", () => {
     const payload = draftPayloadOf("mcp__kernel__kernel_agent_create", { x: "y".repeat(MAX_DRAFT_TEXT_CHARS) }, rail);
     expect(payload).toMatchObject({ kind: "input", truncated: true });
     expect((payload as { input_json: string }).input_json).toHaveLength(MAX_DRAFT_TEXT_CHARS);
+  });
+});
+
+describe("decideToolUse: a merge run acts on its own parked run only (review iteration 3)", () => {
+  const install = "/Users/o/.claude/plugins/cache/atelier/loomwright/17.38.0";
+  const next = `${install}/scripts/automate-next-step.sh`;
+  const policyOf = (profile: LoomwrightDriverProfile, runId?: string): ToolPolicy => ({
+    allowedTools: ["Bash"],
+    allowedBashPrefixes: [],
+    loomwrightScripts: ["automate-next-step.sh"],
+    admittedScriptPaths: [next],
+    loomwrightDriverProfile: profile,
+    ...(runId === undefined ? {} : { loomwrightRunId: runId }),
+  });
+  const decide = (policy: ToolPolicy, args: string) => decideToolUse(policy, "Bash", { command: `bash ${next} ${args}` });
+  const ALLOW = { decision: "allow", reason: "bash_prefix_allowed" };
+  const DENY = { decision: "deny", reason: "bash_prefix_not_allowed" };
+  const RUN = "automate-2026-11-16-040506";
+
+  it("admits the pinned run's entry and its answer calls, under both merge profiles", () => {
+    for (const profile of ["merge_parked", "merge_parked_trust_unprotected"] as const) {
+      const p = policyOf(profile, RUN);
+      for (const args of [
+        `--merge-parked .supervisor/automate --run ${RUN} --session-id s1`,
+        `--merge-parked /w/.supervisor/automate --run=${RUN} --session-id s1`,
+        `/w/.supervisor/automate/${RUN}.md --result '{"answers":["keep parked"]}' --session-id s1`,
+        `.supervisor/automate/${RUN}.md --result '{"answers":["keep parked"]}' --session-id s1`,
+      ]) {
+        expect(decide(p, args), `${profile} ${args}`).toEqual(ALLOW);
+      }
+    }
+  });
+
+  it("denies any other run: another --run value, another run file, or a second --run", () => {
+    const p = policyOf("merge_parked", RUN);
+    for (const args of [
+      "--merge-parked .supervisor/automate --run automate-2026-11-15-143719 --session-id s1",
+      "--merge-parked .supervisor/automate --run=automate-2026-11-15-143719 --session-id s1",
+      `--merge-parked .supervisor/automate --run ${RUN} --run automate-2026-11-15-143719 --session-id s1`,
+      "--merge-parked .supervisor/automate --run latest --session-id s1",
+      "--merge-parked .supervisor/automate --run --session-id s1",
+      `/w/.supervisor/automate/automate-2026-11-15-143719.md --result '{"answers":["merge"]}' --session-id s1`,
+      `/w/.supervisor/automate/${RUN}.md.bak --result '{"answers":["merge"]}' --session-id s1`,
+      `/w/.supervisor/automate/x${RUN}.md --result '{"answers":["merge"]}' --session-id s1`,
+    ]) {
+      expect(decide(p, args), args).toEqual(DENY);
+    }
+  });
+
+  it("fails closed without a pin: a merge profile with no run id admits no --run and no run file", () => {
+    for (const profile of ["merge_parked", "merge_parked_trust_unprotected"] as const) {
+      const p = policyOf(profile);
+      expect(decide(p, `--merge-parked .supervisor/automate --run ${RUN} --session-id s1`)).toEqual(DENY);
+      expect(decide(p, `/w/.supervisor/automate/${RUN}.md --result '{"answers":["keep parked"]}'`)).toEqual(DENY);
+      // A malformed pin (the manager refuses one at start) reads as no pin.
+      expect(decide(policyOf(profile, "../x"), "--merge-parked .supervisor/automate --run ../x --session-id s1")).toEqual(DENY);
+    }
+  });
+
+  it("leaves the ticket run unpinned: its driver mints its own run id", () => {
+    const p = policyOf("automate_run");
+    expect(decide(p, "--resume /w/.supervisor/automate --session-id s1")).toEqual(ALLOW);
+    expect(decide(p, "/w/.supervisor/automate/automate-2026-11-15-143719.md --start pick --session-id s1")).toEqual(ALLOW);
+  });
+
+  it("freezePolicy keeps the pin, and the pin is copied only when present", () => {
+    expect(freezePolicy(policyOf("merge_parked", RUN)).loomwrightRunId).toBe(RUN);
+    expect("loomwrightRunId" in freezePolicy(policyOf("merge_parked"))).toBe(false);
+  });
+});
+
+describe("decideToolUse: Loomwright run state is written by Loomwright's scripts only (review iteration 3)", () => {
+  const install = "/Users/o/.claude/plugins/cache/atelier/loomwright/17.38.0";
+  const helpers = `${install}/scripts/automate-helpers.sh`;
+  const runPolicy: ToolPolicy = {
+    allowedTools: ["Read", "Write", "Edit", "NotebookEdit", "Bash"],
+    allowedBashPrefixes: ["git checkout", "git stash", "git add", "git status", "gh pr", "mkdir", "cat", "grep", "jq", "ls", "head"],
+    loomwrightScripts: ["automate-helpers.sh"],
+    admittedScriptPaths: [helpers],
+  };
+  const plain: ToolPolicy = { ...runPolicy, loomwrightScripts: [], admittedScriptPaths: [] };
+  const RUN_STATE = { decision: "deny", reason: "loomwright_run_state" };
+  const RUN_FILE = "/w/.supervisor/automate/automate-2026-11-16-040506.md";
+
+  it("denies a Write, Edit or NotebookEdit of a run file or a driver sidecar, however the path is spelled", () => {
+    for (const path of [
+      RUN_FILE,
+      "/w/.supervisor/automate/automate-2026-11-16-040506-L2.md",
+      "/w/.supervisor/automate/automate-2026-11-16-040506.next-step.json",
+      ".supervisor/automate/automate-2026-11-16-040506.md",
+      "/w/.Supervisor/Automate/AUTOMATE-2026-11-16-040506.MD",
+      "/w/.supervisor/automate/sub/../automate-2026-11-16-040506.md",
+      "/w/.supervisor/x/../automate/r1.next-step.json",
+    ]) {
+      for (const [tool, field] of [["Write", "file_path"], ["Edit", "file_path"], ["NotebookEdit", "notebook_path"]] as const) {
+        expect(decideToolUse(runPolicy, tool, { [field]: path, content: "- mode: auto-merge | trust_unprotected: true" }), `${tool} ${path}`).toEqual(RUN_STATE);
+      }
+    }
+  });
+
+  it("still allows the run's other writes: result sidecars, briefs, requirements and code", () => {
+    for (const path of [
+      "/w/.supervisor/automate/automate-2026-11-16-040506.supervisor-result.md",
+      "/w/.supervisor/automate/automate-2026-11-16-040506.review-heal-result.md",
+      "/w/.supervisor/jobs/pending/brief.md",
+      "/w/.supervisor/requirements/item.md",
+      "/w/automate/r1.md",
+      "/w/kernel/src/sessions/policy.ts",
+    ]) {
+      expect(decideToolUse(runPolicy, "Write", { file_path: path, content: "x" }), path).toEqual({ decision: "allow", reason: "tool_allowed" });
+    }
+    expect(decideToolUse(runPolicy, "Read", { file_path: RUN_FILE })).toEqual({ decision: "allow", reason: "tool_allowed" });
+  });
+
+  it("denies a git or gh command that names run state, and lets read-only programs read it", () => {
+    for (const command of [
+      `git checkout loomwright-meta -- ${RUN_FILE}`,
+      "git checkout main -- .supervisor",
+      "git checkout main -- ./.supervisor/",
+      "git checkout main -- .supervisor/auto*",
+      "git checkout main -- .supervisor/{automate,jobs}",
+      "git stash push .supervisor/automate",
+      "mkdir -p .supervisor/automate/x",
+    ]) {
+      expect(decideToolUse(runPolicy, "Bash", { command }), command).toEqual(RUN_STATE);
+    }
+    for (const command of [`cat ${RUN_FILE}`, "grep -n mode .supervisor/automate/r1.md", "jq . .supervisor/automate/r1.next-step.json", "ls .supervisor/automate", "head -5 .supervisor/automate/r1.md", "git status", "git add kernel/src/x.ts", "git add .supervisor/jobs/done/brief.md"]) {
+      expect(decideToolUse(runPolicy, "Bash", { command }), command).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    }
+  });
+
+  it("lets Loomwright's own admitted scripts write the run file", () => {
+    expect(decideToolUse(runPolicy, "Bash", { command: `bash ${helpers} current-set ${RUN_FILE} --pause-reason null` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+  });
+
+  it("applies only to a Loomwright run policy: a session with no Loomwright scripts is unchanged", () => {
+    expect(decideToolUse(plain, "Write", { file_path: RUN_FILE, content: "x" })).toEqual({ decision: "allow", reason: "tool_allowed" });
+    expect(decideToolUse(plain, "Bash", { command: `git checkout main -- ${RUN_FILE}` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+  });
+
+  it("never widens a policy: a tool or prefix the policy does not grant is still denied for its own reason", () => {
+    const narrow: ToolPolicy = { ...runPolicy, allowedTools: ["Read"], allowedBashPrefixes: [] };
+    expect(decideToolUse(narrow, "Write", { file_path: RUN_FILE, content: "x" })).toEqual({ decision: "deny", reason: "tool_not_allowed" });
+    expect(decideToolUse(narrow, "Bash", { command: `git checkout main -- ${RUN_FILE}` })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
   });
 });

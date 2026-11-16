@@ -286,14 +286,49 @@ function shellWords(args: string): string[] | undefined {
  * (`shellWords`). Every word is compared, values included: a denied option
  * spelled as another option's value is refused too (never needed). Pure.
  */
-function asksDeniedDriverArgument(args: string, profile: LoomwrightDriverProfile): boolean {
+function asksDeniedDriverArgument(args: string, profile: LoomwrightDriverProfile, runId?: string): boolean {
   const words = shellWords(args);
   if (words === undefined) return true;
+  if (isMergeProfile(profile) && namesOtherRun(words, runId)) return true;
   const rules = LOOMWRIGHT_DRIVER_ARGUMENTS[profile];
   return words.some((w, i) => {
     if (rules.denied.some((d) => w === d || w.startsWith(`${d}=`))) return true;
     if (w.startsWith("--mode=")) return true;
     return w === "--mode" && !rules.modeValues.includes(words[i + 1] ?? "");
+  });
+}
+
+/**
+ * A Loomwright run id as the kernel accepts one (the same shape as
+ * `isRunId`, `automate/run-state.ts`, kept here so `sessions/` does not import
+ * `automate/`): a letter or digit, then up to 127 of letters, digits, `.`, `_`, `-`.
+ */
+export const LOOMWRIGHT_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** Whether a profile is one of the two merge profiles, whose driver calls are pinned to one run (`ToolPolicy.loomwrightRunId`). */
+function isMergeProfile(profile: LoomwrightDriverProfile): boolean {
+  return profile === "merge_parked" || profile === "merge_parked_trust_unprotected";
+}
+
+/**
+ * True when a merge-profile driver call (`args`, already read by `shellWords`)
+ * names a run other than `runId`, or names one while no run is pinned (fail
+ * closed). Read from the Loomwright 17.38.0 skill: the merge entry is
+ * `--merge-parked <dir> --run <id> --session-id <sid>`, and each ask is
+ * answered on `<run_file> --result …`, the run file being
+ * `<dir>/<run_id>.md`. So every `--run` value (also `--run=<id>`) must equal
+ * `runId`, and a first word that is not an option must be a path whose last
+ * segment is exactly `<runId>.md`. Without the pin, a merge run launched for
+ * one parked item could answer or merge another run's item, past
+ * `kernel_automate_merge_check`'s `go` for this one. Pure.
+ */
+function namesOtherRun(words: readonly string[], runId: string | undefined): boolean {
+  const pinned = runId !== undefined && LOOMWRIGHT_RUN_ID.test(runId) ? runId : undefined;
+  const first = words[0];
+  if (first !== undefined && !first.startsWith("-") && (pinned === undefined || basenameOf(first) !== `${pinned}.md`)) return true;
+  return words.some((w, i) => {
+    if (w.startsWith("--run=")) return pinned === undefined || w.slice("--run=".length) !== pinned;
+    return w === "--run" && (pinned === undefined || words[i + 1] !== pinned);
   });
 }
 
@@ -329,7 +364,12 @@ const PLAIN_PATH = /^\/[A-Za-z0-9_./@%+=:,-]*$/;
  * caller runs the shell-metacharacter check first (`decideToolUse`); beyond
  * those two checks this does not read the arguments.
  */
-export function matchLoomwrightScript(command: string, admitted: readonly string[], profile: LoomwrightDriverProfile = "automate_run"): string | undefined {
+export function matchLoomwrightScript(
+  command: string,
+  admitted: readonly string[],
+  profile: LoomwrightDriverProfile = "automate_run",
+  runId?: string,
+): string | undefined {
   if (admitted.length === 0 || !command.startsWith(BASH_WORD)) return undefined;
   const rest = command.slice(BASH_WORD.length);
   let path: string;
@@ -349,6 +389,6 @@ export function matchLoomwrightScript(command: string, admitted: readonly string
   if (after !== "" && !after.startsWith(" ")) return undefined;
   if (!admitted.includes(path)) return undefined;
   if (asksDeniedSubcommand(path, after)) return undefined;
-  if (basenameOf(path) === LOOMWRIGHT_ARGUMENT_DRIVER && asksDeniedDriverArgument(after, profile)) return undefined;
+  if (basenameOf(path) === LOOMWRIGHT_ARGUMENT_DRIVER && asksDeniedDriverArgument(after, profile, runId)) return undefined;
   return path;
 }

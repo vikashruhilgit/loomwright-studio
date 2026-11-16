@@ -395,8 +395,9 @@ function promptOf(store: EventContext["store"], run: Run, checkout: string): { r
       return { prompt: reviewPrRunPrompt(run.repo, run.pr), policy: RUN_POLICIES.review_pr };
     case "merge_parked": {
       const flags = loomwrightMergeFlags(store, run.repo);
-      const policy = flags.includes(TRUST_UNPROTECTED_FLAG) ? MERGE_PARKED_TRUSTED_RUN_POLICY : RUN_POLICIES.merge_parked;
-      return { prompt: mergeParkedRunPrompt(run.run_id, flags), policy };
+      const base = flags.includes(TRUST_UNPROTECTED_FLAG) ? MERGE_PARKED_TRUSTED_RUN_POLICY : RUN_POLICIES.merge_parked;
+      // Pinned to the checked run id: the session's driver calls may name no other run (`ToolPolicy.loomwrightRunId`).
+      return { prompt: mergeParkedRunPrompt(run.run_id, flags), policy: Object.freeze({ ...base, loomwrightRunId: run.run_id }) };
     }
   }
 }
