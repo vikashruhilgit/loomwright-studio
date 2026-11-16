@@ -39,7 +39,7 @@ import type { MintedGithubToken } from "./github-session-auth.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { GITHUB_CLI_DENY_REASON, draftDecision, draftDenyReason, draftPayloadOf, githubCliDecision } from "./draft-mode.js";
 import { latestOrphanReason } from "./orphans.js";
-import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, checkoutTargets, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES, safeRunFileCreation } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, checkoutTargets, classifyToolCall, decideToolUse, freezePolicy, mayCreateRunFile, NEVER_CATEGORIES, safeRunFileCreation } from "./policy.js";
 import type { NeverCategory, ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -2811,7 +2811,7 @@ export class SessionManager {
           if (tool === "Bash") command = bashCommandOf(input.tool_input);
           let d = decideToolUse(live.policy, input.tool_name, input.tool_input);
           // A new run's first run file (`loomwright_run_file_created`): safe mode only, and only while nothing is there.
-          if (d.reason === "loomwright_run_state") {
+          if (d.reason === "loomwright_run_state" && mayCreateRunFile(live.policy)) {
             const created = safeRunFileCreation(input.tool_name, input.tool_input, input.cwd);
             if (created !== undefined && !pathEntryExists(created)) d = { decision: "allow", reason: "loomwright_run_file_created" };
           }

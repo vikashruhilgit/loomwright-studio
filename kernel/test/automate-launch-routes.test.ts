@@ -45,7 +45,7 @@ import { AdmissionRefusedError, SessionError, SessionManager, decideToolUse } fr
 import type { SessionHandle, SessionRow, StartSessionParams, ToolPolicy } from "../src/sessions/index.js";
 import { LoomwrightSessionError } from "../src/sessions/index.js";
 import type { SessionTokenMint } from "../src/sessions/github-session-auth.js";
-import { classifyToolCall } from "../src/sessions/policy.js";
+import { classifyToolCall, mayCreateRunFile } from "../src/sessions/policy.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 import { HEAD, NOW, PARKED_RUN_ID, PR, installRunFiles, toolEnv, writeCrewSettings } from "./fixtures/loomwright-run-files/harness.js";
@@ -279,6 +279,19 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
     expect(decide(MERGE_PARKED_TRUSTED_RUN_POLICY, `${rf} --start pick --trust-unprotected`)).toEqual(DENY);
     expect(Object.isFrozen(MERGE_PARKED_TRUSTED_RUN_POLICY)).toBe(true);
     expect({ ...MERGE_PARKED_TRUSTED_RUN_POLICY, loomwrightDriverProfile: "merge_parked" }).toEqual(MERGE_PARKED_RUN_POLICY);
+  });
+
+  it("only the ticket run may create a run file: never a merge run (pinned or not) or a review-pr run (review iteration 5)", () => {
+    expect(mayCreateRunFile(AUTOMATE_RUN_POLICY)).toBe(true);
+    for (const [name, policy] of [
+      ["merge", { ...MERGE_PARKED_RUN_POLICY, loomwrightRunId: PARKED_RUN_ID }],
+      ["merge (trusted)", { ...MERGE_PARKED_TRUSTED_RUN_POLICY, loomwrightRunId: PARKED_RUN_ID }],
+      ["merge (no pin)", MERGE_PARKED_RUN_POLICY],
+      ["review-pr", REVIEW_PR_RUN_POLICY],
+      ["ticket run with a pin", { ...AUTOMATE_RUN_POLICY, loomwrightRunId: PARKED_RUN_ID }],
+    ] as const) {
+      expect(mayCreateRunFile(policy as ToolPolicy), name).toBe(false);
+    }
   });
 
   it("build the prompts from checked fields only", () => {
@@ -683,6 +696,32 @@ describe("through a real session manager", () => {
       expect(fakes.calls.length).toBe(before + 1);
       expect(fakes.calls[before]?.options.cwd).toBe(env.checkout);
       expect(env.store.prepare("SELECT agent, model, playbook, playbook_version FROM sessions WHERE id = ?").get(step.session_id)).toEqual({ agent: "mason", model: PLAYBOOK_MODEL, playbook: pb, playbook_version: 1 });
+    } finally {
+      await stopAll(manager);
+    }
+  });
+
+  it("review iteration 5: through the real gate, a pinned merge session cannot create a run file (for another run or its own); a ticket session can, once", async () => {
+    const { manager, fakes } = await rig();
+    try {
+      const dir = join(env.checkout, ".supervisor", "automate");
+      mkdirSync(dir, { recursive: true });
+      const content = ["# Automate Run: x", "## Status: running", "## Run Config", "- mode: safe | limit: 5 | trust_unprotected: false", "## Queue", "- [ ] a.md", "## Current", "## Progress", "- t run created"].join("\n");
+      const gateFor = async (policy: ToolPolicy) => {
+        const before = fakes.calls.length;
+        await manager.startSession(startParams(env.checkout, { agent: "mason", model: PLAYBOOK_MODEL, policy }));
+        const hook = fakes.calls[before]?.options.hooks?.PreToolUse?.[0]?.hooks[0] as (i: unknown, id: string, o: { signal: AbortSignal }) => Promise<unknown>;
+        return async (file: string) =>
+          ((await hook({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: join(dir, file), content }, tool_use_id: "t", session_id: "s", transcript_path: "/dev/null", cwd: env.checkout }, "t", { signal: new AbortController().signal })) as {
+            hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string };
+          }).hookSpecificOutput;
+      };
+      const merge = await gateFor({ ...MERGE_PARKED_RUN_POLICY, loomwrightRunId: PARKED_RUN_ID });
+      for (const file of ["automate-2099-01-01-000000.md", `${PARKED_RUN_ID}-new.md`]) {
+        expect(await merge(file), file).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
+      }
+      const ticket = await gateFor(AUTOMATE_RUN_POLICY);
+      expect(await ticket("automate-2099-01-01-000000.md")).toMatchObject({ permissionDecision: "allow", permissionDecisionReason: "loomwright_run_file_created" });
     } finally {
       await stopAll(manager);
     }

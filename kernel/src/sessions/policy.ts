@@ -52,7 +52,7 @@ export type ToolDecisionReason =
    * In Loomwright 17.38.0 a new run's coordinator writes its run file through
    * `runfile-write`, which reads the content on stdin, and the policy refuses
    * every pipe and redirect, so a kernel run can only create it with Write.
-   * The session manager allows that Write when `safeRunFileCreation` reads it
+   * The session manager allows that Write only in the ticket run (`mayCreateRunFile`), when `safeRunFileCreation` reads it
    * as a safe-mode run file AND nothing exists at the path yet; every later
    * write of the file stays `loomwright_run_state`.
    */
@@ -188,6 +188,25 @@ function runConfigValue(line: string, key: string): string | undefined {
  * The sidecar `<run_id>.next-step.json` is never created this way: the driver
  * writes it.
  */
+/**
+ * Whether a session under `policy` may ever create a run file
+ * (`loomwright_run_file_created`): only the ticket run, the one run that starts
+ * a NEW Loomwright run. Its policy runs `automate-next-step.sh` under the
+ * `automate_run` profile (or none, which reads as `automate_run`) with no
+ * run-id pin. A merge run (`merge_parked*`, pinned to the parked run it
+ * resumes) and a review-pr run (no `automate-next-step.sh`) never start a run,
+ * so every run-file write of theirs stays `loomwright_run_state`; without this,
+ * a merge run pinned to one run could create a safe-mode run file for another
+ * (review iteration 5). Pure.
+ */
+export function mayCreateRunFile(policy: ToolPolicy): boolean {
+  return (
+    (policy.loomwrightScripts ?? []).includes("automate-next-step.sh") &&
+    (policy.loomwrightDriverProfile ?? "automate_run") === "automate_run" &&
+    policy.loomwrightRunId === undefined
+  );
+}
+
 export function safeRunFileCreation(toolName: string, toolInput: unknown, cwd: string | undefined): string | undefined {
   if (toolName !== "Write" || typeof toolInput !== "object" || toolInput === null) return undefined;
   const { file_path: raw, content } = toolInput as { file_path?: unknown; content?: unknown };
