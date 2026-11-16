@@ -557,12 +557,14 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
 });
 
 describe("the module starts one session and nothing else (invariants 2 and 4)", () => {
-  it("launch.ts has exactly one start call, imports no manager, SDK or kernel, and names no merge", () => {
+  it("launch.ts has exactly one start call, imports no manager, SDK or kernel, and builds no merge of its own", () => {
     const text = readFileSync(new URL("../src/automate/launch.ts", import.meta.url), "utf8");
     expect(text.match(/\.startSession\(/g)).toHaveLength(1);
     expect(text).not.toMatch(/sessions\/manager|claude-agent-sdk|\/kernel\.js|child_process/);
-    // The only command it builds is the safe-mode backlog run: no merge-parked drain, no flag that merges or fans out.
-    expect(text).not.toContain("--merge-parked");
+    // Phase 8 item 22g: the one merge it can start is Loomwright's own gate (`--merge-parked`, one literal, in its prompt
+    // builder); it never names a flag that merges unattended or fans out, and the trust flag comes from the store only.
+    expect(text.match(/"--merge-parked"/g)).toHaveLength(1);
+    expect(text).not.toMatch(/"--auto-merge"|"--parallel"|"--trust-unprotected"/);
     expect(text).not.toMatch(/inline-phases[^\n]*(--auto-merge|--parallel)/);
   });
 });
