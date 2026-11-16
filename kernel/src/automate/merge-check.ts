@@ -5,9 +5,11 @@
 // (invariant 4): nothing in `kernel/src/automate/` calls a GitHub merge endpoint,
 // runs the GitHub CLI or starts a process (`kernel/test/automate-merge-check.test.ts`
 // scans the sources for each).
-// A `go` carries the invocation the playbook's own session runs,
-// `/loomwright:automate --merge-parked <run_id>` (probe p14, Loomwright 17.34.2 or
-// later), and Loomwright's seven gate conditions still decide.
+// A `go` carries the invocation `/loomwright:automate --merge-parked <run_id>`
+// (probe p14, Loomwright 17.34.2 or later), built by the launch's own
+// `mergeParkedRunPrompt`; the tool queues it for the kernel to start as its own
+// session (`./runner.ts`, `./launch.ts`, phase 8 item 22g), so the answer's
+// invocation is for display. Loomwright's seven gate conditions still decide.
 //
 // It answers `go` only when, in this order:
 //   1. the repo has a policy (else `park: no_policy`; GitHub is not read);
@@ -29,14 +31,16 @@
 // `ContributedToolContext.github`.
 //
 // The `studio` CLI loads this module through the feature registry, so it imports
-// only types, the store type, the repo-policy module and `./run-state.js`: never
-// the Agent SDK, the session manager or `kernel.ts`.
+// only types, the store type, the repo-policy module, `./run-state.js` and the
+// launch's prompt builder (`./launch.js`): never the Agent SDK, the session
+// manager or `kernel.ts`.
 import { MERGE_APPROVAL_ACTION, getRepoPolicy, loomwrightMergeFlags, policyMet } from "../integrations/github/repo-policy.js";
 import type { PolicyMetDeps, PolicyNotMetReason } from "../integrations/github/repo-policy.js";
+import { mergeParkedRunPrompt } from "./launch.js";
 import { parsePullUrl, readRunState, summarizeRuns } from "./run-state.js";
 import type { ParkedItem } from "./run-state.js";
 
-/** The three answers: `go` (run the invocation), `wait` (ask again later) and `park` (a person has to act). */
+/** The three answers: `go` (the kernel starts the invocation), `wait` (ask again later) and `park` (a person has to act). */
 export const MERGE_CHECK_ANSWERS = Object.freeze(["go", "wait", "park"] as const);
 
 /** One of `MERGE_CHECK_ANSWERS`. */
@@ -162,7 +166,7 @@ export async function mergeCheck(input: MergeCheckInput, deps: PolicyMetDeps): P
     if (!met.met) return fromPolicy(met.reason);
     const approved = approvedReadyAts(deps, repo, pr, parked.ready_sha);
     if (approved.length > 0 && !approved.includes(parked.ready_at)) return wait("ready_at_mismatch", "the merge approval at this head was for an earlier READY time; ask for it again with the current ready_at");
-    const invocation = ["/loomwright:automate", "--merge-parked", parked.run_id, ...loomwrightMergeFlags(deps.store, repo)].join(" ");
+    const invocation = mergeParkedRunPrompt(parked.run_id, [...loomwrightMergeFlags(deps.store, repo)]);
     return { answer: "go", run_id: parked.run_id, ready_sha: parked.ready_sha, invocation };
   } catch {
     return wait("unreadable", "the check could not be completed; ask again later");

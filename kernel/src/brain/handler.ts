@@ -67,8 +67,11 @@
 // message: it goes to `handlePlaybookMessage` (`../playbooks/runs.ts`) before
 // anything above, and writes no `brain_messages` row (its record is the
 // `playbook_runs` row). One that carries `automate_run` is the kernel's start
-// of a crew member's `/automate` run (D44, queued by `kernel_automate_prepare`):
-// it goes to `handleAutomateRun` (`../automate/launch.ts`), also with no row.
+// of a crew member's Loomwright run (D44): the `/automate` backlog run queued by
+// `kernel_automate_prepare`, the `/review-pr` fix queued by `kernel_pr_route`, or
+// the `--merge-parked` merge queued by `kernel_automate_merge_check` (the
+// payload's `kind`, phase 8 item 22g). It goes to `handleAutomateRun`
+// (`../automate/launch.ts`) on the key alone, never on the kind, also with no row.
 //
 // Imports only types from the loop and the session manager (never the
 // manager itself or the Agent SDK: the `studio` CLI loads this module); its
@@ -354,7 +357,7 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
   return async (ctx: EventContext): Promise<void> => {
     // A playbook's message: its run (no `brain_messages` row).
     if (ctx.event.payload.playbook !== undefined) return handlePlaybookMessage(ctx, { now, timeZone, loomwright });
-    // A kernel-started /automate run (D44): `kernel_automate_prepare` queued it (no `brain_messages` row).
+    // A kernel-started Loomwright run of any kind (D44): a kernel tool queued it (no `brain_messages` row).
     if (ctx.event.payload[AUTOMATE_RUN_KEY] !== undefined) return handleAutomateRun(ctx);
     const { event, store } = ctx;
     const agent = event.payload.agent;

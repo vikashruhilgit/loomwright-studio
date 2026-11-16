@@ -328,9 +328,10 @@ describe("AC5c: policyMet's own client", () => {
     expect(keychainReads.count).toBe(1);
     const fake = fakeFor();
     const injected = createAutomateRunnerTools({ client: () => fake });
+    // Phase 8 item 22g: a go from a live playbook's real run also queues the kernel's merge run (its event id).
     expect(await env.call(injected, "kernel_automate_merge_check", { repo: "o/r", pr: PR }, { playbook: pb })).toEqual({
       isError: false,
-      value: { repo: "o/r", pr: PR, ...GO },
+      value: { repo: "o/r", pr: PR, ...GO, run: "started_by_kernel", event: expect.any(Number), note: expect.stringContaining("do not run the invocation yourself") },
     });
     expect(keychainReads.count).toBe(1);
   });
