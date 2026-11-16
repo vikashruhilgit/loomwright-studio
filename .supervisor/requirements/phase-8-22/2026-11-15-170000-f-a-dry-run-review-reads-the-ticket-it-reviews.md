@@ -1,6 +1,7 @@
 # 22f — A dry-run review reads the ticket it reviews
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/285
 
 **Ready (2026-11-15):** every line cited below was read on `main` `787c00f6`. The owner chose option A on 2026-11-15 (see Owner decisions).
 
@@ -93,3 +94,9 @@ kernel/test/sessions-dry-run.test.ts
 kernel/test/integrations-mcp-connector.test.ts
 docs/architecture/dry-run.md
 docs/architecture/mcp-connectors.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-16T01:35:01Z
+- **Brief:** .supervisor/jobs/done/2026-11-15-dry-run-review-reads-the-ticket.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/285
