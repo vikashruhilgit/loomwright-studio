@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
 import { DRAFT_PAYLOAD_KINDS, MAX_DRAFT_TEXT_CHARS, draftDecision, draftPayloadOf, githubCliDecision } from "../src/sessions/draft-mode.js";
-import { ALWAYS_HELD_TOOLS, GITHUB_WRITE_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
+import { ALWAYS_HELD_TOOLS, GITHUB_WRITE_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe, safeRunFileCreation } from "../src/sessions/policy.js";
 import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 import { LOOMWRIGHT_DRIVER_ARGUMENTS, LOOMWRIGHT_DRIVER_PROFILES } from "../src/sessions/loomwright-scripts.js";
@@ -878,7 +878,7 @@ describe("decideToolUse: a merge run acts on its own parked run only (review ite
       const p = policyOf(profile, RUN);
       for (const args of [
         `--merge-parked .supervisor/automate --run ${RUN} --session-id s1`,
-        `--merge-parked /w/.supervisor/automate --run=${RUN} --session-id s1`,
+        `--session-id s1 /w/.supervisor/automate/${RUN}.md --result '{"answers":["keep parked"]}'`,
         `/w/.supervisor/automate/${RUN}.md --result '{"answers":["keep parked"]}' --session-id s1`,
         `.supervisor/automate/${RUN}.md --result '{"answers":["keep parked"]}' --session-id s1`,
       ]) {
@@ -898,6 +898,15 @@ describe("decideToolUse: a merge run acts on its own parked run only (review ite
       `/w/.supervisor/automate/automate-2026-11-15-143719.md --result '{"answers":["merge"]}' --session-id s1`,
       `/w/.supervisor/automate/${RUN}.md.bak --result '{"answers":["merge"]}' --session-id s1`,
       `/w/.supervisor/automate/x${RUN}.md --result '{"answers":["merge"]}' --session-id s1`,
+      // The driver takes its one run file at ANY position (17.38.0 argument loop), so it is read after an option too.
+      `--session-id s1 /w/.supervisor/automate/automate-2026-11-15-143719.md --result '{"answers":["merge"]}'`,
+      `--result '{"answers":["merge"]}' --session-id s1 /w/.supervisor/automate/automate-2026-11-15-143719.md`,
+      `--merge-parked .supervisor/automate --run ${RUN} --session-id s1 /w/.supervisor/automate/automate-2026-11-15-143719.md`,
+      // An option the driver does not know could take a value and hide a run file: refused.
+      `--frobnicate ${RUN} /w/.supervisor/automate/${RUN}.md --result x`,
+      `--run=${RUN} --merge-parked .supervisor/automate --session-id s1`,
+      // A value option with no value.
+      `/w/.supervisor/automate/${RUN}.md --result`,
     ]) {
       expect(decide(p, args), args).toEqual(DENY);
     }
@@ -930,7 +939,7 @@ describe("decideToolUse: Loomwright run state is written by Loomwright's scripts
   const helpers = `${install}/scripts/automate-helpers.sh`;
   const runPolicy: ToolPolicy = {
     allowedTools: ["Read", "Write", "Edit", "NotebookEdit", "Bash"],
-    allowedBashPrefixes: ["git checkout", "git stash", "git add", "git status", "gh pr", "mkdir", "cat", "grep", "jq", "ls", "head"],
+    allowedBashPrefixes: ["git checkout", "git stash", "git add", "git status", "git show", "gh pr", "mkdir", "cat", "grep", "jq", "ls", "head"],
     loomwrightScripts: ["automate-helpers.sh"],
     admittedScriptPaths: [helpers],
   };
@@ -947,6 +956,9 @@ describe("decideToolUse: Loomwright run state is written by Loomwright's scripts
       "/w/.Supervisor/Automate/AUTOMATE-2026-11-16-040506.MD",
       "/w/.supervisor/automate/sub/../automate-2026-11-16-040506.md",
       "/w/.supervisor/x/../automate/r1.next-step.json",
+      // A run id may hold a `.` (LOOMWRIGHT_RUN_ID): every `.md` there counts but the phase result hand-offs.
+      "/w/.supervisor/automate/run.v2.md",
+      "/w/.supervisor/automate/automate-2026-11-16-040506.md.bak.md",
     ]) {
       for (const [tool, field] of [["Write", "file_path"], ["Edit", "file_path"], ["NotebookEdit", "notebook_path"]] as const) {
         expect(decideToolUse(runPolicy, tool, { [field]: path, content: "- mode: auto-merge | trust_unprotected: true" }), `${tool} ${path}`).toEqual(RUN_STATE);
@@ -958,6 +970,7 @@ describe("decideToolUse: Loomwright run state is written by Loomwright's scripts
     for (const path of [
       "/w/.supervisor/automate/automate-2026-11-16-040506.supervisor-result.md",
       "/w/.supervisor/automate/automate-2026-11-16-040506.review-heal-result.md",
+      "/w/.supervisor/automate/automate-2026-11-16-040506.launch-pad-result.md",
       "/w/.supervisor/jobs/pending/brief.md",
       "/w/.supervisor/requirements/item.md",
       "/w/automate/r1.md",
@@ -976,11 +989,15 @@ describe("decideToolUse: Loomwright run state is written by Loomwright's scripts
       "git checkout main -- .supervisor/auto*",
       "git checkout main -- .supervisor/{automate,jobs}",
       "git stash push .supervisor/automate",
-      "mkdir -p .supervisor/automate/x",
+      "git checkout main -- '*.md'",
+      "git checkout main -- **/*.next-step.json",
+      "git checkout main -- :!kernel",
+      "git checkout main -- :/",
+      "git stash push -- 'auto?ate'",
     ]) {
       expect(decideToolUse(runPolicy, "Bash", { command }), command).toEqual(RUN_STATE);
     }
-    for (const command of [`cat ${RUN_FILE}`, "grep -n mode .supervisor/automate/r1.md", "jq . .supervisor/automate/r1.next-step.json", "ls .supervisor/automate", "head -5 .supervisor/automate/r1.md", "git status", "git add kernel/src/x.ts", "git add .supervisor/jobs/done/brief.md"]) {
+    for (const command of [`cat ${RUN_FILE}`, "grep -n mode .supervisor/automate/r1.md", "jq . .supervisor/automate/r1.next-step.json", "ls .supervisor/automate", "head -5 .supervisor/automate/r1.md", "git status", "git add kernel/src/x.ts", "git add .supervisor/jobs/done/brief.md", "mkdir -p .supervisor/automate", "git checkout -b feature/x", "git show HEAD:kernel/src/x.ts"]) {
       expect(decideToolUse(runPolicy, "Bash", { command }), command).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     }
   });
@@ -998,5 +1015,63 @@ describe("decideToolUse: Loomwright run state is written by Loomwright's scripts
     const narrow: ToolPolicy = { ...runPolicy, allowedTools: ["Read"], allowedBashPrefixes: [] };
     expect(decideToolUse(narrow, "Write", { file_path: RUN_FILE, content: "x" })).toEqual({ decision: "deny", reason: "tool_not_allowed" });
     expect(decideToolUse(narrow, "Bash", { command: `git checkout main -- ${RUN_FILE}` })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+  });
+});
+
+describe("run-lock.sh: a run session never breaks the lock (invariant 4, review iteration 3)", () => {
+  const install = "/Users/o/.claude/plugins/cache/atelier/loomwright/17.38.0";
+  const lock = `${install}/scripts/run-lock.sh`;
+  const policy: ToolPolicy = { allowedTools: ["Bash"], allowedBashPrefixes: [], loomwrightScripts: ["run-lock.sh"], admittedScriptPaths: [lock] };
+  const decide = (args: string) => decideToolUse(policy, "Bash", { command: `bash ${lock} ${args}` });
+
+  it("denies --force-unlock at any position and as --force-unlock=", () => {
+    for (const args of ["release --owner automate:r1 --force-unlock", "--force-unlock acquire --owner automate:r1", "acquire --owner automate:r1 --session-id s1 --force-unlock=1"]) {
+      expect(decide(args), args).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+  });
+
+  it("still admits the lock's ordinary calls", () => {
+    for (const args of ["acquire --owner automate:r1 --session-id s1", "release --owner automate:r1", "status", "liveness --pid 42"]) {
+      expect(decide(args), args).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    }
+  });
+});
+
+describe("safeRunFileCreation: a new run's first run file, safe mode only (review iteration 3)", () => {
+  const RF = "/w/.supervisor/automate/automate-2026-11-16-040506.md";
+  const runFile = (config: string, extra = ""): string =>
+    ["# Automate Run: phase-8-22", "## Status: running", "## Source", "- folder .supervisor/requirements/x", "## Run Config", config,
+      "- auto_review_original: absent | config_backup: r.config-backup.json", "## Queue", "- [ ] .supervisor/requirements/x/a.md", "## Current",
+      "- item: null | status: null | pr: null | branch: null", "- pause_reason: null", extra, "## Progress", "- 2026-11-16T04:05:06Z run created"].join("\n");
+  const SAFE = "- mode: safe | limit: 5 | trust_unprotected: false";
+
+  it("reads the template's safe-mode file as a creation, at an absolute path or one relative to an absolute cwd", () => {
+    expect(safeRunFileCreation("Write", { file_path: RF, content: runFile(SAFE) }, undefined)).toBe(RF);
+    expect(safeRunFileCreation("Write", { file_path: ".supervisor/automate/r1.md", content: runFile(SAFE) }, "/w")).toBe("/w/.supervisor/automate/r1.md");
+    expect(safeRunFileCreation("Write", { file_path: RF, content: runFile("- mode: safe | limit: 5") }, undefined)).toBe(RF);
+  });
+
+  it("refuses any content the driver would read as more than safe mode, or a READY head it did not write", () => {
+    for (const config of [
+      "- mode: auto-merge | limit: 5 | trust_unprotected: false",
+      "- mode: safe | limit: 5 | trust_unprotected: true",
+      "- mode: safe | limit: 5 | trust_unprotected: yes",
+      "- limit: 5 | trust_unprotected: false",
+      "- mode:  | limit: 5",
+    ]) {
+      expect(safeRunFileCreation("Write", { file_path: RF, content: runFile(config) }, undefined), config).toBeUndefined();
+    }
+    // The driver takes the FIRST `- mode: ` line of the section: a safe second line does not help.
+    expect(safeRunFileCreation("Write", { file_path: RF, content: runFile(`- mode: auto-merge | limit: 5\n${SAFE}`) }, undefined)).toBeUndefined();
+    expect(safeRunFileCreation("Write", { file_path: RF, content: runFile(SAFE, "- ready_sha: abc | ready_at: 2026-11-16T04:05:06Z | termination_reason: converged") }, undefined)).toBeUndefined();
+    expect(safeRunFileCreation("Write", { file_path: RF, content: "# Automate Run: x\n## Status: running\n## Queue" }, undefined)).toBeUndefined();
+  });
+
+  it("is a Write of a run file only: never Edit or NotebookEdit, a sidecar, a result file, a relative path without a cwd, or another path", () => {
+    expect(safeRunFileCreation("Edit", { file_path: RF, old_string: "a", new_string: runFile(SAFE) }, undefined)).toBeUndefined();
+    expect(safeRunFileCreation("Write", { file_path: "/w/.supervisor/automate/r1.next-step.json", content: runFile(SAFE) }, undefined)).toBeUndefined();
+    expect(safeRunFileCreation("Write", { file_path: "/w/.supervisor/automate/r1.supervisor-result.md", content: runFile(SAFE) }, undefined)).toBeUndefined();
+    expect(safeRunFileCreation("Write", { file_path: ".supervisor/automate/r1.md", content: runFile(SAFE) }, undefined)).toBeUndefined();
+    expect(safeRunFileCreation("Write", { file_path: "/w/notes.md", content: runFile(SAFE) }, undefined)).toBeUndefined();
   });
 });

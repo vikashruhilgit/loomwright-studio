@@ -816,6 +816,20 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(await crew("Bash", { command: driver })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
     // A listed script the install does not hold is not admitted.
     expect(await run("Bash", { command: `bash ${join(r.pluginDir, "scripts", "automate-helpers.sh")} meta-entry` })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
+    // Review iteration 3: the run file is Loomwright's to write. A new run creates its first run file with Write
+    // (runfile-write reads stdin, and the rail refuses every pipe), in safe mode only and only while nothing is there.
+    const automateDir = join(r.workspaces["mason"] as string, ".supervisor", "automate");
+    const runFile = join(automateDir, "automate-2026-11-16-040506.md");
+    const content = (mode: string): string =>
+      ["# Automate Run: x", "## Status: running", "## Run Config", `- mode: ${mode} | limit: 5 | trust_unprotected: false`, "## Queue", "- [ ] a.md", "## Current", "## Progress", "- t run created"].join("\n");
+    expect(await run("Bash", { command: `mkdir -p ${automateDir}` })).toMatchObject({ permissionDecision: "allow" });
+    mkdirSync(automateDir, { recursive: true });
+    expect(await run("Write", { file_path: runFile, content: content("auto-merge") })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
+    expect(await run("Write", { file_path: runFile, content: content("safe") })).toMatchObject({ permissionDecision: "allow" });
+    writeFileSync(runFile, content("safe"));
+    // Once the file exists, no write of it is the session's: not even the same safe content again.
+    expect(await run("Write", { file_path: runFile, content: content("safe") })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
+    expect(await run("Edit", { file_path: runFile, old_string: "mode: safe", new_string: "mode: auto-merge" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
     // The run session's decisions are recorded against the run session.
     expect(decisions(r, l.runId).map((p) => [p.tool, p.decision])).toEqual(expect.arrayContaining([["Skill", "allow"], ["Bash", "allow"], ["Bash", "deny"]]));
   });

@@ -124,9 +124,11 @@ export function loomwrightScriptPaths(installPath: string, names: readonly strin
  */
 type DeniedSubcommands = { readonly anyPosition: boolean; readonly subcommands: readonly string[] };
 
+// `pick-guard` is not here: it only reads lane tables and prints `ok` or `refuse: …` (17.38.0
+// `automate-lanes.d/notify-guards.sh`), and a new run calls it before intake (review iteration 3).
 const LANE_FORWARDED_SUBCOMMANDS: readonly string[] = [
   "lane-create", "lane-launch", "relay-hook", "lane-answer", "lane-remove", "lane-convert-ready", "lane-park", "init-check",
-  "pick-guard", "branch-check", "lane-status", "lane-feed", "lane-readiness", "lane-drain-check", "validation-gate",
+  "branch-check", "lane-status", "lane-feed", "lane-readiness", "lane-drain-check", "validation-gate",
   "lane-park-notify", "lane-wait", "phase-check", "phase-launch", "phase-wait", "phase-answer", "fleet-closeout", "wave-plan",
 ];
 
@@ -136,6 +138,10 @@ export const LOOMWRIGHT_DENIED_SUBCOMMANDS: Readonly<Record<string, DeniedSubcom
     subcommands: Object.freeze(["gate-eval", "trail-pr", "closeout", "closeout-others", "finalize-empty", "wave-build", ...LANE_FORWARDED_SUBCOMMANDS]),
   }),
   "meta-sync.sh": Object.freeze({ anyPosition: true, subcommands: Object.freeze(["push"]) }),
+  // `--force-unlock` breaks the run lock unconditionally: Loomwright's own header calls it a human-only escape hatch,
+  // and a session passing it would break `/automate`'s single-drain ownership (invariant 4). run-lock.sh reads its
+  // options at any position (review iteration 3).
+  "run-lock.sh": Object.freeze({ anyPosition: true, subcommands: Object.freeze(["--force-unlock"]) }),
 });
 
 /**
@@ -156,7 +162,7 @@ function asksDeniedSubcommand(script: string, args: string): boolean {
   if (denied === undefined) return false;
   const words = args.split(/[ \t]+/).filter((w) => w !== "");
   const read = denied.anyPosition ? words : words.slice(0, 1);
-  return read.some((w) => !PLAIN_WORD.test(w) || denied.subcommands.includes(w));
+  return read.some((w) => !PLAIN_WORD.test(w) || denied.subcommands.some((s) => w === s || w.startsWith(`${s}=`)));
 }
 
 /**
@@ -311,25 +317,50 @@ function isMergeProfile(profile: LoomwrightDriverProfile): boolean {
 }
 
 /**
+ * `automate-next-step.sh`'s options that take the next word as their value,
+ * read from the Loomwright 17.38.0 driver's argument loop. Every other option
+ * it knows is a bare flag (`DRIVER_FLAG_OPTIONS`).
+ */
+const DRIVER_VALUE_OPTIONS: readonly string[] = [
+  "--owner-command", "--start", "--resume", "--merge-parked", "--run", "--max-tokens", "--result", "--result-file", "--mode", "--root", "--session-id",
+];
+
+/** `automate-next-step.sh`'s bare flag options (17.38.0). */
+const DRIVER_FLAG_OPTIONS: readonly string[] = ["--inline-phases", "--notify", "--cheap", "--no-cheap", "--non-interactive", "--trust-unprotected", "-h", "--help"];
+
+/**
  * True when a merge-profile driver call (`args`, already read by `shellWords`)
- * names a run other than `runId`, or names one while no run is pinned (fail
- * closed). Read from the Loomwright 17.38.0 skill: the merge entry is
- * `--merge-parked <dir> --run <id> --session-id <sid>`, and each ask is
- * answered on `<run_file> --result …`, the run file being
- * `<dir>/<run_id>.md`. So every `--run` value (also `--run=<id>`) must equal
- * `runId`, and a first word that is not an option must be a path whose last
- * segment is exactly `<runId>.md`. Without the pin, a merge run launched for
- * one parked item could answer or merge another run's item, past
- * `kernel_automate_merge_check`'s `go` for this one. Pure.
+ * could act on a run other than `runId`, or on any run while no run is pinned
+ * (fail closed). The words are walked as the 17.38.0 driver walks them: an
+ * option in `DRIVER_VALUE_OPTIONS` takes the next word as its value, one in
+ * `DRIVER_FLAG_OPTIONS` takes none, and any other word that does not start
+ * with `-` is the run file, which the driver accepts at ANY position (one run
+ * file only). So every `--run` value must equal `runId`, and every run-file
+ * word must be a path whose last segment is exactly `<runId>.md`. An option
+ * the driver does not know (also `--option=value`, which the driver does not
+ * parse) is refused, so a later driver option that takes a value cannot hide
+ * a run file. Without the pin, a merge run launched for one parked item could
+ * answer or merge another run's item, past `kernel_automate_merge_check`'s
+ * `go` for this one. Pure.
  */
 function namesOtherRun(words: readonly string[], runId: string | undefined): boolean {
   const pinned = runId !== undefined && LOOMWRIGHT_RUN_ID.test(runId) ? runId : undefined;
-  const first = words[0];
-  if (first !== undefined && !first.startsWith("-") && (pinned === undefined || basenameOf(first) !== `${pinned}.md`)) return true;
-  return words.some((w, i) => {
-    if (w.startsWith("--run=")) return pinned === undefined || w.slice("--run=".length) !== pinned;
-    return w === "--run" && (pinned === undefined || words[i + 1] !== pinned);
-  });
+  for (let i = 0; i < words.length; i += 1) {
+    const w = words[i] as string;
+    if (DRIVER_VALUE_OPTIONS.includes(w)) {
+      const value = words[i + 1];
+      if (value === undefined) return true;
+      if (w === "--run" && (pinned === undefined || value !== pinned)) return true;
+      i += 1;
+    } else if (DRIVER_FLAG_OPTIONS.includes(w)) {
+      continue;
+    } else if (w.startsWith("-")) {
+      return true;
+    } else if (pinned === undefined || basenameOf(w) !== `${pinned}.md`) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** The last `/`-separated segment of an absolute path (pure; `node:path`'s `basename` reads the same here). */

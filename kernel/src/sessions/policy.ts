@@ -46,7 +46,17 @@ export type ToolDecisionReason =
    * reads the run's mode, trust and READY head from them, so only its own
    * admitted scripts write them, never the session.
    */
-  | "loomwright_run_state";
+  | "loomwright_run_state"
+  /**
+   * The one exception to `loomwright_run_state`: a new run's first run file.
+   * In Loomwright 17.38.0 a new run's coordinator writes its run file through
+   * `runfile-write`, which reads the content on stdin, and the policy refuses
+   * every pipe and redirect, so a kernel run can only create it with Write.
+   * The session manager allows that Write when `safeRunFileCreation` reads it
+   * as a safe-mode run file AND nothing exists at the path yet; every later
+   * write of the file stays `loomwright_run_state`.
+   */
+  | "loomwright_run_file_created";
 
 export interface ToolDecision {
   readonly decision: "allow" | "deny";
@@ -114,16 +124,19 @@ export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: u
 
 /**
  * Whether `name` (one path segment, case-folded) is a file Loomwright's driver
- * trusts for a run's gate inputs, read from the 17.38.0 driver
+ * may trust for a run's gate inputs, read from the 17.38.0 driver
  * (`automate-next-step.sh`): the run file `<run_id>.md` (its `## Run Config`
  * holds the mode and `trust_unprotected`, its `## Current` the `ready_sha`),
  * and the `<run_id>.next-step.json` sidecar (`flag_mode`,
- * `flag_trust_unprotected`). A run id holds no `.` in the ids the driver mints,
- * so `<run_id>.md` is a name with exactly one `.`; the result sidecars
- * (`<run_id>.supervisor-result.md` and the like) have two and stay writable.
+ * `flag_trust_unprotected`). Fails closed on the run id's own spelling: every
+ * `.md` there counts (a run id may hold a `.`, `LOOMWRIGHT_RUN_ID`), except
+ * the phase result hand-offs the driver's prompts ask a phase to write
+ * (`<run_id>.launch-pad-result.md`, `.supervisor-result.md`,
+ * `.review-heal-result.md`: names ending `-result.md`), which carry a phase's
+ * report, not the run's gate inputs.
  */
 function isLoomwrightRunStateName(name: string): boolean {
-  return /^[^.]+\.md$/.test(name) || name.endsWith(".next-step.json");
+  return (name.endsWith(".md") && !name.endsWith("-result.md")) || name.endsWith(".next-step.json");
 }
 
 /** The path segments `/.supervisor/automate/` (case-folded: APFS compares case-insensitively by default). */
@@ -133,7 +146,11 @@ const RUN_STATE_DIR = [".supervisor", "automate"] as const;
  * Whether a Write, Edit or NotebookEdit call's path is a run-state file:
  * `…/.supervisor/automate/<name>` with `isLoomwrightRunStateName(name)`, after
  * `..` is applied (a relative path is read from a root, so its own segments
- * decide). Literal: a tool's path is never shell-expanded. Pure.
+ * decide). Literal: a tool's path is never shell-expanded. Honest limit: the
+ * path text is read, not the file system, so a symlink elsewhere that points
+ * into `.supervisor/automate/` is not followed; a run policy grants no
+ * program that makes one (no `ln`, and every Bash word naming the directory is
+ * read below). Pure.
  */
 function writesLoomwrightRunState(toolName: string, toolInput: unknown): boolean {
   const field = Object.prototype.hasOwnProperty.call(WRITE_TOOLS, toolName) ? WRITE_TOOLS[toolName] : undefined;
@@ -146,31 +163,83 @@ function writesLoomwrightRunState(toolName: string, toolInput: unknown): boolean
 }
 
 /**
- * The run policy's Bash prefixes whose programs only read (or wait): a word
- * naming run state is fine for them. Every other allowed program (`git`,
- * `gh`, `mkdir`) could change a file it names (`git checkout <rev> -- <path>`,
- * `git stash`, `gh pr checkout`), so for those a word that could reach run
- * state is denied.
+ * A `## Run Config` value as the 17.38.0 driver reads it (`ns_kv`): the
+ * `|`-separated fields of the line, each `key: value`, the first match wins.
  */
-const READ_ONLY_PROGRAMS: readonly string[] = ["ls", "cat", "pwd", "date", "test", "wc", "head", "tail", "grep", "sleep", "jq"];
+function runConfigValue(line: string, key: string): string | undefined {
+  for (const field of line.slice(2).split("|")) {
+    const f = field.trim();
+    if (f.startsWith(`${key}: `)) return f.slice(key.length + 2).trim();
+  }
+  return undefined;
+}
 
 /**
- * Whether an allowed Bash command could change run state: its program is not
- * in `READ_ONLY_PROGRAMS`, and one of its words (case-folded) names the
- * `.supervisor` directory itself, or names `supervisor` with `automate` or
- * with a glob or brace character the shell could expand into it. Fails
- * closed on spelling (any word mentioning both counts, flags included).
- * Honest limit: a whole-tree form that names neither (`git checkout -- .`,
- * `git stash`) is not read here; it can only restore content git already
- * holds, and the session cannot put forged content at a run-state path,
- * since every direct write there is denied. Pure.
+ * The absolute run-file path a Write call creates, when its content is a
+ * safe-mode run file, else `undefined` (pure: the session manager then checks
+ * that nothing exists at the path, `loomwright_run_file_created`). Read as the
+ * 17.38.0 driver reads the file (`ns_refresh`, `ns_mode`, `ns_trust`): the
+ * `## Run Config` section's FIRST `- mode: ` line must exist and say
+ * `mode: safe`, and `trust_unprotected` there must be absent or `false`; and
+ * the content holds no `- ready_sha:` line (the READY head `--merge-parked`
+ * trusts is the driver's to write). Only `Write` (a whole new file): an Edit
+ * or NotebookEdit changes a file that already exists. A relative path is
+ * resolved against an absolute `cwd`; with none, `undefined` (fail closed).
+ * The sidecar `<run_id>.next-step.json` is never created this way: the driver
+ * writes it.
+ */
+export function safeRunFileCreation(toolName: string, toolInput: unknown, cwd: string | undefined): string | undefined {
+  if (toolName !== "Write" || typeof toolInput !== "object" || toolInput === null) return undefined;
+  const { file_path: raw, content } = toolInput as { file_path?: unknown; content?: unknown };
+  if (typeof raw !== "string" || raw === "" || typeof content !== "string") return undefined;
+  if (!writesLoomwrightRunState(toolName, toolInput) || !raw.toLowerCase().endsWith(".md")) return undefined;
+  if (!raw.startsWith("/") && (cwd === undefined || !cwd.startsWith("/"))) return undefined;
+  const lines = content.split(/\r?\n/);
+  if (lines.some((l) => l.startsWith("- ready_sha:"))) return undefined;
+  const start = lines.findIndex((l) => l === "## Run Config");
+  if (start === -1) return undefined;
+  const end = lines.findIndex((l, i) => i > start && l.startsWith("## "));
+  const section = lines.slice(start + 1, end === -1 ? undefined : end);
+  const modeLine = section.find((l) => l.startsWith("- mode: "));
+  if (modeLine === undefined || runConfigValue(modeLine, "mode") !== "safe") return undefined;
+  const trust = runConfigValue(modeLine, "trust_unprotected");
+  if (trust !== undefined && trust !== "false") return undefined;
+  return resolve(raw.startsWith("/") ? "/" : (cwd as string), raw);
+}
+
+/**
+ * The run policy's Bash prefixes whose programs never change a file's
+ * contents: a word naming run state is fine for them. `mkdir` is one: a new
+ * run runs `mkdir -p .supervisor/automate` before `pick-guard`
+ * (Loomwright 17.38.0 `commands/automate.md`), and making a directory changes
+ * no file. `git` and `gh` can change a file they name
+ * (`git checkout <rev> -- <path>`, `git stash`, `gh pr checkout`).
+ */
+const READ_ONLY_PROGRAMS: readonly string[] = ["ls", "cat", "pwd", "date", "test", "wc", "head", "tail", "grep", "sleep", "jq", "mkdir"];
+
+/**
+ * Whether an allowed Bash command could change run state. Its program is not
+ * in `READ_ONLY_PROGRAMS`, and one of its words (case-folded):
+ * - names `supervisor` with `automate`, with a glob or brace character, or as
+ *   the `.supervisor` directory itself; or
+ * - for `git`, is a pathspec git itself could match against run state: one
+ *   holding `*`, `?` or `[` (git matches those across `/`, so `'*.md'` reaches
+ *   `.supervisor/automate/<run_id>.md` whatever the shell does), or starting
+ *   with `:` (pathspec magic, `:/`, `:(glob)…`).
+ * Honest limit: a whole-tree form that names no path (`git checkout -- .`,
+ * `git stash`) is not read here. It can only restore content git already
+ * holds at that path, written by Loomwright's scripts, since every direct
+ * write of a run-state path is denied. Pure.
  */
 function bashTouchesLoomwrightRunState(command: string): boolean {
   const words = shellWords(command).filter((w) => w !== "");
   const program = words[0];
-  if (program === undefined || READ_ONLY_PROGRAMS.includes(basename(program).toLowerCase())) return false;
+  if (program === undefined) return false;
+  const name = basename(program).toLowerCase();
+  if (READ_ONLY_PROGRAMS.includes(name)) return false;
   return words.slice(1).some((word) => {
     const w = word.toLowerCase();
+    if (name === "git" && (/[*?[]/.test(w) || w.startsWith(":"))) return true;
     if (!w.includes("supervisor")) return false;
     if (w.includes("automate") || /[*?[\]{}]/.test(w)) return true;
     const segs = w.split("/").filter((s) => s !== "" && s !== ".");

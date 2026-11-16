@@ -1,5 +1,5 @@
 import { randomUUID as nodeRandomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
@@ -38,7 +38,7 @@ import type { MintedGithubToken } from "./github-session-auth.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { GITHUB_CLI_DENY_REASON, draftDecision, draftDenyReason, draftPayloadOf, githubCliDecision } from "./draft-mode.js";
 import { latestOrphanReason } from "./orphans.js";
-import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES, safeRunFileCreation } from "./policy.js";
 import type { NeverCategory, ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -581,6 +581,21 @@ function sessionScriptPaths(installPath: string, policy: ToolPolicy): readonly s
   const read = loomwrightScriptPaths(installPath, policy.loomwrightScripts);
   if (read.ok) return read.paths;
   throw new LoomwrightSessionError(loomwrightSessionErrorCode("install_path_invalid"), "install_path_invalid", read.path, read.message);
+}
+
+/**
+ * Whether anything is at `path` (a file, a directory, or a symlink, dangling
+ * included: `lstat`, never following a link). An error other than "no such
+ * entry" reads as "something is there" (fail closed: the run-file creation
+ * exception then does not apply).
+ */
+function pathEntryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ENOENT";
+  }
 }
 
 /** The Loomwright host-mode state dirs live here, under the Studio data dir: `<dataDir>/loomwright-state/session-<id>`. */
@@ -2793,7 +2808,12 @@ export class SessionManager {
           tool = input.tool_name;
           if (typeof input.tool_use_id === "string" && input.tool_use_id !== "") toolUseId = input.tool_use_id;
           if (tool === "Bash") command = bashCommandOf(input.tool_input);
-          const d = decideToolUse(live.policy, input.tool_name, input.tool_input);
+          let d = decideToolUse(live.policy, input.tool_name, input.tool_input);
+          // A new run's first run file (`loomwright_run_file_created`): safe mode only, and only while nothing is there.
+          if (d.reason === "loomwright_run_state") {
+            const created = safeRunFileCreation(input.tool_name, input.tool_input, input.cwd);
+            if (created !== undefined && !pathEntryExists(created)) d = { decision: "allow", reason: "loomwright_run_file_created" };
+          }
           // The rail applies only after the policy allowed: it never widens a policy.
           const rail: ToolCallClass =
             d.decision === "allow"
