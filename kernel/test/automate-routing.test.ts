@@ -107,11 +107,25 @@ describe("the routing part", () => {
     expect(routingPart.subcommands ?? []).toEqual([]);
   });
 
-  it("describes the four routes and the three triage outcomes, and says it reads fresh, starts no session and pushes nothing", () => {
+  it("describes the four routes and the three triage outcomes, says it reads fresh, and says the kernel queues and starts the fix (the tool itself pushes nothing)", () => {
     const description = routingPart.tools[0]?.description ?? "";
-    for (const word of [...PR_ROUTES, "fix", "reply", "answer", "/loomwright:review-pr <pr url>", "fresh on every call", "starts no session and pushes nothing", "untrusted data"]) {
+    for (const word of [
+      ...PR_ROUTES,
+      "fix",
+      "reply",
+      "answer",
+      "/loomwright:review-pr <pr url>",
+      "fresh on every call",
+      "the kernel queues the fix and starts the command as its own session",
+      "do not run it yourself",
+      "The tool itself pushes nothing",
+      "untrusted data",
+    ]) {
       expect(description, word).toContain(word);
     }
+    // Phase 8 item 22g: the old "starts no session" sentence is gone, and no route tells the session to run the command itself.
+    expect(description).not.toContain("starts no session and pushes nothing");
+    expect(description).not.toContain("run in this session");
     expect(description.startsWith("Read-only.")).toBe(true);
   });
 
