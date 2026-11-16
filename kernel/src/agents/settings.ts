@@ -47,7 +47,7 @@ import type { AllowedPermissionMode, ToolPolicy } from "../sessions/types.js";
 import { RESERVED_AGENT_IDS, isValidAgentId } from "./types.js";
 
 /** The lead agent's id: the only one whose settings file the kernel creates. */
-const WRIGHT_ID = "wright";
+export const WRIGHT_ID = "wright";
 
 /** `<dataDir>/config/agents/<id>.json` (no id check: callers check first). */
 export function agentSettingsPath(dataDir: string, id: string): string {

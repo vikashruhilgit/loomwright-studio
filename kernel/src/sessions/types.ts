@@ -626,6 +626,22 @@ export interface SessionManagerOptions {
    */
   readonly connectorsFor?: (agent: string) => readonly ConnectorKind[];
   /**
+   * The session-facing names (`mcp__kernel__kernel_mcp_<r|w>_<kind>_<tool>`)
+   * of the MCP connector proxy tools `agent`'s session lists, given the
+   * session's `connectors` (`connectorsFor`'s answer; phase 8 item 22f): the
+   * owner's per-tool grant becomes the session's permission. Asked at each
+   * start and resume; the manager appends the answer to the session's
+   * `ToolPolicy.allowedTools` in memory only (never the settings file, the
+   * charter or a stored row), keeping only names under
+   * `mcp__kernel__kernel_mcp_`, so it can never add any other tool. A throw,
+   * or an answer that is not an array, grants none (fail closed: the policy
+   * stays the caller's). Absent: no name is added. The listing (`mcpServers`)
+   * is built per launch attempt, so a connector row that goes out of use
+   * between the two leaves a policy name with no listed tool; a tool the
+   * session does not list cannot be called, so this never widens anything.
+   */
+  readonly mcpProxyToolsFor?: (agent: string, connectors: readonly ConnectorKind[]) => readonly string[];
+  /**
    * Whether the owner granted `agent` GitHub write (`connectors: {github:
    * "write"}` in its settings file; phase 8 item 04). Asked at each start and
    * resume of a live playbook's real session; a throw grants none (fail

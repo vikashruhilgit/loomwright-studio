@@ -7,7 +7,7 @@
 // are merged once, before the store opens.
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { readAgentSettings } from "./agents/settings.js";
+import { WRIGHT_ID, readAgentSettings } from "./agents/settings.js";
 import type { AgentLimits } from "./agents/settings.js";
 import { ensureApiToken } from "./api/token.js";
 import { isKillSwitchEngaged } from "./api/kill-switch.js";
@@ -273,6 +273,41 @@ export function mcpToolGrantsFor(dataDir: string): (agent: string | null) => Mcp
 }
 
 /**
+ * The MCP connector proxy tools `grants` names, built from `store`'s connector
+ * rows (`mcpProxyTools`): the one proxy-list path, shared by the session's
+ * listing (the `mcpServers` factory) and its policy (`mcpProxyToolsFor`).
+ */
+function proxyToolsOf(store: Store, grants: McpToolGrants): readonly ContributedTool[] {
+  // A proxy tool that can't be built (a name clash, a broken row) is not listed: a session lists fewer tools, never more.
+  try {
+    return mcpProxyTools(store, grants);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The session manager's `mcpProxyToolsFor`, as the kernel wires it (phase 8
+ * item 22f): the session names (`mcp__kernel__<proxy>`) of exactly the proxy
+ * tools a session of `agent` with `connectors` lists, through the same chain
+ * the `mcpServers` factory lists them by: the owner's per-tool grant
+ * (`mcpToolGrantsFor`), the proxies built from a connector row in use
+ * (`proxyToolsOf`), narrowed by `toolsForConnectors` to a kind in `connectors`
+ * and a tool the grant names. Read afresh at every start and resume, so a
+ * grant change applies at the next one. `[]` for Wright: its sessions behave
+ * as before, a granted Wright still needs the proxy in its own `allowedTools`.
+ * Any refusal or throw on the way lists, and so adds, none.
+ */
+export function mcpProxyToolsFor(dataDir: string, store: Store): (agent: string, connectors: readonly ConnectorKind[]) => readonly string[] {
+  const grantsOf = mcpToolGrantsFor(dataDir);
+  return (agent, connectors) => {
+    if (agent === WRIGHT_ID) return [];
+    const grants = grantsOf(agent);
+    return toolsForConnectors(proxyToolsOf(store, grants), connectors, false, grants).map((t) => `mcp__${KERNEL_MCP_SERVER_NAME}__${t.name}`);
+  };
+}
+
+/**
  * The budget's `agentLimits` lookup, as the kernel wires it: each agent's
  * `limits.tokens_per_day` and `limits.sessions_at_once` from its own settings
  * file, `<dataDir>/config/agents/<id>.json`, through the one reader
@@ -397,14 +432,6 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     // The session token minter, built over the open store; absent stays absent (no minter ⇒ a live, write-granted session is refused `no_minter`).
     const mintOf = deps.sessionTokenMintFor === undefined ? {} : { sessionTokenMint: deps.sessionTokenMintFor(store) };
     const mcpGrantsOf = mcpToolGrantsFor(dataDir);
-    // A proxy tool that can't be built (a name clash, a broken row) is not listed: a session lists fewer tools, never more.
-    const proxyToolsOf = (from: Store, grants: McpToolGrants): readonly ContributedTool[] => {
-      try {
-        return mcpProxyTools(from, grants);
-      } catch {
-        return [];
-      }
-    };
     const manager = new SessionManager(
       {
         store,
@@ -420,6 +447,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         admission: admissionFor(budget, authProvider.id, () => isPaused(store)),
         // The owner's connector grants, read afresh at each start and resume; the manager fills `ToolPolicy.connectors` from them.
         connectorsFor: connectorsFor(dataDir),
+        // The proxy tools a session lists join its policy's allowedTools (in memory only), through the same chain the factory below lists them by.
+        mcpProxyToolsFor: mcpProxyToolsFor(dataDir, store),
         // The owner's GitHub write grant, read the same way. The minter is `mintOf`'s (the daemon's deps wire item 03's); a composition without one refuses a live, write-granted session `no_minter`.
         githubWriteFor: githubWriteFor(dataDir),
         // Each session lists only the contributed tools its agent's grants allow (`requiresConnector`, and `requiresConnectorLevel` for the
