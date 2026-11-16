@@ -36,7 +36,8 @@ export type AutomatePart = ConsolePart;
  * `kernel_automate_merge_check` and the held `kernel_merge_approval_request`,
  * built in `./runner.ts`. They help a live playbook's own session hand tickets to
  * `/automate` and check a merge; no tool starts a session or merges (prepare queues
- * the event `./launch.ts` turns into the kernel-started run, D44).
+ * the event `./launch.ts` turns into the kernel-started run, D44; its merge check's `go` queues the kernel's
+ * merge run the same way, proposed D45).
  */
 export { runnerPart };
 

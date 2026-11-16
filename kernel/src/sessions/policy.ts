@@ -63,7 +63,7 @@ const SHELL_METACHARACTERS = /[;&|<>()$`\n\r]/;
  *   string, contains no shell metacharacter, and equals an allowlisted prefix
  *   or starts with it followed by a space. Empty or whitespace-only prefixes
  *   are ignored (they would match anything starting with a space).
- * - A run policy's Loomwright scripts (phase 8 item 22g): with no shell
+ * - A run policy's Loomwright scripts (proposed D45, phase 8 item 22g): with no shell
  *   metacharacter, `bash <path>` or `bash "<path>"` (then nothing or a space
  *   and arguments) is allowed (`bash_prefix_allowed`) only when `<path>` is
  *   exactly one of `admittedScriptPaths`, which the session manager alone

@@ -5,8 +5,8 @@
 // pushes nothing; every push stays held by the rail, and the kernel never merges
 // (invariant 4). On an `automate_fix` or `review_pr` answer to a live playbook's
 // real run (not a dry run, not a draft, not chat) whose crew member holds
-// `github: write`, it queues the kernel's `review_pr` run (D44's path, phase 8
-// item 22g): one `message` event whose `automate_run` payload is the kind, the
+// `github: write`, it queues the kernel's `review_pr` run (D44's path, extended
+// by proposed D45, phase 8 item 22g): one `message` event whose `automate_run` payload is the kind, the
 // repo, the PR number, the crew member's checkout and the calling session's
 // attribution, and nothing else (comment and PR text are never in it). The
 // brain's handler then starts `/loomwright:review-pr <pr url>` as a kernel
@@ -263,7 +263,7 @@ export function createRoutingTools(deps: RoutingDeps = {}): readonly Contributed
         };
       }
       if (ownerKind === "automate_parked" && parked !== undefined) {
-        // The kernel's fix (D44's path): queued only for a live, non-dry, write-granted playbook session.
+        // The kernel's fix (proposed D45, extending D44's path): queued only for a live, non-dry, write-granted playbook session.
         const launch = queueFix(ctx, repo, pr, checkout);
         return {
           route: "automate_fix",

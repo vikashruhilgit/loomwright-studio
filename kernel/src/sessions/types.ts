@@ -110,8 +110,8 @@ export interface ToolPolicy {
   readonly githubWrite?: boolean;
   /**
    * The Loomwright driver and helper scripts this policy runs, by basename
-   * under the session's Loomwright install's `scripts/` (phase 8 item 22g,
-   * AC15). Only a kernel run policy constant names them (`AUTOMATE_RUN_POLICY`,
+   * under the session's Loomwright install's `scripts/` (proposed D45, phase 8
+   * item 22g, AC15). Only a kernel run policy constant names them (`AUTOMATE_RUN_POLICY`,
    * `automate/launch.ts`); a charter or settings file never carries the field.
    * Absent or empty: no script is admitted, and the install's layout is never
    * read. It admits nothing by itself: the gate reads `admittedScriptPaths`.
