@@ -227,28 +227,27 @@ describe("AC4: the dry run names the calls a real run would be refused, and the 
     expect(hold.refuse).toBeUndefined();
   });
 
-  it("a gap only the owner can close is named as the owner's step and never put in proposed_update: kernel tools are proposed, a workspace and a crew route's Skill and Bash are not", async () => {
-    // Mason holds the triage job's read tools only: tools are missing (closable), and so are a workspace and the crew route's needs (never closable).
+  it("a gap only the owner can close is named as the owner's step and never put in proposed_update: kernel tools are proposed, a workspace and any Skill or Bash are not", async () => {
+    // Mason holds the triage job's read tools only: kernel tools are missing (closable), and so is a workspace (never closable).
+    // The kernel starts /loomwright:review-pr itself (D45), so the job asks for no Claude tool or shell prefix to refuse.
     addMember([], []);
     const created = await draft("Triage", ["triage_pr_comments"]);
     const fit = created.fit;
     expect(fit?.status).toBe("gap");
-    expect(fit?.refused_calls.map((c) => [c.kind, c.closable])).toEqual([
-      ["claude_tool", false],
-      ["bash_prefix", false],
-      ["workspace", false],
-    ]);
+    expect(fit?.missing.length).toBeGreaterThan(0);
+    expect(fit?.refused_calls.map((c) => [c.kind, c.closable])).toEqual([["workspace", false]]);
     const proposed = fit?.proposed_update?.changes.tool_policy;
+    expect(proposed?.allowedTools.some((t) => t.startsWith(K))).toBe(true);
     expect(proposed?.allowedTools.filter((t) => !t.startsWith(K))).toEqual(["Read"]);
     expect(proposed?.allowedTools).not.toContain("Skill");
     expect(proposed?.allowedTools).not.toContain("Bash");
-    // Bash prefixes unchanged: no `git` prefix, no Loomwright prefix is ever proposed for the crew route.
+    // Bash prefixes unchanged: no `git` prefix, no Loomwright prefix is ever proposed.
     expect(proposed?.allowedBashPrefixes).toEqual(["gh pr"]);
     expect(JSON.stringify(fit?.proposed_update)).not.toMatch(/Skill|git push|git commit|workspace/);
     // The workspace is the owner's step, in plain words.
     expect(fit?.lines.some((l) => l.includes("only you know where your copy of the repo is: tell Wright, and it proposes a charter update listing it"))).toBe(true);
-    // The crew route's line says no grant is proposed and the owner may enable anyway (D44).
-    expect(fit?.lines.some((l) => l.includes("no grant is proposed and you can enable the playbook anyway"))).toBe(true);
+    // No line speaks of a crew-run route any more: the fix is Studio's to start (D45).
+    expect(fit?.lines.some((l) => l.includes("no grant is proposed and you can enable the playbook anyway"))).toBe(false);
   });
 
   it("only owner-only gaps open: there is no proposed_update at all, and the enable still needs enable_anyway", async () => {
