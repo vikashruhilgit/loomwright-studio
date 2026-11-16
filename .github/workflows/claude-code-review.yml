@@ -19,6 +19,98 @@ jobs:
       issues: read
       id-token: write
 
+    env:
+      # Which Claude login a review tries first: the CLAUDE_AUTH_FIRST repository
+      # VARIABLE (Settings → Secrets and variables → Actions → Variables), `api`
+      # (the default, also when unset) or `oauth`. The other login is the fallback.
+      #   api   = the ANTHROPIC_API_KEY secret (billed per token, no weekly cap)
+      #   oauth = the CLAUDE_CODE_OAUTH_TOKEN secret from `claude setup-token`
+      #           (subscription; shares the weekly cap, revoked by "log out everywhere")
+      # Secrets cannot appear in a step `if:`, so their presence is read here.
+      AUTH_FIRST: ${{ vars.CLAUDE_AUTH_FIRST == 'oauth' && 'oauth' || 'api' }}
+      AUTH_SECOND: ${{ vars.CLAUDE_AUTH_FIRST == 'oauth' && 'api' || 'oauth' }}
+      FIRST_READY: ${{ (vars.CLAUDE_AUTH_FIRST == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN != '') || (vars.CLAUDE_AUTH_FIRST != 'oauth' && secrets.ANTHROPIC_API_KEY != '') }}
+      SECOND_READY: ${{ (vars.CLAUDE_AUTH_FIRST == 'oauth' && secrets.ANTHROPIC_API_KEY != '') || (vars.CLAUDE_AUTH_FIRST != 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN != '') }}
+      # The review instructions and tool allowlist, shared by both attempts below.
+      REVIEW_PROMPT: |
+        REPO: ${{ github.repository }}
+        PR NUMBER: ${{ github.event.pull_request.number }}
+
+        PROJECT CONTEXT:
+        - Loomwright Studio: a macOS desktop app (Electron shell, React UI) for an
+          always-available AI partner, "Wright", built on @anthropic-ai/claude-agent-sdk
+          and the Loomwright plugin. TypeScript throughout.
+        - Read CLAUDE.md first. Its nine invariants are the review rubric: mechanism vs
+          policy, the LLM never owns its lifecycle, the fixed safety kernel, Loomwright's
+          merge gate, optional integrations, API-key-first auth with no claude.ai login,
+          branding ("Wright, powered by Claude", never "Claude Code"), memory as
+          inspectable files, no role presets and token (not dollar) limits.
+        - docs/DECISIONS.md is settled: a PR that contradicts a decision must add a new
+          numbered decision superseding it, never silently edit or ignore one.
+        - docs/OPEN_QUESTIONS.md lists claims marked NEEDS VERIFICATION. Code that builds
+          on one without a recorded probe is a finding.
+        - Until phase 1 lands the repo is docs and design (docs/, docs/design/). Review
+          docs for contradictions between files (VISION, DECISIONS, ARCHITECTURE, UI,
+          ROADMAP, DESIGN) and for count/version/path drift.
+
+        Please review this pull request for:
+        - Invariant violations (cite the invariant number)
+        - Correctness and failure modes in kernel code: state on disk survives kill -9,
+          no LLM-owned lifecycle, fail-closed on budget/cap, untrusted input as data
+        - Security: prompt-injection surfaces (PR bodies, comments, tickets reaching a
+          model as instructions), secrets, permission policy widening
+        - Cross-reference precision drift: a "see X" / file path / decision number that
+          no longer points where it claims
+        - Tests that assert the shape the code chose rather than the documented contract
+
+        This is your own independent checklist as a reviewer — apply your own judgment;
+        do not try to match or converge with any other reviewer's findings.
+
+        On a large PR, `gh pr diff` alone will not fit and is not enough to judge
+        anything. Read the changed files directly, and compare a file against its
+        base version with `git show HEAD^1:<path>` — on a pull_request event CI
+        checks out the PR's merge commit, whose FIRST parent is the base branch tip.
+        You have the full history and the working tree.
+
+        Two command shapes are REFUSED by the tool-permission layer no matter what
+        the allowlist says, so do not reach for them — each attempt costs a turn and
+        returns nothing:
+          * COMMAND SUBSTITUTION. `git diff $(git merge-base HEAD origin/main)` and
+            `git show "$(...)":<path>` are denied on the substitution itself. Use
+            `HEAD^1`, which needs no substitution and no remote-tracking ref.
+          * `git fetch`. The checkout is already complete (`fetch-depth: 0` above).
+          * SHELL LOOPS. `for f in a b c; do ...; done` is refused as a construct.
+            Expand it: one call per file, or a single `ls`/`grep` that covers them.
+        Chaining allowed commands with `;` or `|` IS permitted.
+
+        Use `gh pr comment` with your Bash tool to leave your review as a comment on
+        the PR. Posting is not optional and it is the LAST thing you do: if you run
+        low on turns, or could not examine everything you wanted to, post what you
+        DO have plus an explicit note about what you could not cover. A run that
+        ends without a posted comment is indistinguishable from no review at all.
+
+        EVERY completed run posts exactly one comment — including when you find
+        nothing. In that case post a short comment that starts with
+        `Reviewed <sha>: no new findings` (use `git rev-parse HEAD^2` for the PR
+        head sha — HEAD is the merge commit, its SECOND parent is the PR tip) and
+        then, in a sentence or two, say what you examined and, if this is a
+        re-review, confirm which earlier findings the new commits addressed. A
+        completion check on this workflow only counts comments longer than 200
+        characters as a posted review, so a one-line "no new findings" still
+        registers as silence.
+
+        The LAST line of EVERY comment you post — finding-bearing and no-findings
+        alike — is exactly this line, verbatim, on a line of its own:
+        execution: none — static review; this reviewer cannot run code in CI, so runtime behavior is NOT verified by this review.
+
+      # --allowed-tools REPLACES the action's defaults. This list is loomwright's,
+      # tuned there against real silent runs: no Write/Edit, no bare Bash, no
+      # find/awk/xargs/sed (each has an exec or in-place-write primitive), read-only
+      # git plus the gh commands needed to read the PR and post the comment.
+      # Kept on ONE line: a YAML folded scalar would inject a leading space into
+      # every wrapped tool name.
+      REVIEW_ARGS: '--allowed-tools "Read,Grep,Glob,Task,TodoWrite,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git cat-file:*),Bash(git blame:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git status:*),Bash(jq:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(tr:*),Bash(diff:*),Bash(ls:*),Bash(grep:*),Bash(cmp:*),Bash(comm:*),Bash(basename:*),Bash(dirname:*),Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -33,90 +125,101 @@ jobs:
         id: stamp
         run: echo "since=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      - name: Run Claude Code Review
-        id: claude-review
+      # Two-login fallback (2026-11-16). One job, up to two attempts of the SAME review:
+      # attempt 1 uses the login named by the CLAUDE_AUTH_FIRST repo variable (`api`,
+      # the default, or `oauth`); attempt 2 uses the other login and runs ONLY when
+      # attempt 1 was skipped (its login is not saved) or died at STARTUP. A startup
+      # death — revoked/expired login, API key out of credit, the subscription's
+      # weekly cap, a transient API rejection — has one signature: `is_error: true`
+      # on turn 1 with $0 spent (2026-11-16: an account-wide "log out everywhere"
+      # revoked CLAUDE_CODE_OAUTH_TOKEN and every review died this way). A review
+      # that ran and THEN failed is NOT retried: that would pay for a second full
+      # review and could post duplicate comments.
+      # The action itself has no fallback: base-action/src/validate-env.ts only
+      # requires that one login is present, and Claude Code uses one login per run.
+      # Each attempt is handed exactly ONE login (the other input is ''), never both.
+      - name: Run Claude Code Review (attempt 1)
+        id: review-1
+        if: env.FIRST_READY == 'true'
+        continue-on-error: true
         # Pinned to v1.0.231's commit SHA, the same pin as vikashruhilgit/loomwright.
         uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
+          anthropic_api_key: ${{ env.AUTH_FIRST == 'api' && secrets.ANTHROPIC_API_KEY || '' }}
+          claude_code_oauth_token: ${{ env.AUTH_FIRST == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          prompt: ${{ env.REVIEW_PROMPT }}
+          claude_args: ${{ env.REVIEW_ARGS }}
 
-            PROJECT CONTEXT:
-            - Loomwright Studio: a macOS desktop app (Electron shell, React UI) for an
-              always-available AI partner, "Wright", built on @anthropic-ai/claude-agent-sdk
-              and the Loomwright plugin. TypeScript throughout.
-            - Read CLAUDE.md first. Its nine invariants are the review rubric: mechanism vs
-              policy, the LLM never owns its lifecycle, the fixed safety kernel, Loomwright's
-              merge gate, optional integrations, API-key-first auth with no claude.ai login,
-              branding ("Wright, powered by Claude", never "Claude Code"), memory as
-              inspectable files, no role presets and token (not dollar) limits.
-            - docs/DECISIONS.md is settled: a PR that contradicts a decision must add a new
-              numbered decision superseding it, never silently edit or ignore one.
-            - docs/OPEN_QUESTIONS.md lists claims marked NEEDS VERIFICATION. Code that builds
-              on one without a recorded probe is a finding.
-            - Until phase 1 lands the repo is docs and design (docs/, docs/design/). Review
-              docs for contradictions between files (VISION, DECISIONS, ARCHITECTURE, UI,
-              ROADMAP, DESIGN) and for count/version/path drift.
+      # Reads attempt 1's run log (the action writes it before it marks itself
+      # failed — src/entrypoints/run.ts @ cfc3eb22) and decides whether to fall back.
+      - name: Decide whether to fall back to the other login
+        id: decide
+        env:
+          OUTCOME: ${{ steps.review-1.outcome }}
+          EXEC_FILE: ${{ steps.review-1.outputs.execution_file }}
+        run: |
+          set -uo pipefail
+          fallback=0
+          case "$OUTCOME" in
+            success) echo "attempt 1 ($AUTH_FIRST) succeeded — no fallback" ;;
+            skipped|'') echo "::notice::attempt 1 skipped — the $AUTH_FIRST login is not saved; trying $AUTH_SECOND"; fallback=1 ;;
+            *)
+              if [ -z "$EXEC_FILE" ] || [ ! -s "$EXEC_FILE" ]; then
+                echo "::warning::attempt 1 ($AUTH_FIRST) failed before Claude ran (no run log) — trying $AUTH_SECOND"; fallback=1
+              # Startup death = the final result is is_error on turn <= 1 at $0, or there is
+              # no result at all AND no assistant turn (it died before doing any work).
+              # Unparseable log => not startup: never risk paying for a second review.
+              elif startup="$(jq -r '([.[] | select(.type? == "result")] | last) as $r
+                    | if $r == null then ([.[] | select(.type? == "assistant")] | length == 0)
+                      else (($r.is_error == true) and (($r.num_turns // 0) <= 1) and (($r.total_cost_usd // 0) == 0)) end
+                    | tostring' "$EXEC_FILE" 2>/dev/null)" && [ "$startup" = "true" ]; then
+                echo "::warning::attempt 1 ($AUTH_FIRST) died at startup (is_error on turn 1, \$0) — login rejected, out of credit, capped or a transient API error; trying $AUTH_SECOND"; fallback=1
+              else
+                echo "::error::attempt 1 ($AUTH_FIRST) ran and then failed — not retrying with the other login (that would pay for a second full review)"
+              fi ;;
+          esac
+          echo "fallback=$fallback" >> "$GITHUB_OUTPUT"
 
-            Please review this pull request for:
-            - Invariant violations (cite the invariant number)
-            - Correctness and failure modes in kernel code: state on disk survives kill -9,
-              no LLM-owned lifecycle, fail-closed on budget/cap, untrusted input as data
-            - Security: prompt-injection surfaces (PR bodies, comments, tickets reaching a
-              model as instructions), secrets, permission policy widening
-            - Cross-reference precision drift: a "see X" / file path / decision number that
-              no longer points where it claims
-            - Tests that assert the shape the code chose rather than the documented contract
+      - name: Run Claude Code Review (attempt 2)
+        id: review-2
+        if: steps.decide.outputs.fallback == '1' && env.SECOND_READY == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
+        with:
+          anthropic_api_key: ${{ env.AUTH_SECOND == 'api' && secrets.ANTHROPIC_API_KEY || '' }}
+          claude_code_oauth_token: ${{ env.AUTH_SECOND == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          prompt: ${{ env.REVIEW_PROMPT }}
+          claude_args: ${{ env.REVIEW_ARGS }}
 
-            This is your own independent checklist as a reviewer — apply your own judgment;
-            do not try to match or converge with any other reviewer's findings.
-
-            On a large PR, `gh pr diff` alone will not fit and is not enough to judge
-            anything. Read the changed files directly, and compare a file against its
-            base version with `git show HEAD^1:<path>` — on a pull_request event CI
-            checks out the PR's merge commit, whose FIRST parent is the base branch tip.
-            You have the full history and the working tree.
-
-            Two command shapes are REFUSED by the tool-permission layer no matter what
-            the allowlist says, so do not reach for them — each attempt costs a turn and
-            returns nothing:
-              * COMMAND SUBSTITUTION. `git diff $(git merge-base HEAD origin/main)` and
-                `git show "$(...)":<path>` are denied on the substitution itself. Use
-                `HEAD^1`, which needs no substitution and no remote-tracking ref.
-              * `git fetch`. The checkout is already complete (`fetch-depth: 0` above).
-              * SHELL LOOPS. `for f in a b c; do ...; done` is refused as a construct.
-                Expand it: one call per file, or a single `ls`/`grep` that covers them.
-            Chaining allowed commands with `;` or `|` IS permitted.
-
-            Use `gh pr comment` with your Bash tool to leave your review as a comment on
-            the PR. Posting is not optional and it is the LAST thing you do: if you run
-            low on turns, or could not examine everything you wanted to, post what you
-            DO have plus an explicit note about what you could not cover. A run that
-            ends without a posted comment is indistinguishable from no review at all.
-
-            EVERY completed run posts exactly one comment — including when you find
-            nothing. In that case post a short comment that starts with
-            `Reviewed <sha>: no new findings` (use `git rev-parse HEAD^2` for the PR
-            head sha — HEAD is the merge commit, its SECOND parent is the PR tip) and
-            then, in a sentence or two, say what you examined and, if this is a
-            re-review, confirm which earlier findings the new commits addressed. A
-            completion check on this workflow only counts comments longer than 200
-            characters as a posted review, so a one-line "no new findings" still
-            registers as silence.
-
-            The LAST line of EVERY comment you post — finding-bearing and no-findings
-            alike — is exactly this line, verbatim, on a line of its own:
-            execution: none — static review; this reviewer cannot run code in CI, so runtime behavior is NOT verified by this review.
-
-          # --allowed-tools REPLACES the action's defaults. This list is loomwright's,
-          # tuned there against real silent runs: no Write/Edit, no bare Bash, no
-          # find/awk/xargs/sed (each has an exec or in-place-write primitive), read-only
-          # git plus the gh commands needed to read the PR and post the comment.
-          # Kept on ONE line: a YAML folded scalar would inject a leading space into
-          # every wrapped tool name.
-          claude_args: '--allowed-tools "Read,Grep,Glob,Task,TodoWrite,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git cat-file:*),Bash(git blame:*),Bash(git ls-files:*),Bash(git rev-parse:*),Bash(git merge-base:*),Bash(git status:*),Bash(jq:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(tr:*),Bash(diff:*),Bash(ls:*),Bash(grep:*),Bash(cmp:*),Bash(comm:*),Bash(basename:*),Bash(dirname:*),Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
+      # Both attempts carry continue-on-error, so a failed attempt never skips the
+      # steps after it; a real earlier failure (checkout) still skips all of them.
+      # One place that says which attempt (and login) produced the review. Later
+      # steps read `steps.review.outputs.ok`, never an attempt's outcome directly.
+      - name: Record which login reviewed
+        id: review
+        env:
+          R1: ${{ steps.review-1.outcome }}
+          R2: ${{ steps.review-2.outcome }}
+          FALLBACK: ${{ steps.decide.outputs.fallback }}
+        run: |
+          set -uo pipefail
+          if [ "$R1" = "success" ]; then
+            echo "reviewed with: $AUTH_FIRST (attempt 1)"; echo "ok=true" >> "$GITHUB_OUTPUT"
+          elif [ "$R2" = "success" ]; then
+            echo "::notice::reviewed with: $AUTH_SECOND (attempt 2 — fallback)"; echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            if [ "$FIRST_READY" != "true" ] && [ "$SECOND_READY" != "true" ]; then
+              echo "::error::no Claude login is saved — set the ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN repo secret"
+            elif [ "$FALLBACK" = "1" ] && [ "$SECOND_READY" != "true" ]; then
+              echo "::error::attempt 1 ($AUTH_FIRST) could not start and no $AUTH_SECOND login is saved to fall back to"
+            elif [ "$FALLBACK" = "1" ]; then
+              echo "::error::both logins failed — attempt 1 ($AUTH_FIRST) and attempt 2 ($AUTH_SECOND)"
+            else
+              echo "::error::the review failed (attempt 1, $AUTH_FIRST) — see that step's log"
+            fi
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
       # A run that ends without a posted comment is indistinguishable from no
       # review at all: the action exits is_error:false and the check goes green
@@ -126,7 +229,7 @@ jobs:
       # Only comments by claude[bot], newer than this run's stamp, and longer than
       # 200 characters count. No always(): the step must not run on cancellation.
       - name: Assert a review was actually posted
-        if: steps.claude-review.outcome == 'success'
+        if: steps.review.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
