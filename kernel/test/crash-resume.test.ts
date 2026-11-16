@@ -11,10 +11,22 @@
 // Every harness, stand-in and tool group this file starts is killed in
 // afterEach (by its own recorded pid / pgid, ownership-checked), so a failing
 // test leaks no process.
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+//
+// The last block (phase 8 item 22g, AC15/AC16) is in-process on the fake
+// spawner and query: a run session resumed after a restart keeps the admitted
+// Loomwright script set of the install its row recorded, never the active one.
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HookCallback, HookInput, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
+import { SessionManager } from "../src/sessions/index.js";
+import { LoomwrightSessionError } from "../src/sessions/loomwright-path.js";
+import { Store } from "../src/store/index.js";
+import { events } from "./loop-helpers.js";
+import { fakeSessions, startParams, stubProvider } from "./session-fakes.js";
+import type { FakeCall } from "./session-fakes.js";
 import {
   EXIT_TEST_KEY,
   buildKernel,
@@ -225,4 +237,89 @@ describe("kill -9 mid-session, then restart (phase 1 exit, deterministic)", () =
     await restartAndFinish(queueId);
     assertExitCriterion(queueId, session, pgid, toolPgid);
   }, 90_000);
+});
+
+describe("a resumed run session keeps its recorded install's admitted scripts (AC15/AC16, in-process on fakes)", () => {
+  let store: Store;
+
+  beforeEach(() => {
+    store = new Store({ dataDir });
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  /** A Loomwright install at `<tmp>/<name>` holding `automate-next-step.sh`, as `makePluginDir` lays one out. */
+  function install(name: string): { dir: string; next: string } {
+    const dir = makePluginDir(join(tmp, name));
+    const next = join(dir, "scripts", "automate-next-step.sh");
+    writeFileSync(next, "#!/bin/bash\n");
+    return { dir, next };
+  }
+
+  /** A manager whose active install is `loomwrightPath` (a kernel restart after a Loomwright update changes it). */
+  function managerOn(loomwrightPath: string, fakes: ReturnType<typeof fakeSessions>): SessionManager {
+    return new SessionManager({ store, authProvider: stubProvider(), loomwrightPath, stopGraceMs: 10, baseEnv: { PATH: "/usr/bin" } }, { ...fakes.deps, homeDir: join(tmp, "home") });
+  }
+
+  function bashGate(call: FakeCall) {
+    const hook = call.options.hooks?.PreToolUse?.[0]?.hooks[0] as HookCallback;
+    return async (command: string) => {
+      const input = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, tool_use_id: "toolu_1", session_id: "s", transcript_path: "/dev/null", cwd } as unknown as HookInput;
+      return ((await hook(input, "toolu_1", { signal: new AbortController().signal })) as { hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string } }).hookSpecificOutput;
+    };
+  }
+
+  /** Start a run session on `first`, end its attempt, and leave the row `interrupted`, as a kernel kill leaves it. */
+  async function interruptedRun(first: string, fakes: ReturnType<typeof fakeSessions>): Promise<number> {
+    const handle = await managerOn(first, fakes).startSession(startParams(cwd, { policy: AUTOMATE_RUN_POLICY, closeInputOnResult: false }));
+    (fakes.calls[fakes.calls.length - 1] as FakeCall).stream.end();
+    await handle.done;
+    store.prepare("UPDATE sessions SET status = 'interrupted', ended_at = NULL WHERE id = ?").run(handle.id);
+    return handle.id;
+  }
+
+  it("admits the recorded install's driver, not the newly active install's, after the active install changed", async () => {
+    const old = install("lw-17.38.0");
+    const now = install("lw-17.39.0");
+    const fakes = fakeSessions();
+    const id = await interruptedRun(old.dir, fakes);
+    expect(store.prepare<[number], string>("SELECT loomwright_path FROM sessions WHERE id = ?").pluck().get(id)).toBe(old.dir);
+
+    const restarted = managerOn(now.dir, fakes);
+    const handle = await restarted.resumeSession(id, { permissionMode: "default", cwd, policy: AUTOMATE_RUN_POLICY, closeInputOnResult: false });
+    const call = fakes.calls[fakes.calls.length - 1] as FakeCall;
+    expect(call.options.plugins).toEqual([{ type: "local", path: old.dir }]);
+    const gate = bashGate(call);
+    expect(await gate(`bash ${old.next} --resume ${join(cwd, ".supervisor", "automate")}`)).toMatchObject({ permissionDecision: "allow" });
+    expect(await gate(`bash ${now.next} --resume ${join(cwd, ".supervisor", "automate")}`)).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
+    // A resume attempt that ends before any output is retried, so this one produces output and a result first.
+    call.stream.push({ type: "assistant", message: { content: [{ type: "text", text: "ok" }] }, parent_tool_use_id: null } as unknown as SDKMessage);
+    call.stream.push({ type: "result", subtype: "success", is_error: false, result: "DONE", modelUsage: {} } as unknown as SDKMessage);
+    call.stream.end();
+    expect(await handle.done).toBe("completed");
+  });
+
+  it("refuses the resume when the recorded install's scripts/ cannot be read, and leaves the row unchanged", async () => {
+    const old = install("lw-17.38.0");
+    const fakes = fakeSessions();
+    const id = await interruptedRun(old.dir, fakes);
+    rmSync(join(old.dir, "scripts"), { recursive: true });
+    const before = store.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
+    const statusEvents = events(store, "session_status").length;
+    const spawned = fakes.calls.length;
+
+    const err = await managerOn(install("lw-17.39.0").dir, fakes)
+      .resumeSession(id, { permissionMode: "default", cwd, policy: AUTOMATE_RUN_POLICY })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomwrightSessionError);
+    expect(err).toMatchObject({ code: "loomwright_not_found", detail: "install_path_invalid", path: join(old.dir, "scripts") });
+    expect(store.prepare("SELECT * FROM sessions WHERE id = ?").get(id)).toEqual(before);
+    expect(events(store, "session_status")).toHaveLength(statusEvents);
+    expect(fakes.calls).toHaveLength(spawned);
+    expect(events(store, "session_refused").map((e) => [e.session_id, e.payload])).toEqual([
+      [id, { reason: "loomwright_not_found", detail: "install_path_invalid", path: join(old.dir, "scripts") }],
+    ]);
+  });
 });
