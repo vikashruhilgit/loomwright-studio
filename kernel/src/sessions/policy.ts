@@ -237,6 +237,9 @@ function bashTouchesLoomwrightRunState(command: string): boolean {
   if (program === undefined) return false;
   const name = basename(program).toLowerCase();
   if (READ_ONLY_PROGRAMS.includes(name)) return false;
+  // `gh pr checkout` (alias `co`) moves the work tree to a PR branch the kernel cannot read before gh fetches it;
+  // Loomwright's drains run `git checkout "$HEAD_REF"`, which the gate checks (`checkoutTargets`). Review iteration 4.
+  if (name === "gh" && words[1] === "pr" && words.slice(2).some((w) => w === "checkout" || w === "co")) return true;
   return words.slice(1).some((word) => {
     const w = word.toLowerCase();
     if (name === "git" && (/[*?[]/.test(w) || w.startsWith(":"))) return true;
@@ -245,6 +248,43 @@ function bashTouchesLoomwrightRunState(command: string): boolean {
     const segs = w.split("/").filter((s) => s !== "" && s !== ".");
     return segs[segs.length - 1] === RUN_STATE_DIR[0];
   });
+}
+
+/** `git checkout` / `git switch` options that take the next word as their value (a new branch name, never a ref read here). */
+const CHECKOUT_VALUE_OPTIONS: readonly string[] = ["-b", "-B", "-c", "-C", "--orphan", "--create", "--force-create"];
+
+/**
+ * The words a run session's `git checkout` or `git switch` could check out, for
+ * the session manager to ask git about (review iteration 4): `undefined` when
+ * the command is neither; `"deny"` when it cannot be read exactly (a short
+ * option cluster such as `-fb`, which could hide a value option); else every
+ * word before `--` that is not an option or an option's value. Each such word
+ * may be a ref or a pathspec; the manager decides which by asking git. A ref
+ * whose tree tracks anything under `.supervisor/automate/` would replace the
+ * run's state files on checkout: git overwrites an ignored file when the
+ * target tracks its path (reproduced with git 2.55.0). Pure.
+ */
+export function checkoutTargets(command: string): readonly string[] | "deny" | undefined {
+  const words = shellWords(command).filter((w) => w !== "");
+  if (words[0] === undefined || basename(words[0]).toLowerCase() !== "git" || (words[1] !== "checkout" && words[1] !== "switch")) return undefined;
+  const targets: string[] = [];
+  for (let i = 2; i < words.length; i += 1) {
+    const w = words[i] as string;
+    if (w === "--") break;
+    if (w === "-") {
+      // `git checkout -` / `git switch -`: the previous branch.
+      targets.push("@{-1}");
+    } else if (CHECKOUT_VALUE_OPTIONS.includes(w)) {
+      i += 1;
+    } else if (w.startsWith("--")) {
+      continue;
+    } else if (w.startsWith("-")) {
+      if (w.length > 2) return "deny";
+    } else {
+      targets.push(w);
+    }
+  }
+  return targets;
 }
 
 /** `tool_input.command` when `tool_input` is an object whose `command` is a string. */

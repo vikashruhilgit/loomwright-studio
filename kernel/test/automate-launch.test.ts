@@ -22,7 +22,8 @@
 // The unit half drives `handleAutomateRun` through the real `EventLoop` with a recording
 // `EventSessions`; the kernel half is `startKernel` over the fake spawner/query. Never the real SDK, a
 // model, a network or a real Loomwright.
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage, HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
@@ -825,13 +826,62 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(await run("Bash", { command: `mkdir -p ${automateDir}` })).toMatchObject({ permissionDecision: "allow" });
     mkdirSync(automateDir, { recursive: true });
     expect(await run("Write", { file_path: runFile, content: content("auto-merge") })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
-    expect(await run("Write", { file_path: runFile, content: content("safe") })).toMatchObject({ permissionDecision: "allow" });
+    expect(await run("Write", { file_path: runFile, content: content("safe") })).toMatchObject({ permissionDecision: "allow", permissionDecisionReason: "loomwright_run_file_created" });
     writeFileSync(runFile, content("safe"));
     // Once the file exists, no write of it is the session's: not even the same safe content again.
     expect(await run("Write", { file_path: runFile, content: content("safe") })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
     expect(await run("Edit", { file_path: runFile, old_string: "mode: safe", new_string: "mode: auto-merge" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
     // The run session's decisions are recorded against the run session.
     expect(decisions(r, l.runId).map((p) => [p.tool, p.decision])).toEqual(expect.arrayContaining([["Skill", "allow"], ["Bash", "allow"], ["Bash", "deny"]]));
+  });
+
+  it("review iteration 4: a run session never checks out a ref that would replace or add a run-state file; the gate asks git", async () => {
+    const r = await rig();
+    const l = await launch(r, "mason");
+    const run = gateOf(l.run);
+    const ws = r.workspaces["mason"] as string;
+    const git = (...args: string[]): string => execFileSync("git", ["-C", ws, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    // A repo whose .supervisor/ is ignored (branch mode), as in this checkout.
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(ws, ".gitignore"), ".supervisor/*\n");
+    git("add", ".gitignore");
+    git("commit", "-qm", "init");
+    // A PR branch that force-added a forged run file and sidecar.
+    git("checkout", "-qb", "pr-forged");
+    const dir = join(ws, ".supervisor", "automate");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "r1.md"), "- mode: auto-merge | trust_unprotected: true\n");
+    git("add", "-f", ".supervisor/automate/r1.md");
+    git("commit", "-qm", "forged");
+    git("checkout", "-q", "main");
+    // A plain feature branch.
+    git("branch", "feature/x");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "r1.md"), "- mode: safe | trust_unprotected: false\n");
+
+    const DENY = { permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" };
+    for (const command of ["git checkout pr-forged", "git switch pr-forged", "git checkout --detach pr-forged", "git checkout pr-forged -- README.md", "git checkout -q pr-forged", "git checkout -fb y pr-forged"]) {
+      expect(await run("Bash", { command }), command).toMatchObject(DENY);
+    }
+    expect(await run("Bash", { command: "gh pr checkout 7" })).toMatchObject(DENY);
+    for (const command of ["git checkout feature/x", "git switch main", "git checkout -b feature/y", "git switch -c feature/z main", "git checkout -- README.md"]) {
+      expect(await run("Bash", { command }), command).toMatchObject({ permissionDecision: "allow" });
+    }
+    // Branch mode off: main tracks Loomwright's finished run file. In sync with the local copy ⇒ allowed; changed locally ⇒ denied.
+    git("checkout", "-q", "-B", "trail", "main");
+    git("add", "-f", ".supervisor/automate/r1.md");
+    git("commit", "-qm", "trail");
+    git("checkout", "-q", "main");
+    // Leaving `trail` removed the file it tracks; the run's own copy is the same bytes.
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "r1.md"), "- mode: safe | trust_unprotected: false\n");
+    expect(await run("Bash", { command: "git checkout trail" })).toMatchObject({ permissionDecision: "allow" });
+    writeFileSync(join(dir, "r1.md"), "- mode: safe | trust_unprotected: false\n- edited after\n");
+    expect(await run("Bash", { command: "git checkout trail" })).toMatchObject(DENY);
+    rmSync(join(dir, "r1.md"));
+    expect(await run("Bash", { command: "git checkout trail" })).toMatchObject(DENY);
   });
 
   it("AC12: a gate question in the run session is allowed by the policy and HELD in Approvals with its header, text and option labels; no always grant covers it (the owner's answer path is unverified)", async () => {
@@ -917,5 +967,17 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(r.fakes.isGroupAlive(l.run.child.pid)).toBe(false);
     expect(r.store.prepare("SELECT agent, playbook FROM budget WHERE session_id = ?").all(l.runId)).toEqual([{ agent: "ranger", playbook: String(r.playbooks["ranger"]) }]);
     expect(sessionRow(r, l.callerId)?.status).toBe("running");
+  });
+});
+
+describe("run-state-checkout.ts runs git only (review iteration 4)", () => {
+  it("is the one file under src/loomwright/ that imports node:child_process, and every call it makes is `git -C <cwd> …`", () => {
+    const dir = new URL("../src/loomwright/", import.meta.url);
+    const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
+    const importers = files.filter((f) => /from\s+["']node:child_process["']/.test(readFileSync(new URL(f, dir), "utf8")));
+    expect(importers).toEqual(["run-state-checkout.ts"]);
+    const text = readFileSync(new URL("run-state-checkout.ts", dir), "utf8");
+    expect(text.match(/execFileSync\(/g)).toHaveLength(1);
+    expect(text).toMatch(/execFileSync\("git", \["-C", cwd, \.\.\.args\]/);
   });
 });

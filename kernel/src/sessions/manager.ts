@@ -26,6 +26,7 @@ import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
 import { isProtectedPath, protectedLocationsText, resolvedPath } from "../protected-paths.js";
 import { loomwrightAdapterStatus } from "../loomwright/active-install.js";
+import { refTracksRunState } from "../loomwright/run-state-checkout.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { hostSwitchNameProblem } from "../loomwright/contract.js";
 import type { LoomwrightHostSwitch } from "../loomwright/contract.js";
@@ -38,7 +39,7 @@ import type { MintedGithubToken } from "./github-session-auth.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { GITHUB_CLI_DENY_REASON, draftDecision, draftDenyReason, draftPayloadOf, githubCliDecision } from "./draft-mode.js";
 import { latestOrphanReason } from "./orphans.js";
-import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES, safeRunFileCreation } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, checkoutTargets, classifyToolCall, decideToolUse, freezePolicy, NEVER_CATEGORIES, safeRunFileCreation } from "./policy.js";
 import type { NeverCategory, ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -2813,6 +2814,13 @@ export class SessionManager {
           if (d.reason === "loomwright_run_state") {
             const created = safeRunFileCreation(input.tool_name, input.tool_input, input.cwd);
             if (created !== undefined && !pathEntryExists(created)) d = { decision: "allow", reason: "loomwright_run_file_created" };
+          }
+          // A checkout in a Loomwright run session: never onto a ref that tracks run state (review iteration 4).
+          if (d.decision === "allow" && input.tool_name === "Bash" && (live.policy.loomwrightScripts ?? []).length > 0 && command !== undefined) {
+            const targets = checkoutTargets(command);
+            if (targets === "deny" || (targets !== undefined && targets.some((t) => refTracksRunState(input.cwd, t)))) {
+              d = { decision: "deny", reason: "loomwright_run_state" };
+            }
           }
           // The rail applies only after the policy allowed: it never widens a policy.
           const rail: ToolCallClass =

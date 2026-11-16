@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
 import { DRAFT_PAYLOAD_KINDS, MAX_DRAFT_TEXT_CHARS, draftDecision, draftPayloadOf, githubCliDecision } from "../src/sessions/draft-mode.js";
-import { ALWAYS_HELD_TOOLS, GITHUB_WRITE_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe, safeRunFileCreation } from "../src/sessions/policy.js";
+import { ALWAYS_HELD_TOOLS, GITHUB_WRITE_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe, safeRunFileCreation, checkoutTargets } from "../src/sessions/policy.js";
 import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
 import { LOOMWRIGHT_DRIVER_ARGUMENTS, LOOMWRIGHT_DRIVER_PROFILES } from "../src/sessions/loomwright-scripts.js";
@@ -1073,5 +1073,33 @@ describe("safeRunFileCreation: a new run's first run file, safe mode only (revie
     expect(safeRunFileCreation("Write", { file_path: "/w/.supervisor/automate/r1.supervisor-result.md", content: runFile(SAFE) }, undefined)).toBeUndefined();
     expect(safeRunFileCreation("Write", { file_path: ".supervisor/automate/r1.md", content: runFile(SAFE) }, undefined)).toBeUndefined();
     expect(safeRunFileCreation("Write", { file_path: "/w/notes.md", content: runFile(SAFE) }, undefined)).toBeUndefined();
+  });
+});
+
+describe("checkoutTargets: the words a run session's checkout could check out (review iteration 4)", () => {
+  it("reads git checkout and git switch as git does: option values are new names, words after -- are paths", () => {
+    expect(checkoutTargets("git checkout pr-forged")).toEqual(["pr-forged"]);
+    expect(checkoutTargets("git switch --detach origin/x")).toEqual(["origin/x"]);
+    expect(checkoutTargets("git checkout -b feature/y")).toEqual([]);
+    expect(checkoutTargets("git switch -c feature/z main")).toEqual(["main"]);
+    expect(checkoutTargets("git checkout --orphan o")).toEqual([]);
+    expect(checkoutTargets("git checkout HEAD~1 -- kernel/src/x.ts")).toEqual(["HEAD~1"]);
+    expect(checkoutTargets("git checkout -- kernel/src/x.ts")).toEqual([]);
+    expect(checkoutTargets("git checkout -")).toEqual(["@{-1}"]);
+    expect(checkoutTargets("git checkout -q --track origin/x")).toEqual(["origin/x"]);
+  });
+
+  it("refuses an option cluster it cannot read exactly, and ignores other commands", () => {
+    expect(checkoutTargets("git checkout -fb y main")).toBe("deny");
+    expect(checkoutTargets("git status")).toBeUndefined();
+    expect(checkoutTargets("gh pr view 7")).toBeUndefined();
+  });
+
+  it("gh pr checkout (and its co alias) is denied in a run policy", () => {
+    const p: ToolPolicy = { allowedTools: ["Bash"], allowedBashPrefixes: ["gh pr"], loomwrightScripts: ["automate-helpers.sh"], admittedScriptPaths: ["/lw/scripts/automate-helpers.sh"] };
+    for (const command of ["gh pr checkout 7", "gh pr co 7", "gh pr checkout https://github.com/o/r/pull/7 --force"]) {
+      expect(decideToolUse(p, "Bash", { command }), command).toEqual({ decision: "deny", reason: "loomwright_run_state" });
+    }
+    expect(decideToolUse(p, "Bash", { command: "gh pr view 7" })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
   });
 });
