@@ -22,6 +22,7 @@ import {
   DISPLAY_NOT_IN_CATALOGUE,
   GENERAL_JOB,
   JOB_GROUP_OTHER_LABEL,
+  KERNEL_LAUNCH_REACH,
   TOOL_JOBS,
   TOOL_JOB_IDS,
   ToolCatalogueError,
@@ -34,7 +35,7 @@ import {
   purposeOf,
 } from "../src/features/catalogue.js";
 import type { ToolCatalogue } from "../src/features/catalogue.js";
-import { LOOMWRIGHT_COMMAND_NEEDS, commandNeedsTable } from "../src/features/job-needs.js";
+import { LOOMWRIGHT_COMMAND_NEEDS, commandNeedsTable, resolveJobNeeds } from "../src/features/job-needs.js";
 import { InvalidContributionError, PHASE1_RESERVED, PHASE1_TOOL_NAMES, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
 import type { ContributedTool } from "../src/features/index.js";
 import { toolsForConnectors } from "../src/integrations/tool-filter.js";
@@ -84,16 +85,16 @@ describe("the catalogue covers every registered tool (AC1, AC6)", () => {
     }
   });
 
-  it("AC1: every tool has a non-empty purpose that is never just Read-only. (the three Read-only. tools use their next sentence, marked read only)", () => {
+  it("AC1: every tool has a non-empty purpose that is never just Read-only. (a Read-only. tool uses its next sentence, marked read only)", () => {
     for (const t of CATALOGUE.tools) {
       expect(t.purpose.trim(), t.name).not.toBe("");
       expect(t.purpose, t.name).not.toMatch(/^Read-only\./);
       expect(t.purpose, t.name).not.toMatch(/\n/);
     }
     const purpose = (name: string) => CATALOGUE.tools.find((t) => t.name === name)?.purpose;
-    expect(purpose("kernel_automate_merge_check")).toBe("Whether Loomwright may merge one parked pull request now (read only).");
+    expect(purpose("kernel_automate_merge_check")).toBe("Whether Loomwright may merge one parked pull request now.");
     expect(purpose("kernel_pr_route")).toBe(
-      "Where a comment on a pull request may be acted on, read fresh on every call (run state and the pull request's author, never a stored copy) (read only).",
+      "Where a comment on a pull request may be acted on, read fresh on every call (run state and the pull request's author, never a stored copy).",
     );
     expect(purpose("kernel_automate_state")).toMatch(/^Loomwright's \/automate state for your workspace that is a clone of the repo: .* \(read only\)\.$/);
     // Every purpose is its own tool's description's first sentence (or, after Read-only., the next): one source, never rewritten.
@@ -241,7 +242,7 @@ describe("the catalogue in Wright's drafting context (AC2, AC9)", () => {
     const job = (id: string) => lines.indexOf(`Job ${id} "${TOOL_JOBS[id as keyof typeof TOOL_JOBS]}":`);
     expect(lines.slice(job("ask_for_merge"), job("ask_for_merge") + 3)).toEqual([
       'Job ask_for_merge "Ask for a merge":',
-      "- kernel_automate_merge_check: Whether Loomwright may merge one parked pull request now (read only). [needs the github connector's write grant]",
+      "- kernel_automate_merge_check: Whether Loomwright may merge one parked pull request now. [needs the github connector's write grant]",
       "- kernel_merge_approval_request: Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio. [needs the github connector's write grant]",
     ]);
     expect(lines).toContain("- kernel_github_pr_get: Read one pull request's metadata and description from GitHub (read-only). [needs the github connector grant]");
@@ -292,7 +293,7 @@ describe("the job-grouped display lines (AC3's grouping, AC9's fallback)", () =>
     const granted = ["Read", `${K}kernel_task_list`, `${K}kernel_github_pr_comments`, `${K}kernel_automate_merge_check`, `${K}kernel_github_pr_get`, `${K}kernel_mcp_jira_x`, `${K}kernel_github_pr_get`];
     expect(jobDisplayLines(granted, CATALOGUE)).toEqual([
       "job: Ask for a merge",
-      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "  - Whether Loomwright may merge one parked pull request now.",
       "job: Read a PR",
       "  - Read one pull request's metadata and description from GitHub (read-only).",
       "  - Read the comments on one pull request from GitHub (read-only): the conversation's comments, then the review comments on files.",
@@ -312,7 +313,7 @@ describe("the job-grouped display lines (AC3's grouping, AC9's fallback)", () =>
     expect(lines).toContain("  - Read one pull request's metadata and description from GitHub (read-only).");
     expect(lines).toContain(`  - Read the comments on one pull request from GitHub (read-only): the conversation's comments, then the review comments on files.${DISPLAY_ADDED}`);
     // Under an added job only the job line is marked.
-    expect(lines[1]).toBe("  - Whether Loomwright may merge one parked pull request now (read only).");
+    expect(lines[1]).toBe("  - Whether Loomwright may merge one parked pull request now.");
     expect(lines.slice(-2)).toEqual(["  - kernel_mcp_old", `  - kernel_mcp_new${DISPLAY_ADDED}`]);
     // The compact form: one mark per job, an added job's or (no purpose line to mark) a kept job's that gains a tool (General's swap gains kernel_task_get).
     expect(jobDisplayLines(next, CATALOGUE, false, held)).toEqual([
@@ -381,17 +382,34 @@ describe("the catalogue text lists each job's declared needs (item 20c, AC5)", (
     }
   });
 
-  it("the ticket job names GitHub write and a workspace as the owner's and the kernel-started /automate with no Skill; the crew routes name the Skill no charter should hold", () => {
+  it("the ticket job names GitHub write and a workspace as the owner's and the kernel-started /automate with no Skill; the triage and merge routes read the same way (D45, AC5)", () => {
     const tickets = after("automate_tickets").join("\n");
     expect(tickets).toContain("GitHub write access (only the owner can grant it)");
     expect(tickets).toContain("a copy of a repo to work in (only the owner can grant it)");
-    expect(tickets).toContain("reaches /loomwright:automate: the kernel starts it under its own fixed policy (D44)");
+    expect(tickets).toContain(`reaches /loomwright:automate: ${KERNEL_LAUNCH_REACH}`);
+    expect(KERNEL_LAUNCH_REACH).toBe("the kernel starts it under its own fixed policy (D44), so it adds no Claude tool or shell command to a charter; never draft one for it");
     expect(tickets).not.toContain("run skills");
     for (const [id, command] of [["triage_pr_comments", "/loomwright:review-pr"], ["ask_for_merge", "/loomwright:automate --merge-parked"]] as const) {
       const block = after(id).join("\n");
-      expect(block, id).toContain(`reaches ${command}: the crew session runs it itself and it needs run skills`);
-      expect(block, id).toContain("no charter should hold");
+      expect(block, id).toContain(`reaches ${command}: ${KERNEL_LAUNCH_REACH}`);
+      expect(block, id).not.toMatch(/run skills|no charter should hold|crew session runs it/);
     }
+    // The header tells Wright to draft, and copy, no Loomwright grant.
+    expect(lines.join("\n")).not.toContain("a route the crew session runs itself");
+    expect(lines.join("\n")).toContain("never draft a Skill, Agent, Bash or shell grant for it, and never copy one from another member's charter");
+  });
+
+  it("AC5: a charter drafted from the four walk jobs holds no Skill, Agent, Bash or shell prefix", () => {
+    const walk = Object.keys(WALK_JOBS) as (keyof typeof WALK_JOBS)[];
+    const tools = allowedToolsForJobs(CATALOGUE, walk);
+    expect(tools.length).toBeGreaterThan(0);
+    expect(tools.every((t) => t.startsWith("mcp__kernel__")), tools.join(", ")).toBe(true);
+    for (const raw of ["Skill", "Agent", "Bash"]) expect(tools, raw).not.toContain(raw);
+    // The drafting text the tools publish asks for none of them for any job: every `reaches` line is the kernel's.
+    const reaches = lines.filter((l) => l.startsWith("  reaches "));
+    expect(reaches.length).toBeGreaterThanOrEqual(3);
+    for (const l of reaches) expect(l.endsWith(`: ${KERNEL_LAUNCH_REACH}`), l).toBe(true);
+    for (const id of walk) expect(resolveJobNeeds(id, CATALOGUE).bashPrefixes, id).toEqual([]);
   });
 
   it("the composition's catalogue carries the command needs it was built with: the pinned table by default, the active install's where the contract declares them", () => {
@@ -400,10 +418,16 @@ describe("the catalogue text lists each job's declared needs (item 20c, AC5)", (
     const built = kernelToolCatalogue(SHIPPED_TOOLS, table) as ToolCatalogue;
     expect(built.commandNeeds).toBe(table);
     const text = catalogueText(built);
-    expect(text).toContain("reaches /loomwright:review-pr: the crew session runs it itself and it needs read files, which no charter should hold");
-    expect(text).not.toMatch(/reaches \/loomwright:review-pr[^\n]*run skills/);
+    // The command is the kernel's to start whatever the contract declares it needs.
+    expect(text).toContain(`reaches /loomwright:review-pr: ${KERNEL_LAUNCH_REACH}`);
+    expect(text).not.toMatch(/reaches \/loomwright:review-pr[^\n]*(run skills|read files)/);
     // The drafting tools publish the same text.
     expect(published(kernelToolDefinitions(LISTING_CTX, SHIPPED_TOOLS, built), "kernel_agent_update")).toContain(text);
+    // A crew-launched row (none ships, D45) still names its needs, as a grant no charter should hold.
+    const row = LOOMWRIGHT_COMMAND_NEEDS["/loomwright:review-pr"];
+    if (row === undefined) throw new Error("no review-pr row");
+    const crewText = catalogueText({ ...CATALOGUE, commandNeeds: { ...LOOMWRIGHT_COMMAND_NEEDS, "/loomwright:review-pr": { ...row, launch: "crew" } } });
+    expect(crewText).toContain("reaches /loomwright:review-pr: the crew session runs it itself and it needs run skills, run shell commands, start helper agents, see changes with git, commit with git, push with git and work with pull requests on GitHub, which no charter should hold; propose no grant for it");
   });
 
   it("the header says which needs only the owner can grant, and a job with no extra need says so", () => {

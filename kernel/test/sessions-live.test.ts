@@ -14,18 +14,140 @@
 // `ToolSearch` `tool_decision` for that session: the kernel launches every
 // session with the SDK's tool deferral off, so its kernel tools are offered
 // directly (docs/evidence/agent-sdk-tool-loading-probe.md).
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+//
+// The manager-level AC15/AC16 block below (phase 8 item 22g) is NOT live: it
+// runs in `npm test` on the fake spawner and query (session-fakes.ts) and reads
+// a started run session's admitted script set back through its real
+// PreToolUse gate.
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SUBSCRIPTION_TOKEN_ID, selectAuthProvider } from "../src/auth/index.js";
+import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { SessionManager } from "../src/sessions/index.js";
+import { LoomwrightSessionError } from "../src/sessions/loomwright-path.js";
+import type { ToolPolicy } from "../src/sessions/types.js";
 import { Store } from "../src/store/index.js";
 import { KERNEL_MCP_SERVER_NAME, createKernelMcpServer } from "../src/tools/server.js";
+import { count, events } from "./loop-helpers.js";
+import { bashGate, fakeSessions, makePluginDir, startParams, stubProvider } from "./session-fakes.js";
+import type { FakeCall } from "./session-fakes.js";
 
 const LIVE = process.env.STUDIO_LIVE === "1";
+
+describe("a started run session's admitted Loomwright scripts (AC15/AC16, on fakes)", () => {
+  let tmp: string;
+  let pluginDir: string;
+  let store: Store;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "studio-run-scripts-"));
+    pluginDir = makePluginDir(tmp);
+    store = new Store({ dataDir: join(tmp, "data") });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function setup(admission?: () => { admitted: true }) {
+    const fakes = fakeSessions();
+    const manager = new SessionManager(
+      { store, authProvider: stubProvider(), loomwrightPath: pluginDir, stopGraceMs: 10, baseEnv: { PATH: "/usr/bin" }, ...(admission === undefined ? {} : { admission }) },
+      { ...fakes.deps, homeDir: join(tmp, "home") },
+    );
+    return { fakes, manager };
+  }
+
+
+  it("holds the exact paths built from the session's own loomwrightPath: the run's drivers are admitted, nothing else", async () => {
+    const next = join(pluginDir, "scripts", "automate-next-step.sh");
+    const helpers = join(pluginDir, "scripts", "automate-helpers.sh");
+    const unlisted = join(pluginDir, "scripts", "automate-not-listed.sh");
+    for (const p of [next, helpers, unlisted]) writeFileSync(p, "#!/bin/bash\n");
+    const { fakes, manager } = setup();
+    const handle = await manager.startSession(startParams(tmp, { policy: AUTOMATE_RUN_POLICY, closeInputOnResult: false }));
+    // The SDK loads the same install string the admitted set is built from.
+    const call = fakes.calls[0] as FakeCall;
+    expect(call.options.plugins).toEqual([{ type: "local", path: pluginDir }]);
+    const gate = bashGate(call, tmp);
+    expect(await gate(`bash ${next} --resume ${join(tmp, ".supervisor", "automate")}`)).toMatchObject({ permissionDecision: "allow" });
+    expect(await gate(`bash "${helpers}" meta-entry`)).toMatchObject({ permissionDecision: "allow" });
+    for (const command of [`bash ${unlisted}`, `bash ${join(tmp, "scripts", "automate-next-step.sh")}`, "bash -c id", `bash ${pluginDir}/scripts/../scripts/automate-next-step.sh`]) {
+      expect(await gate(command), command).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
+    }
+    expect(await gate(`bash ${next} $(id)`)).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_shell_metacharacter" });
+    // The rail still runs on an admitted path: a direct merge is still blocked.
+    expect(await gate("gh pr merge 7 --squash")).toMatchObject({ permissionDecision: "deny" });
+    (fakes.calls[0] as FakeCall).stream.end();
+    await handle.done;
+  });
+
+  it("refuses a loomwrightScripts that is not an array of names: invalid_params, before Loomwright, no row", async () => {
+    const { fakes, manager } = setup();
+    for (const loomwrightScripts of ["automate-next-step.sh", [1], [null], {}]) {
+      const policy = { allowedTools: ["Bash"], allowedBashPrefixes: [], loomwrightScripts } as unknown as ToolPolicy;
+      const err = await manager.startSession(startParams(tmp, { policy })).catch((e: unknown) => e);
+      expect(err, JSON.stringify(loomwrightScripts)).toMatchObject({ name: "SessionError", code: "invalid_params" });
+    }
+    expect(fakes.calls).toHaveLength(0);
+    expect(count(store, "SELECT count(*) FROM sessions")).toBe(0);
+    expect(events(store, "session_refused")).toEqual([]);
+  });
+
+  it("refuses a loomwrightDriverProfile outside the closed set: invalid_params, before Loomwright, no row (review iteration 2)", async () => {
+    const { fakes, manager } = setup();
+    for (const loomwrightDriverProfile of ["auto_merge", "", 1, null, ["merge_parked"]]) {
+      const policy = { allowedTools: ["Bash"], allowedBashPrefixes: [], loomwrightDriverProfile } as unknown as ToolPolicy;
+      const err = await manager.startSession(startParams(tmp, { policy })).catch((e: unknown) => e);
+      expect(err, JSON.stringify(loomwrightDriverProfile)).toMatchObject({ name: "SessionError", code: "invalid_params" });
+    }
+    expect(fakes.calls).toHaveLength(0);
+    expect(count(store, "SELECT count(*) FROM sessions")).toBe(0);
+  });
+
+  it("drops a caller's own admittedScriptPaths: only the manager fills the set", async () => {
+    const evil = join(tmp, "evil.sh");
+    writeFileSync(evil, "#!/bin/bash\n");
+    const { fakes, manager } = setup();
+    const policy = { allowedTools: ["Bash"], allowedBashPrefixes: [], admittedScriptPaths: [evil] } as ToolPolicy;
+    const handle = await manager.startSession(startParams(tmp, { policy, closeInputOnResult: false }));
+    expect(await bashGate(fakes.calls[0] as FakeCall, tmp)(`bash ${evil}`)).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
+    (fakes.calls[0] as FakeCall).stream.end();
+    await handle.done;
+  });
+
+  it("refuses the start when the install's scripts/ cannot be read: loomwright_not_found / install_path_invalid, before admission, no row and no spawn", async () => {
+    // A valid install (manifest and contract) whose scripts/ directory is gone.
+    const bare = makePluginDir(join(tmp, "bare"));
+    rmSync(join(bare, "scripts"), { recursive: true });
+    pluginDir = bare;
+    let asked = 0;
+    const { fakes, manager } = setup(() => {
+      asked += 1;
+      return { admitted: true };
+    });
+    const err = await manager.startSession(startParams(tmp, { policy: AUTOMATE_RUN_POLICY })).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomwrightSessionError);
+    expect(err).toMatchObject({ code: "loomwright_not_found", detail: "install_path_invalid", path: join(bare, "scripts") });
+    expect(asked).toBe(0);
+    expect(fakes.calls).toHaveLength(0);
+    expect(count(store, "SELECT count(*) FROM sessions")).toBe(0);
+    expect(events(store, "session_refused").map((e) => [e.session_id, e.payload])).toEqual([
+      [null, { reason: "loomwright_not_found", detail: "install_path_invalid", path: join(bare, "scripts") }],
+    ]);
+
+    // A policy that names no script never reads scripts/: the same install starts it.
+    const handle = await manager.startSession(startParams(tmp, { closeInputOnResult: false }));
+    expect(count(store, "SELECT count(*) FROM sessions")).toBe(1);
+    (fakes.calls[0] as FakeCall).stream.end();
+    await handle.done;
+  });
+});
 
 describe.skipIf(!LIVE)("live session (STUDIO_LIVE=1)", () => {
   const dirs: string[] = [];

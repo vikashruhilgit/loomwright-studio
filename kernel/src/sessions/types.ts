@@ -13,6 +13,7 @@ import type { ConnectorKind } from "../integrations/types.js";
 import type { PlaybookMode } from "../playbooks/types.js";
 import type { Store } from "../store/store.js";
 import type { SessionTokenMint } from "./github-session-auth.js";
+import type { LoomwrightDriverProfile } from "./loomwright-scripts.js";
 import type { NeverCategory } from "./policy.js";
 
 /**
@@ -107,6 +108,44 @@ export interface ToolPolicy {
    * write is still held, and `gh pr merge` is still `merge_blocked`.
    */
   readonly githubWrite?: boolean;
+  /**
+   * The Loomwright driver and helper scripts this policy runs, by basename
+   * under the session's Loomwright install's `scripts/` (D45, phase 8
+   * item 22g, AC15). Only a kernel run policy constant names them (`AUTOMATE_RUN_POLICY`,
+   * `automate/launch.ts`); a charter or settings file never carries the field.
+   * Absent or empty: no script is admitted, and the install's layout is never
+   * read. It admits nothing by itself: the gate reads `admittedScriptPaths`.
+   */
+  readonly loomwrightScripts?: readonly string[];
+  /**
+   * Which of `automate-next-step.sh`'s mode, trust and entry options the
+   * session may pass (`LOOMWRIGHT_DRIVER_ARGUMENTS`, `loomwright-scripts.ts`;
+   * review iteration 2). Like `loomwrightScripts`, only a kernel run policy
+   * constant names it (`AUTOMATE_RUN_POLICY`, `MERGE_PARKED_RUN_POLICY`,
+   * `MERGE_PARKED_TRUSTED_RUN_POLICY`), never a charter or settings file.
+   * Absent: `automate_run`, under which no driver call can reach a merge.
+   */
+  readonly loomwrightDriverProfile?: LoomwrightDriverProfile;
+  /**
+   * The one Loomwright run a merge run may act on (phase 8 item 22g, review
+   * iteration 3): the parked run's id the kernel launched
+   * `--merge-parked <run_id>` for. Under a merge profile every driver `--run`
+   * must equal it and every `<run_file> --result` must name `<run_id>.md`
+   * (`matchLoomwrightScript`); a merge profile without it admits neither (fail
+   * closed). Set only by the kernel's launch (`automate/launch.ts`) from the
+   * checked payload, never by a charter or settings file.
+   */
+  readonly loomwrightRunId?: string;
+  /**
+   * The exact absolute paths `bash <path>` may run (`matchLoomwrightScript`,
+   * `loomwright-scripts.ts`): `loomwrightScripts` under the install the
+   * session loads, each a regular file whose realpath is that install's
+   * `scripts/<name>` (`loomwrightScriptPaths`). Filled by the session manager
+   * alone, like `mode` and `connectors`, at start and at each resume from the
+   * row's recorded install (a caller's value is dropped); absent when the
+   * policy names no script.
+   */
+  readonly admittedScriptPaths?: readonly string[];
 }
 
 /** Every permission mode except `bypassPermissions`, which the kernel never sets (D5). */

@@ -98,9 +98,9 @@ function needs(declared: Partial<JobNeedsDeclaration> = {}): JobNeedsDeclaration
 export const TOOL_JOB_DEFINITIONS = Object.freeze({
   // D44: the kernel starts `/loomwright:automate` under its own frozen policy, so the job needs no Claude tool or shell prefix.
   automate_tickets: Object.freeze({ label: "Hand tickets to /automate", needs: needs({ workspace: true, ticketSource: true, loomwrightCommands: ["/loomwright:automate"] }) }),
-  // D44-open: the crew session runs `/loomwright:review-pr` itself (the kernel does not launch this route yet).
+  // D45: the kernel starts `/loomwright:review-pr` (the fix) under its own frozen policy, so the job needs no Claude tool or shell prefix.
   triage_pr_comments: Object.freeze({ label: "Triage PR comments", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:review-pr"] }) }),
-  // D44-open: the crew session runs `/loomwright:automate --merge-parked` itself.
+  // D45: the kernel starts `/loomwright:automate --merge-parked` (the merge) under its own frozen policy, likewise.
   ask_for_merge: Object.freeze({ label: "Ask for a merge", needs: needs({ workspace: true, loomwrightCommands: ["/loomwright:automate --merge-parked"] }) }),
   read_pr: Object.freeze({ label: "Read a PR", needs: needs() }),
   comment_on_issues: Object.freeze({ label: "Comment on issues", needs: needs() }),
@@ -382,6 +382,12 @@ export function andList(items: readonly string[]): string {
 }
 
 /**
+ * What a `reaches` line says of a command the kernel starts itself (D44's
+ * ticket run, D45's fix and merge): the one wording for all three.
+ */
+export const KERNEL_LAUNCH_REACH = "the kernel starts it under its own fixed policy (D44), so it adds no Claude tool or shell command to a charter; never draft one for it";
+
+/**
  * A job's declared needs as the lines `catalogueText` puts after its tools
  * (AC5): `  needs: …` (its kernel tools above, then the connector access, the
  * Claude tools and shell commands and the workspace the job itself needs, each
@@ -402,13 +408,11 @@ function needsLines(job: CatalogueJob, table: LoomwrightCommandNeedsTable | unde
   for (const invocation of declared.loomwrightCommands) {
     const row = table?.[invocation];
     if (row === undefined) lines.push(`  reaches ${invocation}`);
-    else if (row.launch === "kernel") {
-      lines.push(`  reaches ${invocation}: the kernel starts it under its own fixed policy (D44), so it adds no Claude tool or shell command to a charter; never draft one for it`);
-    } else {
+    else if (row.launch === "kernel") lines.push(`  reaches ${invocation}: ${KERNEL_LAUNCH_REACH}`);
+    else {
+      // No row is crew-launched today (D45); a crew row's needs are still named, as a grant no charter should hold.
       const asks = andList([...row.claudeTools, ...row.bashPrefixes].map((n) => n.label));
-      lines.push(
-        `  reaches ${invocation}: the crew session runs it itself and it needs ${asks}, which no charter should hold (D44: the kernel does not launch this route yet); propose no grant for it, the owner can enable the playbook anyway`,
-      );
+      lines.push(`  reaches ${invocation}: the crew session runs it itself and it needs ${asks}, which no charter should hold; propose no grant for it`);
     }
   }
   return lines;
@@ -427,7 +431,7 @@ export function catalogueText(catalogue: ToolCatalogue): string {
     "Tell the owner the jobs in plain words, never the tool names.",
     "A tool marked [needs the … grant] is offered only to a member holding that connector grant. The grant is the owner's: a create may propose it in connectors, the owner sets the write level in Team, and kernel_agent_update never changes it.",
     `${TOOL_JOBS.triage_pr_comments} also needs ${TOOL_JOBS.read_pr}, to read the comments.`,
-    "Each job's `needs:` line says what its work needs beyond its tools. Only the owner can grant GitHub write, a connector, live mode and a workspace: name them to the owner as their step, never as a change you draft. A `reaches` line for a route the crew session runs itself names a Skill or shell need no charter should hold: propose no grant for it.",
+    "Each job's `needs:` line says what its work needs beyond its tools. Only the owner can grant GitHub write, a connector, live mode and a workspace: name them to the owner as their step, never as a change you draft. A `reaches` line names a Loomwright command the kernel starts itself: never draft a Skill, Agent, Bash or shell grant for it, and never copy one from another member's charter.",
     ...catalogue.jobs.flatMap((j) => [
       `Job ${j.id} "${j.label}":`,
       ...j.tools.map((t) => `- ${t.name}: ${t.purpose}${connectorNote(t)}`),

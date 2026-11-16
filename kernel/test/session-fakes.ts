@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import type { Options, SDKMessage, SDKUserMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, HookInput, Options, SDKMessage, SDKUserMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import type { AuthProvider } from "../src/auth/index.js";
 import type { CancelTimer, QueryFn, QueryHandle, SessionManagerDeps, SpawnFn, StartSessionParams } from "../src/sessions/index.js";
 import { contractFixturePath } from "./fixtures/loomwright/helpers.js";
@@ -174,10 +174,11 @@ export const immediate = (fn: () => void, _ms: number): CancelTimer => {
   return () => clearImmediate(t);
 };
 
-/** A Loomwright install the manager accepts as `loomwrightPath`: a manifest and the valid fixture `capabilities.json`. */
+/** A Loomwright install the manager accepts as `loomwrightPath`: a manifest, the valid fixture `capabilities.json`, and an empty `scripts/` (a run policy's start reads it, AC16). */
 export function makePluginDir(root: string): string {
   const dir = join(root, "plugin-cache", "15.115.0");
   mkdirSync(join(dir, ".claude-plugin"), { recursive: true });
+  mkdirSync(join(dir, "scripts"), { recursive: true });
   writeFileSync(join(dir, ".claude-plugin", "plugin.json"), '{"name":"loomwright"}\n');
   copyFileSync(contractFixturePath("valid"), join(dir, "capabilities.json"));
   return dir;
@@ -213,4 +214,13 @@ export async function flush(rounds = 5): Promise<void> {
 /** `abandonSession` for API fakes whose test never abandons anything: a call is a test failure. */
 export function unexpectedAbandon(): never {
   throw new Error("unexpected abandonSession call");
+}
+
+/** `call`'s PreToolUse gate for a Bash command, as the CLI would call it from `cwd`: the hook's `hookSpecificOutput`. */
+export function bashGate(call: FakeCall, cwd: string): (command: string) => Promise<{ permissionDecision: string; permissionDecisionReason: string }> {
+  const hook = call.options.hooks?.PreToolUse?.[0]?.hooks[0] as HookCallback;
+  return async (command: string) => {
+    const input = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, tool_use_id: "toolu_1", session_id: "s", transcript_path: "/dev/null", cwd } as unknown as HookInput;
+    return ((await hook(input, "toolu_1", { signal: new AbortController().signal })) as { hookSpecificOutput: { permissionDecision: string; permissionDecisionReason: string } }).hookSpecificOutput;
+  };
 }

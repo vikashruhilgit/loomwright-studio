@@ -64,7 +64,7 @@ import { fakeMsg, fakeSessions, makePluginDir, stubProvider } from "./session-fa
 import type { FakeCall } from "./session-fakes.js";
 
 const K = "mcp__kernel__";
-/** The jobs whose Loomwright command the crew session runs itself (D44-open): a charter granting their tools always has permission lines readiness flags (item 20c). */
+/** The jobs whose Loomwright route the crew session used to run itself (item 20c); the kernel starts them now (D45), and a charter granting their tools gets readiness's covered route line (item 22g). */
 const CREW_RUN_JOBS: readonly ToolJob[] = ["triage_pr_comments", "ask_for_merge"];
 const CREATE = `${K}${AGENT_CREATE_TOOL_NAME}`;
 const UPDATE = `${K}${AGENT_UPDATE_TOOL_NAME}`;
@@ -1023,7 +1023,7 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect(plain(shown).slice(0, 10)).toEqual([
       'Create crew member mason ("Mason", crab crew-teal), proposed by Wright',
       "job: Ask for a merge",
-      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "  - Whether Loomwright may merge one parked pull request now.",
       "job: Read a PR",
       "  - Read one pull request's metadata and description from GitHub (read-only).",
       "job: General",
@@ -1062,7 +1062,7 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect(plain(heldDisplay(h.store))).toEqual([
       `Update crew member mason ("Mason"), settings sha256 ${sha256.slice(0, 12)}, proposed by Wright`,
       "job: Ask for a merge (added)",
-      "  - Whether Loomwright may merge one parked pull request now (read only).",
+      "  - Whether Loomwright may merge one parked pull request now.",
       "  - Ask the owner to approve merging one pull request at one head SHA, for a repository set to Approve in Studio.",
       "job: Read a PR",
       "  - Read one pull request's metadata and description from GitHub (read-only).",
@@ -1175,20 +1175,22 @@ describe("the display groups the granted kernel tools by job (phase 8 item 16: A
     expect(shown.replace(jobLines.join("\n"), fullBlock).length).toBeGreaterThan(MAX_APPROVAL_DISPLAY);
   });
 
-  it("a member holding both crew-run command jobs (the permission lines no charter can clear): an update asking for little is held within the display bound, and one widening it past the bound is asked for less", async () => {
+  it("a member holding both kernel-run route jobs and an older member's Skill (item 22g, D45): an update asking for little is held within the display bound, and one widening it past the bound is asked for less", async () => {
     const h = await bootKernel();
     const catalogue = buildToolCatalogue(SHIPPED_TOOLS);
     const crewTools = catalogue.tools.filter((t) => CREW_RUN_JOBS.includes(t.job)).map((t) => `${K}${t.name}`);
     expect(crewTools.length).toBeGreaterThan(0);
-    expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: crewTools, allowedBashPrefixes: [], never: [] } }), { by: "owner" }, clock.at).ok).toBe(true);
+    expect(createAgent(h.store, dataDir, charter({ tool_policy: { allowedTools: ["Skill", ...crewTools], allowedBashPrefixes: ["gh pr"], never: [] } }), { by: "owner" }, clock.at).ok).toBe(true);
     const w = await h.session("wright", WRIGHT_POLICY);
     const sha256 = async () =>
       (JSON.parse((await w.tool(AGENT_LIST_TOOL_NAME, {})).content[0]?.text ?? "{}") as { agents: ListEntry[] }).agents.find((a) => a.id === "mason")?.sha256 as string;
-    // The fixed lines are there for both jobs, as a flag no charter change clears.
+    // Both routes read as covered by Studio, the held Skill and shell prefix as a permission no crew member needs, and no line says "no charter should grant it".
     const small = await w.gate(UPDATE, { id: "mason", changes: { display_name: "Mason II" }, expected_sha256: await sha256(), idempotency_key: "u1" });
     expect(small.permissionDecisionReason).toMatch(/^approval_required: held as approval 1;/);
     const shown = heldDisplay(h.store);
-    for (const label of CREW_RUN_JOBS.map((j) => catalogue.jobs.find((x) => x.id === j)?.label as string)) expect(shown).toContain(`for ${label}: no charter should grant it`);
+    expect(shown).not.toContain("no charter should grant it");
+    expect(shown).toContain("  covered: Triage PR comments and Ask for a merge: Studio runs the fix and the merge for this member");
+    expect(shown).toContain("  flagged: permission to run skills and work with pull requests on GitHub: this charter holds a permission no crew member needs");
     expect(shown.length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
     // Too long for the bound with those lines in: refused with the usual ask-for-less, never held over the bound.
     const workspaces = Array.from({ length: 16 }, (_, i) => join(tmp, "work", `${"w".repeat(200)}-${String(i).padStart(2, "0")}`));

@@ -5,12 +5,16 @@
 // `kernel_automate_prepare` writes the items and queues ONE kernel event; the
 // brain's handler routes that event to `./launch.ts`, which starts the `/automate`
 // run as its own kernel session (D44, which supersedes D43's "the session runs
-// `/automate` itself"). The merge check's `go` still names a Loomwright command
-// for the session to run; that path is open (see `docs/architecture/automate.md`).
+// `/automate` itself"). The merge check's `go` queues the kernel's
+// `merge_parked` run the same way (D45, phase 8 item 22g): one `message` event whose
+// `automate_run` payload is the kind, the repo, the PR, the parked run's id, the
+// checkout and the calling session's attribution, so the kernel starts
+// `/loomwright:automate --merge-parked <run_id>` as its own session and the crew
+// session never runs it. A `wait` or a `park` queues nothing.
 //
 //   kernel_automate_prepare(repo, tickets[])            write the ticket items and `_BACKLOG.md`; queue the kernel's run event
 //   kernel_automate_state(repo)                         read-only: `live` | `parked` | `idle`, from Loomwright's run files
-//   kernel_automate_merge_check(repo, pr)               read-only: `go` (with p14's invocation) | `wait` | `park`
+//   kernel_automate_merge_check(repo, pr)               `go` (queues the kernel's merge run) | `wait` | `park`
 //   kernel_merge_approval_request(repo, pr, head_sha, ci, ready_at, policy?)   always held; a record only
 //
 // All four are `requiresConnector: "github"` and `requiresConnectorLevel: "write"`
@@ -37,8 +41,8 @@
 // through `merge_check`, and a new push makes it stale.
 //
 // The `studio` CLI loads this module through the feature registry, so it imports
-// only types, the feature seam, zod and this feature's files: never the Agent SDK,
-// the session manager or `kernel.ts`.
+// only types, the feature seam, zod, the repo-policy module, the loop's queue and
+// this feature's files: never the Agent SDK, the session manager or `kernel.ts`.
 import { z } from "zod";
 import type { ConsolePart } from "../console/types.js";
 import { defineTool } from "../features/contribution.js";
@@ -48,7 +52,7 @@ import { GITHUB_CI_STATES, type GitHubRepoPolicyReads } from "../integrations/ty
 import { enqueueEvent } from "../loop/queue.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
 import { checkoutOf } from "./checkout.js";
-import { AUTOMATE_RUN_KEY, type AutomateRunPayload } from "./launch.js";
+import { AUTOMATE_RUN_KEY, type AutomateRunPayload, type MergeParkedRunPayload } from "./launch.js";
 import { mergeCheck } from "./merge-check.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
 import { ONE_SAFE_LINE } from "./text-rules.js";
@@ -93,7 +97,7 @@ function refuse(code: AutomateRefusal, detail: string): Error {
 }
 
 /** The calling session: its agent and the live playbook it runs for. */
-interface LiveSession {
+export interface LiveSession {
   readonly agent: string;
   readonly playbook: number;
   /** The playbook version the session runs (`sessions.playbook_version`), or `null`. */
@@ -109,7 +113,7 @@ interface LiveSession {
  * it has a playbook and an agent, did not start as a dry run, and the playbook's
  * stored `mode` is `live`. Reads the store only. Throws a refusal otherwise.
  */
-function liveSession(ctx: ContributedToolContext): LiveSession {
+export function liveSession(ctx: ContributedToolContext): LiveSession {
   const row = ctx.sessions.getSession(ctx.sessionId);
   if (row === undefined || row.playbook === null || row.agent === null) {
     throw refuse("not_a_playbook_session", "this tool is for a live playbook's own run session, not a chat or a plain agent session");
@@ -214,7 +218,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
     name: "kernel_automate_merge_check",
     job: "ask_for_merge",
     description:
-      "Read-only. Whether Loomwright may merge one parked pull request now. Answers go with the exact invocation to run yourself (/loomwright:automate --merge-parked <run_id>, with the extra flag only where the owner recorded one for a repository GitHub cannot protect), or wait / park with the reason. It answers go only when the owner's approval rule for the repository is met at the head Loomwright marked READY, no run is live and the item is parked awaiting_merge. You never merge: Loomwright's own gate decides.",
+      "Whether Loomwright may merge one parked pull request now. It reads only; on go it queues the kernel's run. Answers go, or wait / park with the reason. On go the kernel queues the merge and starts it as its own session (run: started_by_kernel): /loomwright:automate --merge-parked <run_id>, with the extra flag only where the owner recorded one for a repository GitHub cannot protect, shown as invocation for display. Do not run it yourself, and end your turn. It answers go only when the owner's approval rule for the repository is met at the head Loomwright marked READY, no run is live and the item is parked awaiting_merge. You never merge: Loomwright's own gate decides.",
     shape: { repo: repoShape, pr: prShape },
     requiresConnector: "github",
     requiresConnectorLevel: "write",
@@ -225,7 +229,29 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
         { repo: args.repo, pr: args.pr, checkout, playbookRequirement: session.mergeRequirement },
         { store: ctx.store, now: ctx.now, ...(deps.client === undefined ? {} : { client: deps.client }) },
       );
-      return { repo: args.repo, pr: args.pr, ...answer };
+      if (answer.answer !== "go") return { repo: args.repo, pr: args.pr, ...answer };
+      // `go`: the kernel's merge run (D45, extending D44's path). The payload carries the run id `mergeCheck` read (an `isRunId`),
+      // never a flag: the launch reads `loomwrightMergeFlags` for the repo again when it starts the session.
+      const run: MergeParkedRunPayload = {
+        kind: "merge_parked",
+        repo: args.repo,
+        pr: args.pr,
+        run_id: answer.run_id,
+        checkout,
+        playbook: session.playbook,
+        playbook_version: session.playbookVersion,
+        task: session.task,
+        source_session: ctx.sessionId,
+      };
+      const queued = enqueueEvent(ctx.store, { kind: "message", payload: { agent: session.agent, [AUTOMATE_RUN_KEY]: run } }, ctx.now());
+      return {
+        repo: args.repo,
+        pr: args.pr,
+        ...answer,
+        run: "started_by_kernel",
+        event: queued.id,
+        note: "The kernel starts the merge as its own session: do not run the invocation yourself, and end your turn. Loomwright's own gate decides and merges; the kernel never merges, and it starts nothing while a run is live.",
+      };
     },
   });
 

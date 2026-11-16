@@ -107,12 +107,28 @@ describe("the routing part", () => {
     expect(routingPart.subcommands ?? []).toEqual([]);
   });
 
-  it("describes the four routes and the three triage outcomes, and says it reads fresh, starts no session and pushes nothing", () => {
+  it("describes the four routes and the three triage outcomes, says it reads fresh, and says the kernel queues and starts the fix (the tool itself pushes nothing)", () => {
     const description = routingPart.tools[0]?.description ?? "";
-    for (const word of [...PR_ROUTES, "fix", "reply", "answer", "/loomwright:review-pr <pr url>", "fresh on every call", "starts no session and pushes nothing", "untrusted data"]) {
+    for (const word of [
+      ...PR_ROUTES,
+      "fix",
+      "reply",
+      "answer",
+      "/loomwright:review-pr <pr url>",
+      "fresh on every call",
+      "the kernel queues the fix and starts the command as its own session",
+      "do not run it yourself",
+      "The tool itself pushes nothing",
+      "untrusted data",
+    ]) {
       expect(description, word).toContain(word);
     }
-    expect(description.startsWith("Read-only.")).toBe(true);
+    // Phase 8 item 22g: the old "starts no session" sentence is gone, and no route tells the session to run the command itself.
+    expect(description).not.toContain("starts no session and pushes nothing");
+    expect(description).not.toContain("run in this session");
+    // Review iteration 1: no longer "Read-only." (a fix queues the kernel's run); it says it reads only and queues.
+    expect(description.startsWith("Read-only.")).toBe(false);
+    expect(description).toContain("It reads only; on a fix it queues the kernel's run.");
   });
 
   it("refuses a repo that is not <owner>/<repo> and a pr that is not a positive integer, before any read", async () => {
