@@ -132,6 +132,78 @@ describe("freezePolicy", () => {
     expect(Object.isFrozen(frozen.never)).toBe(true);
     expect(Object.keys(freezePolicy({ allowedTools: [], allowedBashPrefixes: [] }))).toEqual(["allowedTools", "allowedBashPrefixes"]);
   });
+
+  it("copies loomwrightScripts (frozen) when present, and never a caller's admittedScriptPaths, mode, connectors or githubWrite", () => {
+    const names = ["automate-next-step.sh"];
+    const given = { allowedTools: [], allowedBashPrefixes: [], loomwrightScripts: names, admittedScriptPaths: ["/x/scripts/evil.sh"], mode: "live", connectors: ["github"], githubWrite: true } as ToolPolicy;
+    const frozen = freezePolicy(given);
+    names.push("other.sh");
+    expect(frozen.loomwrightScripts).toEqual(["automate-next-step.sh"]);
+    expect(Object.isFrozen(frozen.loomwrightScripts)).toBe(true);
+    expect(Object.keys(frozen)).toEqual(["allowedTools", "allowedBashPrefixes", "loomwrightScripts"]);
+    expect(decideToolUse(frozen, "Bash", { command: "bash /x/scripts/evil.sh" })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+  });
+});
+
+// AC15 (phase 8 item 22g): a run policy admits Loomwright's driver scripts by exact path only. On `main` 1a4a77b1
+// both reproductions below were denied `bash_prefix_not_allowed` under AUTOMATE_RUN_POLICY: the policy had no way
+// to name them, and `bash` is never a prefix. The admitted set is the session manager's (`admittedScriptPaths`).
+describe("decideToolUse: Loomwright driver scripts by exact path (AC15)", () => {
+  const install = "/Users/o/.claude/plugins/cache/atelier/loomwright/17.38.0";
+  const next = `${install}/scripts/automate-next-step.sh`;
+  const helpers = `${install}/scripts/automate-helpers.sh`;
+  // AUTOMATE_RUN_POLICY's grants, with the manager's admitted set filled as a run session's would be.
+  const run: ToolPolicy = { allowedTools: ["Bash", "Read"], allowedBashPrefixes: ["git status", "gh pr"], loomwrightScripts: ["automate-next-step.sh", "automate-helpers.sh"], admittedScriptPaths: [next, helpers] };
+  const runBash = (command: string) => decideToolUse(run, "Bash", { command });
+
+  it("admits `bash <driver> --resume …` and `bash <helpers> meta-entry` (the two calls denied on main), unquoted or double-quoted", () => {
+    expect(runBash(`bash ${next} --resume /w/o-r/.supervisor/automate --run latest`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(runBash(`bash ${helpers} meta-entry`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(runBash(`bash ${next}`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(runBash(`bash "${next}" --resume /w/o-r/.supervisor/automate`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    // The prefixes still answer as before.
+    expect(runBash("git status")).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+  });
+
+  it("the same calls are denied without an admitted set: the name list alone admits nothing", () => {
+    const named: ToolPolicy = { allowedTools: run.allowedTools, allowedBashPrefixes: run.allowedBashPrefixes, loomwrightScripts: run.loomwrightScripts ?? [] };
+    for (const command of [`bash ${next} --resume /w`, `bash ${helpers} meta-entry`]) {
+      expect(decideToolUse(named, "Bash", { command }), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+  });
+
+  it("denies a driver path followed by a shell metacharacter: the metacharacter check runs first", () => {
+    for (const command of [`bash ${next} $(touch x)`, `bash ${next}; touch x`, `bash ${next} --resume /w | sh`, `bash ${next} && rm x`, `bash "${next}" \`id\``, `bash ${next} > /tmp/x`]) {
+      expect(runBash(command), command).toEqual({ decision: "deny", reason: "bash_shell_metacharacter" });
+    }
+  });
+
+  it("denies any other bash command, a path outside the admitted set, a `..` or a near-miss spelling", () => {
+    for (const command of [
+      "bash",
+      "bash -c id",
+      `bash -x ${next}`,
+      `bash  ${next}`,
+      `bash\t${next}`,
+      `sh ${next}`,
+      `${next} --resume /w`,
+      `bash ${install}/scripts/`,
+      `bash ${install}/scripts/automate-wave.sh`,
+      `bash ${install}/scripts/../scripts/automate-next-step.sh`,
+      `bash ${install}/scripts/./automate-next-step.sh`,
+      `bash ${install}/scripts//automate-next-step.sh`,
+      `bash ${next}x`,
+      `bash ${next}.bak`,
+      `bash /tmp/automate-next-step.sh`,
+      "bash automate-next-step.sh",
+      `bash '${next}'`,
+      `bash "${next}"x`,
+      `bash "${next}`,
+      `bash ${next}\t--resume`,
+    ]) {
+      expect(runBash(command), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+  });
 });
 
 describe("NEVER_CATEGORIES and boundaryDecision (phase 4 foundation)", () => {

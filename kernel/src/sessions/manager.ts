@@ -30,8 +30,8 @@ import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { hostSwitchNameProblem } from "../loomwright/contract.js";
 import type { LoomwrightHostSwitch } from "../loomwright/contract.js";
 import type { Store } from "../store/store.js";
-import { LoomwrightSessionError, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
-import type { SessionLoomwright } from "./loomwright-path.js";
+import { LoomwrightSessionError, loomwrightSessionErrorCode, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
+import { loomwrightScriptPaths } from "./loomwright-scripts.js";
 import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
 import { GithubSessionAuth, GithubTokenUnavailableError } from "./github-session-auth.js";
 import type { MintedGithubToken } from "./github-session-auth.js";
@@ -558,7 +558,23 @@ function checkPolicy(policy: unknown): ToolPolicy {
       throw new SessionError("invalid_params", `policy never[${at}] is ${shown}, not one of ${NEVER_CATEGORIES.join(", ")}`);
     }
   }
+  if (p.loomwrightScripts !== undefined && !isStringArray(p.loomwrightScripts)) {
+    throw new SessionError("invalid_params", "policy loomwrightScripts must be an array of script names");
+  }
   return freezePolicy(p as ToolPolicy);
+}
+
+/**
+ * The exact script paths `policy.loomwrightScripts` admit under `installPath`
+ * (`loomwrightScriptPaths`, AC15). A `scripts/` directory that cannot be read
+ * while the policy names scripts throws a `LoomwrightSessionError` with the
+ * existing reason `install_path_invalid` (code `loomwright_not_found`, AC16),
+ * for `#refusingLoomwright` to refuse with: never a fallback to a broader grant.
+ */
+function sessionScriptPaths(installPath: string, policy: ToolPolicy): readonly string[] {
+  const read = loomwrightScriptPaths(installPath, policy.loomwrightScripts);
+  if (read.ok) return read.paths;
+  throw new LoomwrightSessionError(loomwrightSessionErrorCode("install_path_invalid"), "install_path_invalid", read.path, read.message);
 }
 
 /** The Loomwright host-mode state dirs live here, under the Studio data dir: `<dataDir>/loomwright-state/session-<id>`. */
@@ -799,7 +815,9 @@ export class SessionManager {
    * folder (`protected_cwd`, D31: one `session_refused` event, no row) or a
    * Loomwright the session cannot run with (D32, each with one
    * `session_refused` event `{reason: <code>, detail: <adapter reason>, path}`
-   * and no row: no install found, `loomwright_not_found`; a missing or bad
+   * and no row: no install found, or, for a policy that names
+   * `loomwrightScripts`, an install whose `scripts/` directory cannot be read
+   * (detail `install_path_invalid`), `loomwright_not_found`; a missing or bad
    * `capabilities.json`, or a host switch naming a credential or
    * process-control variable or one the auth provider sets,
    * `loomwright_contract`; a contract without a host switch,
@@ -859,6 +877,9 @@ export class SessionManager {
       }),
     );
     const loomwrightPath = loomwright.installPath;
+    // AC15/AC16: the policy's driver scripts by exact path under the install this session loads, before admission and
+    // any row; a `scripts/` directory that cannot be read is refused like any other Loomwright it cannot run with.
+    const scriptPaths = this.#refusingLoomwright(null, () => sessionScriptPaths(loomwrightPath, policy));
 
     const startRequest: AdmissionRequest = { kind: "start", agent: params.agent, account: this.#auth.account, provider: this.#auth.id, task: params.task ?? null, ...playbookOf(params.playbook) };
     this.#admit(startRequest);
@@ -905,7 +926,7 @@ export class SessionManager {
       return rowId;
     });
 
-    const live = this.#newLive(id, sdkSessionId, this.#sessionPolicy(policy, params.agent, params.playbook ?? null, forceDraft, githubToken !== undefined), "starting", dryRun, forceDraft);
+    const live = this.#newLive(id, sdkSessionId, this.#sessionPolicy(policy, params.agent, params.playbook ?? null, forceDraft, githubToken !== undefined, scriptPaths), "starting", dryRun, forceDraft);
     let attempt: Attempt;
     try {
       // Before the spawn; a failure here is a spawn failure.
@@ -1110,7 +1131,11 @@ export class SessionManager {
    * and before admission. A missing or bad contract, or one without a host
    * switch, is refused like a start (`loomwright_contract` /
    * `loomwright_no_host_switch`, one `session_refused` event with the
-   * session's id), and the row is left as it was. Every launch attempt
+   * session's id), and the row is left as it was. A policy's
+   * `loomwrightScripts` are admitted by exact path under that recorded
+   * install, never the active one now; its unreadable `scripts/` directory is
+   * refused the same way (`loomwright_not_found`, detail
+   * `install_path_invalid`). Every launch attempt
    * rebuilds the host-mode env from that contract and re-creates the same
    * state dir (`<dataDir>/loomwright-state/session-<id>`).
    *
@@ -1173,6 +1198,8 @@ export class SessionManager {
     // The Loomwright the session started with, never re-resolved; before admission, the row untouched.
     const recordedPath = row.loomwright_path;
     const loomwright = this.#refusingLoomwright(id, () => readSessionLoomwright(recordedPath));
+    // The driver scripts under that same recorded install (never the active one now), refused like a start; the row untouched.
+    const scriptPaths = this.#refusingLoomwright(id, () => sessionScriptPaths(loomwright.installPath, policy));
     // Before the group check: a refused resume leaves the row and its events untouched.
     // The playbook it resumes for: the one this resume records (`#writePlaybook`), else the row's.
     const playbook = params.playbook ?? row.playbook;
@@ -1214,7 +1241,7 @@ export class SessionManager {
     // The resume goes ahead: record the playbook it runs for, when given (an absent one keeps the row's value).
     this.#writePlaybook(id, params);
 
-    const live = this.#newLive(id, row.sdk_session_id, this.#sessionPolicy(policy, row.agent, playbook, forceDraft, githubToken !== undefined), "interrupted", dryRun, forceDraft);
+    const live = this.#newLive(id, row.sdk_session_id, this.#sessionPolicy(policy, row.agent, playbook, forceDraft, githubToken !== undefined, scriptPaths), "interrupted", dryRun, forceDraft);
     let githubEnv: ChildEnv = {};
     try {
       if (githubToken !== undefined) githubEnv = this.#github.install(id, githubToken);
@@ -2601,8 +2628,8 @@ export class SessionManager {
     throw err;
   }
 
-  /** `fn`'s Loomwright, or the refusal (`#refuseLoomwright`) of the one it threw. */
-  #refusingLoomwright(sessionId: number | null, fn: () => SessionLoomwright): SessionLoomwright {
+  /** `fn`'s answer (the session's Loomwright, or its admitted script paths), or the refusal (`#refuseLoomwright`) of the `LoomwrightSessionError` it threw. */
+  #refusingLoomwright<T>(sessionId: number | null, fn: () => T): T {
     try {
       return fn();
     } catch (err) {
@@ -3072,9 +3099,13 @@ export class SessionManager {
    * session lists (`#grantedProxyTools` over these same `connectors`, phase 8
    * item 22f), deduplicated and frozen; with none it is the caller's, as
    * before. The names live only on this object: never the settings file, the
-   * charter or a stored row.
+   * charter or a stored row. `admittedScriptPaths` (phase 8 item 22g) is
+   * `scriptPaths` copied as given: the caller built it from the policy's
+   * `loomwrightScripts` under the session's own install, before admission and
+   * any row (`sessionScriptPaths`, refused through `#refusingLoomwright`), so
+   * nothing here reads the disk or refuses; absent when it is empty.
    */
-  #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null, forceDraft = false, githubToken = false): ToolPolicy {
+  #sessionPolicy(policy: ToolPolicy, agent: string | null, playbook: number | null, forceDraft = false, githubToken = false, scriptPaths: readonly string[] = []): ToolPolicy {
     const connectors = Object.freeze([...new Set(this.#grantedConnectors(agent))]);
     let mode: PlaybookMode | undefined = forceDraft ? "draft" : undefined;
     if (!forceDraft && playbook !== null) mode = this.#storedMode(playbook);
@@ -3086,6 +3117,7 @@ export class SessionManager {
       ...(mode === undefined ? {} : { mode }),
       connectors,
       ...(githubWrite ? { githubWrite: true } : {}),
+      ...(scriptPaths.length === 0 ? {} : { admittedScriptPaths: Object.freeze([...scriptPaths]) }),
     });
   }
 

@@ -174,10 +174,11 @@ export const immediate = (fn: () => void, _ms: number): CancelTimer => {
   return () => clearImmediate(t);
 };
 
-/** A Loomwright install the manager accepts as `loomwrightPath`: a manifest and the valid fixture `capabilities.json`. */
+/** A Loomwright install the manager accepts as `loomwrightPath`: a manifest, the valid fixture `capabilities.json`, and an empty `scripts/` (a run policy's start reads it, AC16). */
 export function makePluginDir(root: string): string {
   const dir = join(root, "plugin-cache", "15.115.0");
   mkdirSync(join(dir, ".claude-plugin"), { recursive: true });
+  mkdirSync(join(dir, "scripts"), { recursive: true });
   writeFileSync(join(dir, ".claude-plugin", "plugin.json"), '{"name":"loomwright"}\n');
   copyFileSync(contractFixturePath("valid"), join(dir, "capabilities.json"));
   return dir;

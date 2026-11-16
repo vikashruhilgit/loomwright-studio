@@ -42,6 +42,9 @@
 // The rail would have to read arguments (follow-up). See the open points in
 // `docs/architecture/automate.md`. The rail still denies any Bash command with a
 // shell metacharacter, which a real run may hit (also an open point there).
+// Loomwright's own driver and helper scripts are admitted by exact path only
+// (`loomwrightScripts`, phase 8 item 22g): the session manager builds the paths
+// under the install the session loads, so this module never resolves an install.
 //
 // Single drain (invariant 4): the handler starts nothing while Loomwright's run
 // state reads live or cannot be read, or while a run session it started for the
@@ -83,12 +86,32 @@ export interface AutomateRunPayload {
 }
 
 /**
+ * The Loomwright driver and helper scripts the `/automate` run calls, by basename
+ * under the active install's `scripts/` (phase 8 item 22g, AC15). Derived from the
+ * 17.38.0 install with `grep -ohE 'scripts/[A-Za-z0-9_.-]+\.sh'` over
+ * `commands/automate.md`, `skills/automate-loop/` and `scripts/automate-next-step.sh`,
+ * leaving out `test-*.sh`, the Loomwright-repo-only scripts (`bump-version.sh`,
+ * `release-refold.sh`, `check-doc-currency.sh`, `build-capabilities.sh`) and the
+ * host project's `ci-local.sh`; plus `review-heal-next-step.sh`, which the run's
+ * review-heal drain calls. A script the run calls by another path, or that is not
+ * listed, stays denied (a live-run finding, never a wider grant).
+ */
+const AUTOMATE_RUN_SCRIPTS: readonly string[] = Object.freeze([
+  "automate-dismissed.sh", "automate-helpers.sh", "automate-lanes.sh", "automate-merge-watch.sh", "automate-next-step.sh",
+  "automate-wave.sh", "classify-risk.sh", "fix-floor.sh", "guard-lane-wait-armed.sh", "lane-policy.sh", "lane-sampler.sh",
+  "meta-sync.sh", "progress-line-match.sh", "read-token-ledger.sh", "resolve-base-branch.sh", "review-heal-next-step.sh",
+  "rules-gate-verdict.sh", "run-lock.sh",
+]);
+
+/**
  * The run session's policy: what `/automate --inline-phases` is allowed to ask for.
  * Frozen, and never written into a charter. The rail and the approval gate run on
  * top of it unchanged, and the crew member's `never` list is added at the start.
- * Bash is gated by the prefixes only; the Loomwright helper scripts are not listed
- * (their path is the install's, and `bash` as a prefix would let `bash -c` run
- * anything past the rail), so a denied helper call is a live-run finding.
+ * Bash is gated by the prefixes and by `loomwrightScripts`: the session manager
+ * admits `bash <path>` for each listed script only at its exact path under the
+ * install the session loads (`sessions/loomwright-scripts.ts`), never `bash` as a
+ * prefix (that would let `bash -c` run anything past the rail), and refuses the
+ * start when that install's `scripts/` cannot be read.
  */
 export const AUTOMATE_RUN_POLICY: ToolPolicy = Object.freeze({
   allowedTools: Object.freeze(["Skill", "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent", "AskUserQuestion"]),
@@ -101,6 +124,7 @@ export const AUTOMATE_RUN_POLICY: ToolPolicy = Object.freeze({
     "gh pr", "gh issue", "gh api", "gh repo view", "gh auth status", "gh run view",
     "ls", "cat", "pwd", "date", "mkdir", "test", "wc", "head", "tail", "grep", "sleep", "jq",
   ]),
+  loomwrightScripts: AUTOMATE_RUN_SCRIPTS,
 });
 
 /** The command the run starts with: Loomwright's `/automate` over the backlog, inline phases, safe mode. */

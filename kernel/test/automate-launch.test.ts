@@ -99,7 +99,21 @@ describe("AUTOMATE_RUN_POLICY (AC4)", () => {
     expect(AUTOMATE_RUN_POLICY).not.toHaveProperty("never");
     expect(AUTOMATE_RUN_POLICY).not.toHaveProperty("mode");
     expect(AUTOMATE_RUN_POLICY).not.toHaveProperty("githubWrite");
-    expect(Object.keys(AUTOMATE_RUN_POLICY).sort()).toEqual(["allowedBashPrefixes", "allowedTools"]);
+    // The admitted paths are the session manager's alone (built from the session's own install at start and resume).
+    expect(AUTOMATE_RUN_POLICY).not.toHaveProperty("admittedScriptPaths");
+    expect(Object.keys(AUTOMATE_RUN_POLICY).sort()).toEqual(["allowedBashPrefixes", "allowedTools", "loomwrightScripts"]);
+  });
+
+  it("names Loomwright's driver and helper scripts by basename only: the drivers and helpers, never a test, repo-only or host-project script (AC15)", () => {
+    const scripts = AUTOMATE_RUN_POLICY.loomwrightScripts ?? [];
+    expect(Object.isFrozen(scripts)).toBe(true);
+    expect(scripts).toEqual(expect.arrayContaining(["automate-helpers.sh", "automate-next-step.sh", "review-heal-next-step.sh"]));
+    expect(new Set(scripts).size).toBe(scripts.length);
+    for (const name of scripts) expect(name, name).toMatch(/^[a-z0-9][a-z0-9-]*\.sh$/);
+    for (const name of scripts) expect(name, name).not.toMatch(/^test-/);
+    for (const name of ["bump-version.sh", "release-refold.sh", "check-doc-currency.sh", "build-capabilities.sh", "ci-local.sh"]) expect(scripts, name).not.toContain(name);
+    // A name list admits nothing by itself: with no admitted paths, a driver call is still denied.
+    expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command: "bash /lw/scripts/automate-next-step.sh --resume /w/.supervisor/automate" })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
   });
 
   it("allows Skill and the git / gh prefixes; the rail still holds a push and denies a merge, and a Bash metacharacter is still denied", () => {
@@ -275,7 +289,12 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
           model: PLAYBOOK_MODEL,
           permissionMode: "default",
           cwd: u.checkout,
-          policy: { allowedTools: [...AUTOMATE_RUN_POLICY.allowedTools], allowedBashPrefixes: [...AUTOMATE_RUN_POLICY.allowedBashPrefixes], never: ["git_push", "gh_pr_close"] },
+          policy: {
+            allowedTools: [...AUTOMATE_RUN_POLICY.allowedTools],
+            allowedBashPrefixes: [...AUTOMATE_RUN_POLICY.allowedBashPrefixes],
+            loomwrightScripts: [...(AUTOMATE_RUN_POLICY.loomwrightScripts ?? [])],
+            never: ["git_push", "gh_pr_close"],
+          },
           playbook: 5,
           playbookVersion: 2,
           task: 7,
@@ -605,6 +624,8 @@ interface Rig {
   readonly workspaces: Record<string, string>;
   readonly playbooks: Record<string, number>;
   readonly minted: (readonly string[])[];
+  /** The fake Loomwright install the sessions load; its `scripts/` holds `automate-next-step.sh` (AC15). */
+  readonly pluginDir: string;
 }
 
 interface Launched {
@@ -673,7 +694,9 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
       githubClient: new FakeGitHubClient({ tokenInfo: { login: "o", expires_at: null, permissions: null }, repos: [{ full_name: REPO, private: false }] }),
     };
     // The token mint is a daemon-wired option the typed `sessions` slot does not name (the exit walk passes it the same way).
-    const sessionOptions = { loomwrightPath: makePluginDir(tmp), stopGraceMs: 10, sessionTokenMint };
+    const pluginDir = makePluginDir(tmp);
+    writeFileSync(join(pluginDir, "scripts", "automate-next-step.sh"), "#!/bin/bash\n");
+    const sessionOptions = { loomwrightPath: pluginDir, stopGraceMs: 10, sessionTokenMint };
     const kernel = await startKernel({ dataDir, env: { PATH: "/usr/bin" }, sessions: sessionOptions, contributions }, d);
     kernels.push(kernel);
     const store = kernel.store;
@@ -697,7 +720,7 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
       store.prepare("UPDATE playbooks SET mode = 'live', mode_set_by = 'owner' WHERE id = ?").run(made.playbook.id);
       playbooks[id] = made.playbook.id;
     }
-    return { kernel, store, fakes, prompts, workspaces, playbooks, minted };
+    return { kernel, store, fakes, prompts, workspaces, playbooks, minted, pluginDir };
   }
 
   /** The crew member's playbook session calls prepare; the kernel then starts the run session. */
@@ -782,6 +805,12 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(await run("Bash", { command: "rm -rf build" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
     // The Bash rail is unchanged: a piped command is still denied.
     expect(await run("Bash", { command: "git log | head" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_shell_metacharacter" });
+    // AC15: the run session admits Loomwright's driver at its exact path under the install it loads; the crew session never does.
+    const driver = `bash ${join(r.pluginDir, "scripts", "automate-next-step.sh")} --resume ${join(r.workspaces["mason"] as string, ".supervisor", "automate")}`;
+    expect(await run("Bash", { command: driver })).toMatchObject({ permissionDecision: "allow" });
+    expect(await crew("Bash", { command: driver })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
+    // A listed script the install does not hold is not admitted.
+    expect(await run("Bash", { command: `bash ${join(r.pluginDir, "scripts", "automate-helpers.sh")} meta-entry` })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
     // The run session's decisions are recorded against the run session.
     expect(decisions(r, l.runId).map((p) => [p.tool, p.decision])).toEqual(expect.arrayContaining([["Skill", "allow"], ["Bash", "allow"], ["Bash", "deny"]]));
   });
