@@ -99,6 +99,17 @@ describe("a started run session's admitted Loomwright scripts (AC15/AC16, on fak
     expect(events(store, "session_refused")).toEqual([]);
   });
 
+  it("refuses a loomwrightDriverProfile outside the closed set: invalid_params, before Loomwright, no row (review iteration 2)", async () => {
+    const { fakes, manager } = setup();
+    for (const loomwrightDriverProfile of ["auto_merge", "", 1, null, ["merge_parked"]]) {
+      const policy = { allowedTools: ["Bash"], allowedBashPrefixes: [], loomwrightDriverProfile } as unknown as ToolPolicy;
+      const err = await manager.startSession(startParams(tmp, { policy })).catch((e: unknown) => e);
+      expect(err, JSON.stringify(loomwrightDriverProfile)).toMatchObject({ name: "SessionError", code: "invalid_params" });
+    }
+    expect(fakes.calls).toHaveLength(0);
+    expect(count(store, "SELECT count(*) FROM sessions")).toBe(0);
+  });
+
   it("drops a caller's own admittedScriptPaths: only the manager fills the set", async () => {
     const evil = join(tmp, "evil.sh");
     writeFileSync(evil, "#!/bin/bash\n");

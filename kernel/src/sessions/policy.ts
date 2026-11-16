@@ -86,7 +86,7 @@ export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: u
     if (command === undefined) return { decision: "deny", reason: "bash_command_not_string" };
     if (SHELL_METACHARACTERS.test(command)) return { decision: "deny", reason: "bash_shell_metacharacter" };
     // A Loomwright driver by exact path (AC15), after the metacharacter check: never a `bash` prefix.
-    if (matchLoomwrightScript(command, policy.admittedScriptPaths ?? []) !== undefined) return { decision: "allow", reason: "bash_prefix_allowed" };
+    if (matchLoomwrightScript(command, policy.admittedScriptPaths ?? [], policy.loomwrightDriverProfile) !== undefined) return { decision: "allow", reason: "bash_prefix_allowed" };
     const allowed = policy.allowedBashPrefixes.some(
       (prefix) => prefix.trim() !== "" && (command === prefix || command.startsWith(`${prefix} `)),
     );
@@ -1195,8 +1195,8 @@ function ghApiForm(args: readonly string[]): string | undefined {
 }
 
 /**
- * A defensive, frozen copy: later changes to the caller's arrays cannot reach the gate. `never` and
- * `loomwrightScripts` are copied only when present; the manager-filled fields (`mode`, `connectors`,
+ * A defensive, frozen copy: later changes to the caller's arrays cannot reach the gate. `never`,
+ * `loomwrightScripts` and `loomwrightDriverProfile` are copied only when present; the manager-filled fields (`mode`, `connectors`,
  * `githubWrite`, `admittedScriptPaths`) never are, so a caller's value is dropped.
  */
 export function freezePolicy(policy: ToolPolicy): ToolPolicy {
@@ -1205,5 +1205,6 @@ export function freezePolicy(policy: ToolPolicy): ToolPolicy {
     allowedBashPrefixes: Object.freeze([...policy.allowedBashPrefixes]),
     ...(policy.never === undefined ? {} : { never: Object.freeze([...policy.never]) }),
     ...(policy.loomwrightScripts === undefined ? {} : { loomwrightScripts: Object.freeze([...policy.loomwrightScripts]) }),
+    ...(policy.loomwrightDriverProfile === undefined ? {} : { loomwrightDriverProfile: policy.loomwrightDriverProfile }),
   });
 }

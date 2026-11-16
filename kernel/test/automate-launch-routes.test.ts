@@ -28,6 +28,7 @@ import {
   AUTOMATE_RUN_KINDS,
   AUTOMATE_RUN_POLICY,
   MERGE_PARKED_RUN_POLICY,
+  MERGE_PARKED_TRUSTED_RUN_POLICY,
   REVIEW_PR_RUN_POLICY,
   handleAutomateRun,
   mergeParkedRunPrompt,
@@ -196,7 +197,8 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
     for (const [name, policy] of [["review", REVIEW_PR_RUN_POLICY], ["merge", MERGE_PARKED_RUN_POLICY]] as const) {
       expect(Object.isFrozen(policy), name).toBe(true);
       expect(Object.isFrozen(policy.allowedTools) && Object.isFrozen(policy.allowedBashPrefixes) && Object.isFrozen(policy.loomwrightScripts), name).toBe(true);
-      expect(Object.keys(policy).sort(), name).toEqual(["allowedBashPrefixes", "allowedTools", "loomwrightScripts"]);
+      // Review iteration 2: the merge policy names its driver profile; the review policy runs no automate-next-step.sh.
+      expect(Object.keys(policy).sort(), name).toEqual(name === "merge" ? ["allowedBashPrefixes", "allowedTools", "loomwrightDriverProfile", "loomwrightScripts"] : ["allowedBashPrefixes", "allowedTools", "loomwrightScripts"]);
       expect([...policy.allowedTools], name).toEqual([...AUTOMATE_RUN_POLICY.allowedTools]);
       expect([...policy.allowedBashPrefixes], name).toEqual([...AUTOMATE_RUN_POLICY.allowedBashPrefixes]);
       for (const bare of ["git", "gh", "bash", "sh"]) expect(policy.allowedBashPrefixes, `${name} ${bare}`).not.toContain(bare);
@@ -250,6 +252,32 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
     expect(decideToolUse(withPaths(AUTOMATE_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/automate-next-step.sh --resume /w/.supervisor/automate` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     expect(decideToolUse(withPaths(MERGE_PARKED_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/automate-next-step.sh --merge-parked /w/.supervisor/automate --run r1` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     expect(decideToolUse(withPaths(REVIEW_PR_RUN_POLICY), "Bash", { command: `bash ${install}/scripts/review-heal-next-step.sh --pr https://github.com/o/r/pull/7` })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+  });
+
+  it("AC4/AC2: each policy's driver profile keeps automate-next-step.sh off every merge the kernel did not decide (review iteration 2)", () => {
+    const install = "/lw";
+    const withPaths = (policy: ToolPolicy): ToolPolicy => ({ ...policy, admittedScriptPaths: (policy.loomwrightScripts ?? []).map((n) => `${install}/scripts/${n}`) });
+    const next = `${install}/scripts/automate-next-step.sh`;
+    const decide = (policy: ToolPolicy, args: string) => decideToolUse(withPaths(policy), "Bash", { command: `bash ${next} ${args}` });
+    const DENY = { decision: "deny", reason: "bash_prefix_not_allowed" };
+    const ALLOW = { decision: "allow", reason: "bash_prefix_allowed" };
+    const rf = "/w/.supervisor/automate/r1.md";
+    // The ticket run (D44 safe mode) never reaches gate-eval from its own argv.
+    for (const args of ["--merge-parked /w/.supervisor/automate --run r1 --session-id s", `${rf} --start pick --mode auto-merge`, "--resume /w/.supervisor/automate --session-id s --mode auto-merge", `${rf} --start run --mode safe --trust-unprotected`]) {
+      expect(decide(AUTOMATE_RUN_POLICY, args), args).toEqual(DENY);
+    }
+    for (const args of ["--resume /w/.supervisor/automate --session-id s", `${rf} --start pick --session-id s`, `${rf} --start run --mode safe --session-id s --inline-phases`]) {
+      expect(decide(AUTOMATE_RUN_POLICY, args), args).toEqual(ALLOW);
+    }
+    // The merge run takes only its --merge-parked entry; the trust flag only under the trusted policy the launch picks.
+    for (const args of [`${rf} --start pick --mode auto-merge`, "--resume /w/.supervisor/automate --run r1 --session-id s --mode auto-merge", "--merge-parked /w/.supervisor/automate --run r1 --session-id s --trust-unprotected"]) {
+      expect(decide(MERGE_PARKED_RUN_POLICY, args), args).toEqual(DENY);
+    }
+    expect(decide(MERGE_PARKED_RUN_POLICY, "--merge-parked .supervisor/automate --run r1 --session-id s")).toEqual(ALLOW);
+    expect(decide(MERGE_PARKED_TRUSTED_RUN_POLICY, "--merge-parked .supervisor/automate --run r1 --session-id s --trust-unprotected")).toEqual(ALLOW);
+    expect(decide(MERGE_PARKED_TRUSTED_RUN_POLICY, `${rf} --start pick --trust-unprotected`)).toEqual(DENY);
+    expect(Object.isFrozen(MERGE_PARKED_TRUSTED_RUN_POLICY)).toBe(true);
+    expect({ ...MERGE_PARKED_TRUSTED_RUN_POLICY, loomwrightDriverProfile: "merge_parked" }).toEqual(MERGE_PARKED_RUN_POLICY);
   });
 
   it("build the prompts from checked fields only", () => {
@@ -308,6 +336,7 @@ describe("handleAutomateRun starts the review-pr and merge-parked sessions", () 
       allowedTools: [...MERGE_PARKED_RUN_POLICY.allowedTools],
       allowedBashPrefixes: [...MERGE_PARKED_RUN_POLICY.allowedBashPrefixes],
       loomwrightScripts: [...(MERGE_PARKED_RUN_POLICY.loomwrightScripts ?? [])],
+      loomwrightDriverProfile: "merge_parked",
     });
     expect(stepOf(id)).toEqual({ session_id: 101 });
   });
@@ -321,12 +350,16 @@ describe("handleAutomateRun starts the review-pr and merge-parked sessions", () 
     queue(mergeRun(pb, { trust_unprotected: true, flags: ["--trust-unprotected", "--auto-merge"], note: INJECTION }));
     await loop.tick();
     expect(r.starts[0]?.prompt).toBe(MERGE_PROMPT);
+    // Review iteration 2: no recorded trust ⇒ the driver may not take the trust flag either.
+    expect(r.starts[0]?.policy.loomwrightDriverProfile).toBe("merge_parked");
     r.set(101, { id: 101, agent: "mason", status: "completed", cwd: env.checkout });
     // The owner recorded trust for this repo: the flag is added at launch.
     setPolicy("solo", 1);
     queue(mergeRun(pb));
     await loop.tick();
     expect(r.starts[1]?.prompt).toBe(`${MERGE_PROMPT} --trust-unprotected`);
+    // The prompt's flag and the policy's profile come from the one read: the driver may take the flag the prompt carries.
+    expect(r.starts[1]?.policy.loomwrightDriverProfile).toBe("merge_parked_trust_unprotected");
     // The review-pr prompt never carries it.
     r.set(102, { id: 102, agent: "mason", status: "completed", cwd: env.checkout });
     queue(fixRun(pb));

@@ -85,7 +85,7 @@
 import { resolve, sep } from "node:path";
 import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
-import { isRepoName, loomwrightMergeFlags } from "../integrations/github/repo-policy.js";
+import { isRepoName, loomwrightMergeFlags, TRUST_UNPROTECTED_FLAG } from "../integrations/github/repo-policy.js";
 import { isPositiveId, messageOf } from "../loop/internal.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
 import { resolvedPath } from "../protected-paths.js";
@@ -204,6 +204,8 @@ export const AUTOMATE_RUN_POLICY: ToolPolicy = Object.freeze({
   allowedTools: RUN_TOOLS,
   allowedBashPrefixes: RUN_BASH_PREFIXES,
   loomwrightScripts: AUTOMATE_RUN_SCRIPTS,
+  // Safe mode (D44): the driver never takes `--merge-parked`, the trust flag or a mode but `safe` (`LOOMWRIGHT_DRIVER_ARGUMENTS`).
+  loomwrightDriverProfile: "automate_run",
 });
 
 /**
@@ -258,6 +260,20 @@ export const MERGE_PARKED_RUN_POLICY: ToolPolicy = Object.freeze({
   allowedTools: RUN_TOOLS,
   allowedBashPrefixes: RUN_BASH_PREFIXES,
   loomwrightScripts: MERGE_PARKED_RUN_SCRIPTS,
+  // The driver's `--merge-parked` entry only: no `--start` / `--resume`, no mode, no trust flag (`LOOMWRIGHT_DRIVER_ARGUMENTS`).
+  loomwrightDriverProfile: "merge_parked",
+});
+
+/**
+ * `MERGE_PARKED_RUN_POLICY` for a repo whose owner recorded the trust-unprotected
+ * choice: the same, except the driver may take the trust flag, which the skill
+ * passes on as the command received it. The launch picks it only when the
+ * prompt it builds carries the flag (`loomwrightMergeFlags`, read at launch), so
+ * a session can never add the flag the owner did not record (AC2).
+ */
+export const MERGE_PARKED_TRUSTED_RUN_POLICY: ToolPolicy = Object.freeze({
+  ...MERGE_PARKED_RUN_POLICY,
+  loomwrightDriverProfile: "merge_parked_trust_unprotected",
 });
 
 /** Each kind's run policy. */
@@ -358,24 +374,29 @@ function liveRunSession(store: EventContext["store"], sessions: EventSessions, a
 }
 
 /**
- * The kind's kernel-built prompt, or why there is none. Only checked fields go in:
+ * The kind's kernel-built prompt and its run policy, or why there is none. A
+ * merge's policy follows the flags its prompt carries, read once here: the
+ * trust flag in the prompt ⇔ `MERGE_PARKED_TRUSTED_RUN_POLICY`. Only checked fields go in:
  * the backlog path (inside the checkout), the repo and number, the run id, and the
  * repo's merge flags read from the store now (`loomwrightMergeFlags`), never from
  * the payload. Comment, PR and ticket text are in none of them (invariant 3).
  */
-function promptOf(store: EventContext["store"], run: Run, checkout: string): { readonly prompt: string } | { readonly skipped: string } {
+function promptOf(store: EventContext["store"], run: Run, checkout: string): { readonly prompt: string; readonly policy: ToolPolicy } | { readonly skipped: string } {
   switch (run.kind) {
     case "backlog":
       if (!resolve(run.backlog).startsWith(`${checkout}${sep}`)) return { skipped: "backlog_outside_checkout" };
       try {
-        return { prompt: automateRunPrompt(run.backlog) };
+        return { prompt: automateRunPrompt(run.backlog), policy: RUN_POLICIES.backlog };
       } catch (err) {
         return { skipped: messageOf(err) };
       }
     case "review_pr":
-      return { prompt: reviewPrRunPrompt(run.repo, run.pr) };
-    case "merge_parked":
-      return { prompt: mergeParkedRunPrompt(run.run_id, loomwrightMergeFlags(store, run.repo)) };
+      return { prompt: reviewPrRunPrompt(run.repo, run.pr), policy: RUN_POLICIES.review_pr };
+    case "merge_parked": {
+      const flags = loomwrightMergeFlags(store, run.repo);
+      const policy = flags.includes(TRUST_UNPROTECTED_FLAG) ? MERGE_PARKED_TRUSTED_RUN_POLICY : RUN_POLICIES.merge_parked;
+      return { prompt: mergeParkedRunPrompt(run.run_id, flags), policy };
+    }
   }
 }
 
@@ -420,8 +441,7 @@ async function startRun(ctx: EventContext, run: Run): Promise<AutomateRunResult>
   if (!(settings.workspaces ?? []).some((w) => resolve(w) === checkout)) return skip(`workspace_not_listed: ${run.checkout}`);
   const built = promptOf(store, run, checkout);
   if ("skipped" in built) return skip(built.skipped);
-  const { prompt } = built;
-  const runPolicy = RUN_POLICIES[run.kind];
+  const { prompt, policy: runPolicy } = built;
 
   // Single drain: Loomwright's run state is the authority, and an unreadable one reads as live.
   const state = readRunState(checkout);

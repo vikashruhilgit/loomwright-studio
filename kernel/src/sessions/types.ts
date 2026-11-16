@@ -13,6 +13,7 @@ import type { ConnectorKind } from "../integrations/types.js";
 import type { PlaybookMode } from "../playbooks/types.js";
 import type { Store } from "../store/store.js";
 import type { SessionTokenMint } from "./github-session-auth.js";
+import type { LoomwrightDriverProfile } from "./loomwright-scripts.js";
 import type { NeverCategory } from "./policy.js";
 
 /**
@@ -116,6 +117,15 @@ export interface ToolPolicy {
    * read. It admits nothing by itself: the gate reads `admittedScriptPaths`.
    */
   readonly loomwrightScripts?: readonly string[];
+  /**
+   * Which of `automate-next-step.sh`'s mode, trust and entry options the
+   * session may pass (`LOOMWRIGHT_DRIVER_ARGUMENTS`, `loomwright-scripts.ts`;
+   * review iteration 2). Like `loomwrightScripts`, only a kernel run policy
+   * constant names it (`AUTOMATE_RUN_POLICY`, `MERGE_PARKED_RUN_POLICY`,
+   * `MERGE_PARKED_TRUSTED_RUN_POLICY`), never a charter or settings file.
+   * Absent: `automate_run`, under which no driver call can reach a merge.
+   */
+  readonly loomwrightDriverProfile?: LoomwrightDriverProfile;
   /**
    * The exact absolute paths `bash <path>` may run (`matchLoomwrightScript`,
    * `loomwright-scripts.ts`): `loomwrightScripts` under the install the

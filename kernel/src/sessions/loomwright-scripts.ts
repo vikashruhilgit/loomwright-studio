@@ -10,7 +10,9 @@
 // `bash <path>` or `bash "<path>"`, optionally followed by arguments, only for a
 // path in that set, only after its shell-metacharacter check, and never with a
 // subcommand that merges, pushes or starts an unowned process
-// (`LOOMWRIGHT_DENIED_SUBCOMMANDS`).
+// (`LOOMWRIGHT_DENIED_SUBCOMMANDS`), nor with a driver option that turns the
+// run toward a merge or trust its policy's profile refuses
+// (`LOOMWRIGHT_DRIVER_ARGUMENTS`, `ToolPolicy.loomwrightDriverProfile`).
 //
 // It never admits a prefix: not `bash`, and not `bash <install>/scripts/`. A
 // name is kept only when its path has no `..` segment, is a regular file, and
@@ -157,6 +159,144 @@ function asksDeniedSubcommand(script: string, args: string): boolean {
   return read.some((w) => !PLAIN_WORD.test(w) || denied.subcommands.includes(w));
 }
 
+/**
+ * The closed set of driver argument profiles a run policy names
+ * (`ToolPolicy.loomwrightDriverProfile`): which of `automate-next-step.sh`'s
+ * mode, trust and entry options the session may pass (review iteration 2).
+ * Absent on a policy ⇒ `automate_run`, the profile under which no driver call
+ * can reach a merge.
+ */
+export const LOOMWRIGHT_DRIVER_PROFILES = Object.freeze(["automate_run", "merge_parked", "merge_parked_trust_unprotected"] as const);
+
+/** One of `LOOMWRIGHT_DRIVER_PROFILES`. */
+export type LoomwrightDriverProfile = (typeof LOOMWRIGHT_DRIVER_PROFILES)[number];
+
+/** The driver whose arguments the profiles read: the one script that reaches `gate-eval` from its own argv. */
+export const LOOMWRIGHT_ARGUMENT_DRIVER = "automate-next-step.sh";
+
+/**
+ * A profile's driver arguments: `denied` options are refused at any position,
+ * alone or as `--option=value`; `--mode` is admitted only as `--mode <v>` for a
+ * `v` in `modeValues` (empty: never), and `--mode=…` never.
+ */
+type DriverArguments = { readonly denied: readonly string[]; readonly modeValues: readonly string[] };
+
+/**
+ * The driver options each profile refuses (fixed: part of the safety kernel,
+ * never read from a charter or settings). Read from the Loomwright 17.38.0
+ * driver (`automate-next-step.sh`): it takes `--mode safe|auto-merge` and
+ * `--trust-unprotected` from its own argv (persisting them for the item's tail)
+ * and feeds them to `gate-eval`, the plugin's one `gh pr merge --squash`, and
+ * `--merge-parked` runs `gate-eval` directly. So a session that passed them
+ * itself would merge without `kernel_automate_merge_check`, the repo's D40
+ * policy or the owner's recorded trust choice.
+ *
+ * - `automate_run` (the ticket run, D44 safe mode): never `--merge-parked`,
+ *   `--trust-unprotected` or `--auto-merge`; `--mode` only as `--mode safe`
+ *   (the per-item loop passes it on `--start run` and the GATE report).
+ * - `merge_parked` (`/loomwright:automate --merge-parked <run_id>`): its one
+ *   entry is `--merge-parked <dir> --run <id> --session-id <sid>` (asks are
+ *   answered on `<run_file> --result …`), so never `--start` or `--resume`
+ *   (the per-item loop, whose tail could gate under another mode), never
+ *   `--mode`, `--auto-merge` or `--trust-unprotected`.
+ * - `merge_parked_trust_unprotected`: the same, except `--trust-unprotected`,
+ *   which the skill passes to every driver call "as /automate received it":
+ *   the kernel names this profile only when its launched prompt carried the
+ *   flag (`loomwrightMergeFlags`, the owner's recorded choice).
+ *
+ * `--auto-merge` is no driver option (the driver refuses it); it is denied
+ * anyway so no later driver that adds it is admitted by default.
+ */
+export const LOOMWRIGHT_DRIVER_ARGUMENTS: Readonly<Record<LoomwrightDriverProfile, DriverArguments>> = Object.freeze({
+  automate_run: Object.freeze({ denied: Object.freeze(["--merge-parked", "--trust-unprotected", "--auto-merge"]), modeValues: Object.freeze(["safe"]) }),
+  merge_parked: Object.freeze({ denied: Object.freeze(["--start", "--resume", "--trust-unprotected", "--auto-merge"]), modeValues: Object.freeze([]) }),
+  merge_parked_trust_unprotected: Object.freeze({ denied: Object.freeze(["--start", "--resume", "--auto-merge"]), modeValues: Object.freeze([]) }),
+});
+
+/**
+ * An unquoted character the calling shell may expand or reinterpret: bash's
+ * glob, brace and tilde, plus zsh's extended-glob `^` and `#` and `!` (the
+ * Bash tool may run either shell; a comment `#` is refused rather than read).
+ */
+const UNQUOTED_EXPANSION = /[*?[\]{}~^#!]/;
+
+/**
+ * The words bash passes for `args` (already free of every shell
+ * metacharacter: `decideToolUse` checks first), or `undefined` when they
+ * cannot be read exactly: an unterminated quote, a trailing backslash, or an
+ * unquoted `UNQUOTED_EXPANSION` character (fail closed: the shell could expand
+ * it into a denied option, for example a glob matching a file the session
+ * named `--trust-unprotected`). Single quotes are literal; inside double
+ * quotes a backslash escapes only `"` and `\`; an unquoted backslash escapes
+ * the next character. Pure: no I/O.
+ */
+function shellWords(args: string): string[] | undefined {
+  const words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let i = 0;
+  while (i < args.length) {
+    const c = args[i] as string;
+    if (c === " " || c === "\t") {
+      if (inWord) words.push(word);
+      word = "";
+      inWord = false;
+      i += 1;
+    } else if (c === "'") {
+      const close = args.indexOf("'", i + 1);
+      if (close === -1) return undefined;
+      word += args.slice(i + 1, close);
+      inWord = true;
+      i = close + 1;
+    } else if (c === '"') {
+      i += 1;
+      for (;;) {
+        if (i >= args.length) return undefined;
+        const d = args[i] as string;
+        if (d === '"') break;
+        if (d === "\\" && (args[i + 1] === '"' || args[i + 1] === "\\")) {
+          word += args[i + 1];
+          i += 2;
+        } else {
+          word += d;
+          i += 1;
+        }
+      }
+      inWord = true;
+      i += 1;
+    } else if (c === "\\") {
+      if (i + 1 >= args.length) return undefined;
+      word += args[i + 1];
+      inWord = true;
+      i += 2;
+    } else {
+      if (UNQUOTED_EXPANSION.test(c)) return undefined;
+      word += c;
+      inWord = true;
+      i += 1;
+    }
+  }
+  if (inWord) words.push(word);
+  return words;
+}
+
+/**
+ * True when `args` asks `automate-next-step.sh` for an option `profile`
+ * refuses (`LOOMWRIGHT_DRIVER_ARGUMENTS`), or cannot be read exactly
+ * (`shellWords`). Every word is compared, values included: a denied option
+ * spelled as another option's value is refused too (never needed). Pure.
+ */
+function asksDeniedDriverArgument(args: string, profile: LoomwrightDriverProfile): boolean {
+  const words = shellWords(args);
+  if (words === undefined) return true;
+  const rules = LOOMWRIGHT_DRIVER_ARGUMENTS[profile];
+  return words.some((w, i) => {
+    if (rules.denied.some((d) => w === d || w.startsWith(`${d}=`))) return true;
+    if (w.startsWith("--mode=")) return true;
+    return w === "--mode" && !rules.modeValues.includes(words[i + 1] ?? "");
+  });
+}
+
 /** The last `/`-separated segment of an absolute path (pure; `node:path`'s `basename` reads the same here). */
 function basenameOf(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
@@ -183,12 +323,13 @@ const PLAIN_PATH = /^\/[A-Za-z0-9_./@%+=:,-]*$/;
  * another program, a flag before the path (`bash -c`, `bash -x`), a second
  * space, or anything glued to the closing quote is no match. Nor is a call
  * that asks the script for a subcommand `LOOMWRIGHT_DENIED_SUBCOMMANDS`
- * refuses (the caller then denies it `bash_prefix_not_allowed`, as for any
- * unlisted command). The caller runs the shell-metacharacter check first
- * (`decideToolUse`); beyond the denied subcommands this does not read the
- * arguments.
+ * refuses, nor a call of `automate-next-step.sh` with an option `profile`
+ * refuses (`LOOMWRIGHT_DRIVER_ARGUMENTS`; absent ⇒ `automate_run`). The caller
+ * then denies it `bash_prefix_not_allowed`, as for any unlisted command. The
+ * caller runs the shell-metacharacter check first (`decideToolUse`); beyond
+ * those two checks this does not read the arguments.
  */
-export function matchLoomwrightScript(command: string, admitted: readonly string[]): string | undefined {
+export function matchLoomwrightScript(command: string, admitted: readonly string[], profile: LoomwrightDriverProfile = "automate_run"): string | undefined {
   if (admitted.length === 0 || !command.startsWith(BASH_WORD)) return undefined;
   const rest = command.slice(BASH_WORD.length);
   let path: string;
@@ -207,5 +348,7 @@ export function matchLoomwrightScript(command: string, admitted: readonly string
   }
   if (after !== "" && !after.startsWith(" ")) return undefined;
   if (!admitted.includes(path)) return undefined;
-  return asksDeniedSubcommand(path, after) ? undefined : path;
+  if (asksDeniedSubcommand(path, after)) return undefined;
+  if (basenameOf(path) === LOOMWRIGHT_ARGUMENT_DRIVER && asksDeniedDriverArgument(after, profile)) return undefined;
+  return path;
 }

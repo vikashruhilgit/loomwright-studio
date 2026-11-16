@@ -84,7 +84,7 @@ export type PolicyNotMetReason = (typeof POLICY_NOT_MET_REASONS)[number];
 export const MERGE_APPROVAL_ACTION = "kernel_merge_approval_request";
 
 /** The flag Loomwright's merge gate takes to waive its protection condition for a repo the owner trusts unprotected. */
-const TRUST_UNPROTECTED_FLAG = "--trust-unprotected";
+export const TRUST_UNPROTECTED_FLAG = "--trust-unprotected";
 
 // ---- Shapes ----------------------------------------------------------------------
 

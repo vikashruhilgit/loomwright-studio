@@ -5,6 +5,8 @@ import { DRAFT_PAYLOAD_KINDS, MAX_DRAFT_TEXT_CHARS, draftDecision, draftPayloadO
 import { ALWAYS_HELD_TOOLS, GITHUB_WRITE_TOOLS, MAX_RAIL_COMMAND_LENGTH, NEVER_CATEGORIES, boundaryDecision, boundaryDenyReason, classifyToolCall, neverCategoriesOf, programCouldBe } from "../src/sessions/policy.js";
 import type { NeverCategory } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/index.js";
+import { LOOMWRIGHT_DRIVER_ARGUMENTS, LOOMWRIGHT_DRIVER_PROFILES } from "../src/sessions/loomwright-scripts.js";
+import type { LoomwrightDriverProfile } from "../src/sessions/loomwright-scripts.js";
 
 const policy: ToolPolicy = {
   allowedTools: ["Read", "mcp__studio__kernel_record_task", "Bash"],
@@ -240,9 +242,9 @@ describe("decideToolUse: Loomwright driver scripts by exact path (AC15)", () => 
       expect(bash(command), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
     }
     // The legitimate calls still run: the drivers, the start's own helper calls, and a denied name as a later argument of automate-helpers.sh.
+    // (`--merge-parked` is no longer one of them under this ticket-run profile: review iteration 2, below.)
     for (const command of [
       `bash ${next} --resume /w/.supervisor/automate --run latest`,
-      `bash ${next} --merge-parked /w/.supervisor/automate --run r1`,
       `bash ${helpers} meta-entry`,
       `bash ${helpers} lane-info`,
       `bash ${helpers} resume-glob /w/.supervisor/automate --finalize`,
@@ -253,6 +255,155 @@ describe("decideToolUse: Loomwright driver scripts by exact path (AC15)", () => 
     ]) {
       expect(bash(command), command).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     }
+  });
+});
+
+// Review iteration 2: the driver takes `--mode`, `--trust-unprotected` and `--merge-parked` from its own argv and feeds
+// them to `gate-eval` (Loomwright 17.38.0 `automate-next-step.sh`), so each run policy's profile refuses the ones its
+// run must never pass, however spelled.
+describe("decideToolUse: automate-next-step.sh's merge, mode and trust options by policy profile (review iteration 2)", () => {
+  const install = "/Users/o/.claude/plugins/cache/atelier/loomwright/17.38.0";
+  const next = `${install}/scripts/automate-next-step.sh`;
+  const review = `${install}/scripts/review-heal-next-step.sh`;
+  const runFile = "/w/.supervisor/automate/r1.md";
+  const policyOf = (profile?: LoomwrightDriverProfile): ToolPolicy => ({
+    allowedTools: ["Bash"],
+    allowedBashPrefixes: [],
+    loomwrightScripts: ["automate-next-step.sh", "review-heal-next-step.sh"],
+    admittedScriptPaths: [next, review],
+    ...(profile === undefined ? {} : { loomwrightDriverProfile: profile }),
+  });
+  const decide = (profile: LoomwrightDriverProfile | undefined, command: string) => decideToolUse(policyOf(profile), "Bash", { command });
+  const ALLOW = { decision: "allow", reason: "bash_prefix_allowed" };
+  const DENY = { decision: "deny", reason: "bash_prefix_not_allowed" };
+
+  /** Each option written every way bash would still pass it to the driver. */
+  const spellings = (option: string, value = ""): string[] => {
+    const v = value === "" ? "" : ` ${value}`;
+    return [
+      `${option}${v}`,
+      `"${option}"${v}`,
+      `'${option}'${v}`,
+      `${option.slice(0, 3)}"${option.slice(3)}"${v}`,
+      `${option.slice(0, 3)}\\${option.slice(3)}${v}`,
+      ...(value === "" ? [`${option}=true`] : [`${option}=${value}`]),
+    ];
+  };
+
+  it("the ticket run (automate_run, and a policy naming no profile) never takes --merge-parked, --trust-unprotected, --auto-merge or a mode but safe", () => {
+    const denied = [
+      // The reviewer's reproductions.
+      `--merge-parked /w/.supervisor/automate --run r1 --session-id s`,
+      `${runFile} --start pick --mode auto-merge --session-id s`,
+      `--resume /w/.supervisor/automate --run latest --session-id s --mode auto-merge`,
+      `${runFile} --result '{"answers":["ok"]}' --trust-unprotected`,
+      `${runFile} --start run --mode safe --trust-unprotected --session-id s`,
+      ...spellings("--merge-parked", "/w/.supervisor/automate").map((a) => `${a} --run r1 --session-id s`),
+      ...spellings("--trust-unprotected").map((a) => `${runFile} --start run --mode safe ${a}`),
+      ...spellings("--auto-merge").map((a) => `${runFile} --start run ${a}`),
+      ...spellings("--mode", "auto-merge").map((a) => `${runFile} --start run ${a}`),
+      `${runFile} --start run --mode "auto-merge"`,
+      `${runFile} --start run --mode auto-mer\\ge`,
+      `${runFile} --start run --mode=safe`,
+      `${runFile} --start run --mode`,
+      `${runFile} --start run --mode '' safe`,
+      // Unreadable words fail closed: glob, brace, tilde, unterminated quote, trailing backslash.
+      `${runFile} --start run --trust-unprotecte?`,
+      `${runFile} --start run --trust-unprotecte[d]`,
+      `${runFile} --start run {--trust-unprotected,}`,
+      `${runFile} --start run --mode safe ~`,
+      `${runFile} --start run "--mode safe`,
+      `${runFile} --start run \\`,
+      `${runFile} --start run --session-id s1 # --trust-unprotected`,
+      `${runFile} --start run ^--mode`,
+      `${runFile} --start run --trust-unprotecte!`,
+    ];
+    for (const profile of [undefined, "automate_run"] as const) {
+      for (const args of denied) expect(decide(profile, `bash ${next} ${args}`), `${profile} ${args}`).toEqual(DENY);
+      expect(decide(profile, `bash "${next}" --merge-parked /w/.supervisor/automate --run r1 --session-id s`), `${profile} quoted path`).toEqual(DENY);
+      // The ticket run's own calls (skills/automate-loop SKILL.md "Coordinator loop", per-item-loop.md): start, pick, run, report, answer.
+      for (const args of [
+        "",
+        "--resume /w/.supervisor/automate --session-id s1",
+        "--resume /w/.supervisor/automate --run latest --session-id s1 --inline-phases",
+        `${runFile} --start pick --session-id s1`,
+        `${runFile} --start run --mode safe --session-id s1 --inline-phases`,
+        `${runFile} --start run --mode "safe" --session-id s1`,
+        `${runFile} --result '{"answers":["continue"],"note":"--mode auto-merge is not asked for"}' --mode safe --session-id s1`,
+        `${runFile} --result-file /w/.supervisor/automate/r1.drain.json --mode safe --non-interactive --session-id s1`,
+        `${runFile} --owner-command '/loomwright:automate --backlog /w/plan.md --inline-phases' --session-id s1`,
+      ]) {
+        expect(decide(profile, `bash ${next} ${args}`.trimEnd()), `${profile} ${args}`).toEqual(ALLOW);
+      }
+    }
+  });
+
+  it("the merge run (merge_parked) takes only its --merge-parked entry and the answer calls: never --start, --resume, --mode, --auto-merge or a session-added --trust-unprotected", () => {
+    const denied = [
+      // The reviewer's reproductions: the per-item loop's own entries with auto-merge, and a session-added trust flag.
+      `${runFile} --start pick --mode auto-merge --session-id s`,
+      `--resume /w/.supervisor/automate --run r1 --session-id s --mode auto-merge`,
+      `--merge-parked /w/.supervisor/automate --run r1 --session-id s --trust-unprotected`,
+      `${runFile} --start pick --session-id s`,
+      `--resume /w/.supervisor/automate --run r1 --session-id s`,
+      `--merge-parked /w/.supervisor/automate --run r1 --session-id s --mode safe`,
+      ...spellings("--start", "pick").map((a) => `${runFile} ${a} --session-id s`),
+      ...spellings("--resume", "/w/.supervisor/automate").map((a) => `${a} --run r1 --session-id s`),
+      ...spellings("--trust-unprotected").map((a) => `--merge-parked /w/.supervisor/automate --run r1 --session-id s ${a}`),
+      ...spellings("--auto-merge").map((a) => `--merge-parked /w/.supervisor/automate --run r1 --session-id s ${a}`),
+      ...spellings("--mode", "auto-merge").map((a) => `${runFile} --result '{"answers":["merge"]}' ${a}`),
+    ];
+    for (const args of denied) expect(decide("merge_parked", `bash ${next} ${args}`), args).toEqual(DENY);
+    // The call `/loomwright:automate --merge-parked <run_id>` makes (SKILL.md "Coordinator loop" step 1; resume.md
+    // "Merging one parked item"), and the answer to an ask it prints, on the run file.
+    for (const args of [
+      "--merge-parked .supervisor/automate --run r1 --session-id s1",
+      "--merge-parked /w/.supervisor/automate --run r1 --session-id s1 --root /w",
+      `${runFile} --result '{"answers":["keep parked"]}' --session-id s1`,
+    ]) {
+      expect(decide("merge_parked", `bash ${next} ${args}`), args).toEqual(ALLOW);
+    }
+  });
+
+  it("the trusted merge run (merge_parked_trust_unprotected) also takes --trust-unprotected, the flag its prompt carried, and nothing else more", () => {
+    for (const args of [
+      "--merge-parked .supervisor/automate --run r1 --session-id s1 --trust-unprotected",
+      `${runFile} --result '{"answers":["keep parked"]}' --session-id s1 --trust-unprotected`,
+      "--merge-parked .supervisor/automate --run r1 --session-id s1",
+    ]) {
+      expect(decide("merge_parked_trust_unprotected", `bash ${next} ${args}`), args).toEqual(ALLOW);
+    }
+    for (const args of [
+      `${runFile} --start pick --trust-unprotected --session-id s`,
+      "--resume /w/.supervisor/automate --run r1 --session-id s --trust-unprotected",
+      "--merge-parked .supervisor/automate --run r1 --session-id s --mode auto-merge",
+      "--merge-parked .supervisor/automate --run r1 --session-id s --auto-merge",
+    ]) {
+      expect(decide("merge_parked_trust_unprotected", `bash ${next} ${args}`), args).toEqual(DENY);
+    }
+  });
+
+  it("reads only automate-next-step.sh's arguments: review-heal-next-step.sh (which never merges) keeps its own options", () => {
+    for (const profile of [undefined, "automate_run", "merge_parked"] as const) {
+      expect(decide(profile, `bash ${review} --pr https://github.com/o/r/pull/7 --until-mergeable --mode x`), String(profile)).toEqual(ALLOW);
+    }
+  });
+
+  it("the profiles are a closed, frozen kernel constant", () => {
+    expect(LOOMWRIGHT_DRIVER_PROFILES).toEqual(["automate_run", "merge_parked", "merge_parked_trust_unprotected"]);
+    expect(Object.isFrozen(LOOMWRIGHT_DRIVER_ARGUMENTS)).toBe(true);
+    for (const p of LOOMWRIGHT_DRIVER_PROFILES) {
+      expect(Object.isFrozen(LOOMWRIGHT_DRIVER_ARGUMENTS[p]) && Object.isFrozen(LOOMWRIGHT_DRIVER_ARGUMENTS[p].denied), p).toBe(true);
+      expect(LOOMWRIGHT_DRIVER_ARGUMENTS[p].denied, p).toContain("--auto-merge");
+    }
+    expect(LOOMWRIGHT_DRIVER_ARGUMENTS.automate_run.denied).toEqual(expect.arrayContaining(["--merge-parked", "--trust-unprotected"]));
+    expect(LOOMWRIGHT_DRIVER_ARGUMENTS.merge_parked.denied).toEqual(expect.arrayContaining(["--start", "--resume", "--trust-unprotected"]));
+    expect(LOOMWRIGHT_DRIVER_ARGUMENTS.merge_parked_trust_unprotected.denied).not.toContain("--trust-unprotected");
+  });
+
+  it("freezePolicy copies the profile only when present", () => {
+    expect(freezePolicy({ allowedTools: [], allowedBashPrefixes: [], loomwrightDriverProfile: "merge_parked" }).loomwrightDriverProfile).toBe("merge_parked");
+    expect(Object.keys(freezePolicy({ allowedTools: [], allowedBashPrefixes: [] }))).toEqual(["allowedTools", "allowedBashPrefixes"]);
   });
 });
 

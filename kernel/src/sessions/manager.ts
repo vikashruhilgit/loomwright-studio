@@ -31,7 +31,7 @@ import { hostSwitchNameProblem } from "../loomwright/contract.js";
 import type { LoomwrightHostSwitch } from "../loomwright/contract.js";
 import type { Store } from "../store/store.js";
 import { LoomwrightSessionError, loomwrightSessionErrorCode, readSessionLoomwright, resolveSessionLoomwright } from "./loomwright-path.js";
-import { loomwrightScriptPaths } from "./loomwright-scripts.js";
+import { LOOMWRIGHT_DRIVER_PROFILES, loomwrightScriptPaths } from "./loomwright-scripts.js";
 import { TOOL_DEFERRAL_OFF } from "./kernel-env.js";
 import { GithubSessionAuth, GithubTokenUnavailableError } from "./github-session-auth.js";
 import type { MintedGithubToken } from "./github-session-auth.js";
@@ -560,6 +560,9 @@ function checkPolicy(policy: unknown): ToolPolicy {
   }
   if (p.loomwrightScripts !== undefined && !isStringArray(p.loomwrightScripts)) {
     throw new SessionError("invalid_params", "policy loomwrightScripts must be an array of script names");
+  }
+  if (p.loomwrightDriverProfile !== undefined && !(LOOMWRIGHT_DRIVER_PROFILES as readonly unknown[]).includes(p.loomwrightDriverProfile)) {
+    throw new SessionError("invalid_params", `policy loomwrightDriverProfile must be one of ${LOOMWRIGHT_DRIVER_PROFILES.join(", ")}`);
   }
   return freezePolicy(p as ToolPolicy);
 }

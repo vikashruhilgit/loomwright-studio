@@ -101,7 +101,9 @@ describe("AUTOMATE_RUN_POLICY (AC4)", () => {
     expect(AUTOMATE_RUN_POLICY).not.toHaveProperty("githubWrite");
     // The admitted paths are the session manager's alone (built from the session's own install at start and resume).
     expect(AUTOMATE_RUN_POLICY).not.toHaveProperty("admittedScriptPaths");
-    expect(Object.keys(AUTOMATE_RUN_POLICY).sort()).toEqual(["allowedBashPrefixes", "allowedTools", "loomwrightScripts"]);
+    expect(Object.keys(AUTOMATE_RUN_POLICY).sort()).toEqual(["allowedBashPrefixes", "allowedTools", "loomwrightDriverProfile", "loomwrightScripts"]);
+    // Review iteration 2: safe mode's driver profile (no --merge-parked, no trust flag, no mode but safe).
+    expect(AUTOMATE_RUN_POLICY.loomwrightDriverProfile).toBe("automate_run");
   });
 
   it("names Loomwright's driver and helper scripts by basename only: the drivers and helpers, never a test, repo-only or host-project script (AC15)", () => {
@@ -293,6 +295,7 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
             allowedTools: [...AUTOMATE_RUN_POLICY.allowedTools],
             allowedBashPrefixes: [...AUTOMATE_RUN_POLICY.allowedBashPrefixes],
             loomwrightScripts: [...(AUTOMATE_RUN_POLICY.loomwrightScripts ?? [])],
+            loomwrightDriverProfile: "automate_run",
             never: ["git_push", "gh_pr_close"],
           },
           playbook: 5,
