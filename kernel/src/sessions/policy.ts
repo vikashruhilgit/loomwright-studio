@@ -371,6 +371,15 @@ export interface RailContext {
    * it is read only as anchored in any directory. The payload records `/`.
    */
   readonly cwd?: string;
+  /**
+   * The session's admitted Loomwright script paths (`ToolPolicy.admittedScriptPaths`,
+   * filled by the session manager alone). A Bash call `bash <path> …` whose
+   * `<path>` is exactly one of them does not read that one word as an outward
+   * target (item 23a): the active install lives under `~/.claude/plugins/`, so
+   * the script's own path would otherwise read as `settings_write` on every
+   * driver call. Every other word, and the protected-path check, is read as usual.
+   */
+  readonly admittedScriptPaths?: readonly string[];
 }
 
 /**
@@ -746,8 +755,12 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
     const payload: ApprovalPayload = { tool: "Bash", command, cwd: payloadCwd };
     const forms = commandForms(words);
     if (forms[0] === "merge") return { kind: "deny", reason: "merge_blocked" };
+    // An admitted Loomwright script (item 23a): its own path word is not an outward target. Only `bash <path>`
+    // with `<path>` exactly an admitted path, as `shellWords` reads it; every other word is still read.
+    const outwardRead = admittedScriptWord(words, ctx.admittedScriptPaths) ? bashPathPatterns([words[0] as string, ...words.slice(2)], cwd, homeDir) : read;
+    if (outwardRead === undefined) return { kind: "deny", reason: "bash_command_too_large" };
     // The action is the command's first form, else its first path label; the rest only feed `alsoReads`.
-    const [action, ...others] = [...forms, ...outwardLabels(read, targets).map((label) => `Bash naming ${label}`)];
+    const [action, ...others] = [...forms, ...outwardLabels(outwardRead, targets).map((label) => `Bash naming ${label}`)];
     return action === undefined ? { kind: "ordinary" } : outwardClass(action, others, payload);
   }
 
@@ -772,6 +785,14 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
   }
   const [action, ...others] = outwardLabels(read, targets).map((label) => `${toolName} ${label}`);
   return action === undefined ? { kind: "ordinary" } : outwardClass(action, others, { tool: toolName, input: toolInput, cwd: payloadCwd });
+}
+
+/**
+ * Whether `words` is `bash <path> …` with `<path>` exactly one of `admitted` (item 23a). The program word must
+ * be the literal `bash` (no path, no glob) and the path an exact string match, so no other shape is exempted.
+ */
+function admittedScriptWord(words: readonly string[], admitted: readonly string[] | undefined): boolean {
+  return admitted !== undefined && admitted.length > 0 && words[0] === "bash" && words[1] !== undefined && admitted.includes(words[1]);
 }
 
 /** An `outward` class, with `alsoReads` only for the `others` that add a `NeverCategory` `action` is not in. */

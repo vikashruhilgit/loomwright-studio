@@ -658,7 +658,8 @@ describe("through a real session manager", () => {
     env.store
       .prepare("INSERT INTO triggers (owning_agent, playbook, kind, spec_json, action, action_payload, created_by) VALUES ('mason', ?, 'poll', ?, 'wake_agent', '{}', 'owner')")
       .run(slug, JSON.stringify({ source: "github.pulls", repos: [REPO], filters: {}, interval_seconds: 300 }));
-    const plugin = makePluginDir(join(env.root, "lw"));
+    // Under the home dir's .claude/, as the active install is on the owner's machine (item 23a).
+    const plugin = makePluginDir(join(home, ".claude", "plugins", "cache"));
     writeFileSync(join(plugin, "scripts", "review-heal-next-step.sh"), "#!/bin/bash\n");
     const fakes = fakeSessions();
     const mint: SessionTokenMint = () => ({ ok: true, token: "ghs_launchroutestoken0001", expires_at: new Date(NOW.getTime() + 3_600_000).toISOString() });
