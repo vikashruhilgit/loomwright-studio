@@ -23,16 +23,17 @@
 // `ToolCatalogue` (`commandNeeds`), so readiness, fit and the dry run read it
 // from `ctx.catalogue` with no new plumbing.
 //
-// Under D44 (kernel-owned launch) a command a job reaches is launched either by
-// the KERNEL (`launch: "kernel"`: `/loomwright:automate` under the frozen
-// `AUTOMATE_RUN_POLICY`; its Claude tools and Bash prefixes are the kernel's,
-// never a crew need) or by the CREW session (`launch: "crew"`: the session is
-// told to run the command itself, and D44 leaves a kernel launch of these
-// routes as a follow-up). A crew-launched command's needs are declared
-// truthfully, and the gap they make is one no charter change should close
-// (`closable: false`): a crew member must not hold `Skill` or a Loomwright
-// shell prefix (invariant 3), so Wright proposes no grant for it and the owner
-// may enable anyway.
+// Under D44 and D45 (kernel-owned launch) a command a job reaches is launched
+// either by the KERNEL (`launch: "kernel"`: `/loomwright:automate`,
+// `/loomwright:review-pr` and `/loomwright:automate --merge-parked`, each under
+// its own frozen run policy in `../automate/launch.ts`; their Claude tools and
+// Bash prefixes are the kernel's, never a crew need) or by the CREW session
+// (`launch: "crew"`). No row is crew-launched today, so no job's needs include
+// `Skill`, `Agent`, `Bash` or a Loomwright shell prefix, and Wright drafts none.
+// The `crew` value stays as a mechanism: a crew-launched command's needs would
+// be declared truthfully, as a gap no charter change should close
+// (`closable: false`), because a crew member must not hold `Skill` or a
+// Loomwright shell prefix (invariant 3).
 //
 // Mechanism only (invariant 1): this module compares lists and grants nothing.
 //
@@ -134,16 +135,16 @@ const frozenRow = (row: CommandNeeds): CommandNeeds =>
  * declares needs there, only `name` and `description`). Used for every command
  * the active install's contract declares no `needs` for. Frozen.
  *
- * - `/loomwright:automate` (`automate_tickets`): `launch: "kernel"` (D44). The
- *   rows' Claude tools and prefixes are the main ones the run asks for (the
- *   full frozen set is `AUTOMATE_RUN_POLICY`, `../automate/launch.ts`); they are
- *   the kernel's, never a crew need.
- * - `/loomwright:review-pr` (`triage_pr_comments`: the `automate_fix` route
- *   answers `/loomwright:review-pr <url>`) and `/loomwright:automate
- *   --merge-parked` (`ask_for_merge`: `kernel_automate_merge_check`'s `go`
- *   answer): `launch: "crew"`. The crew session is told to run them itself, so
- *   they need `Skill` and shell prefixes a crew charter must not hold. D44
- *   leaves a kernel launch for these routes as a follow-up.
+ * Every row is `launch: "kernel"` (D44, D45): the kernel starts the command
+ * as its own session under a frozen run policy (`../automate/launch.ts`), so
+ * the rows' Claude tools and prefixes (the main ones each command asks for)
+ * are the kernel's, never a crew need.
+ * - `/loomwright:automate` (`automate_tickets`): the ticket run, under
+ *   `AUTOMATE_RUN_POLICY`.
+ * - `/loomwright:review-pr` (`triage_pr_comments`: `kernel_pr_route`'s
+ *   `automate_fix` and `review_pr` routes): the fix.
+ * - `/loomwright:automate --merge-parked` (`ask_for_merge`:
+ *   `kernel_automate_merge_check`'s `go`): the merge.
  */
 export const LOOMWRIGHT_COMMAND_NEEDS: LoomwrightCommandNeedsTable = Object.freeze({
   "/loomwright:automate": frozenRow({
@@ -158,7 +159,7 @@ export const LOOMWRIGHT_COMMAND_NEEDS: LoomwrightCommandNeedsTable = Object.free
   "/loomwright:review-pr": frozenRow({
     invocation: "/loomwright:review-pr",
     command: "review-pr",
-    launch: "crew",
+    launch: "kernel",
     claudeTools: [claudeToolNeed("Skill"), claudeToolNeed("Bash"), claudeToolNeed("Agent")],
     bashPrefixes: [bashPrefixNeed("git diff"), bashPrefixNeed("git commit"), bashPrefixNeed("git push"), bashPrefixNeed("gh pr")],
     connectors: [],
@@ -167,7 +168,7 @@ export const LOOMWRIGHT_COMMAND_NEEDS: LoomwrightCommandNeedsTable = Object.free
   "/loomwright:automate --merge-parked": frozenRow({
     invocation: "/loomwright:automate --merge-parked",
     command: "automate",
-    launch: "crew",
+    launch: "kernel",
     claudeTools: [claudeToolNeed("Skill"), claudeToolNeed("Bash")],
     bashPrefixes: [bashPrefixNeed("gh pr")],
     connectors: [],
@@ -227,7 +228,7 @@ export interface JobNeedItem {
   readonly name: string;
   /** Plain words: what it lets a session do. */
   readonly label: string;
-  /** `false` when it comes from a crew-launched command (D44-open): no charter should hold it. */
+  /** `false` when it comes from a crew-launched command (no row is, today): no charter should hold it. */
   readonly closable: boolean;
   /** The command (invocation) it comes from; absent for the job's own declaration. */
   readonly command?: string;

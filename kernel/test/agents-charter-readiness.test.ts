@@ -50,6 +50,7 @@ import { defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/inde
 import { TOOL_JOBS, TOOL_JOB_DEFINITIONS, TOOL_JOB_IDS, buildToolCatalogue, jobNeedsTicketSource, jobNeedsWorkspace } from "../src/features/catalogue.js";
 import type { ToolJob } from "../src/features/catalogue.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
+import { LOOMWRIGHT_COMMAND_NEEDS } from "../src/features/job-needs.js";
 import type { ContributedTool } from "../src/features/index.js";
 import { protectedLocationsText } from "../src/protected-paths.js";
 import { SessionManager } from "../src/sessions/manager.js";
@@ -386,6 +387,93 @@ describe("AC2: approval #19's charter", () => {
     expect(r.agentNote).toContain(
       `This charter needs ${TOOL_JOBS.ask_for_merge} and ${TOOL_JOBS.comment_on_issues}; the kernel has no tool for them, so no charter change can give them to this member: propose no tool change for them.`,
     );
+  });
+});
+
+// ---- 22g: the routes the kernel starts, and a permission no crew member needs (AC6, AC7) ------------
+
+describe("22g: the routes the kernel starts read as covered by Studio, and a held Skill is flagged surplus (AC6, AC7)", () => {
+  /** A charter granting Triage PR comments, Ask for a merge and Read a PR, plus `tools` and `prefixes`. */
+  const routes = (tools: string[] = [], prefixes: string[] = []) =>
+    crew([duty("Triage PR comments", "triage_pr_comments", "read_pr"), duty("Ask for merges", "ask_for_merge")], ["triage_pr_comments", "ask_for_merge", "read_pr"], {
+      tool_policy: { allowedTools: ["Read", ...tools, ...["triage_pr_comments", "ask_for_merge", "read_pr"].flatMap((j) => toolsOf(j as ToolJob))], allowedBashPrefixes: prefixes, never: [] },
+    });
+  /** Anything a readiness line must never show the owner: a raw tool, a kernel tool, a policy constant or a command's name. */
+  const INTERNALS = /\bSkill\b|\bBash\b|\bAgent\b|mcp__kernel__|kernel_\w+|_POLICY|\/loomwright|review-pr|merge-parked|git (diff|commit|push)|gh pr/;
+  const SURPLUS = "this charter holds a permission no crew member needs";
+
+  it("AC6: the routes are covered by Studio in plain words, with no 'no charter should grant it' line", () => {
+    const r = readiness(routes());
+    expect(r.lines.filter((l) => l.includes("Studio runs"))).toEqual(["  covered: Triage PR comments and Ask for a merge: Studio runs the fix and the merge for this member"]);
+    for (const line of r.lines) {
+      expect(line).not.toContain("no charter should grant it");
+      expect(line, line).not.toMatch(INTERNALS);
+    }
+    expect(r.lines.some((l) => l.startsWith(`${READINESS_FLAG_PREFIX}permission to `))).toBe(false);
+    const covered = r.items.filter((i) => i.subject === "permission" && i.status === "covered");
+    expect(covered.map((i) => i.jobs)).toEqual([["triage_pr_comments", "ask_for_merge"]]);
+    // A covered line is not open: it adds nothing to Wright's note or the applied sentence.
+    expect(r.open.some((i) => i.line.includes("Studio runs"))).toBe(false);
+    expect(r.agentNote ?? "").not.toContain("Studio runs");
+  });
+
+  it("AC6: one job alone names its own route; the ticket job, whose card never had a permission line, gets none", () => {
+    expect(readiness(crew([duty("Ask for merges", "ask_for_merge")], ["ask_for_merge"])).lines).toContain("  covered: Ask for a merge: Studio runs the merge for this member");
+    const tickets = readiness(crew([ticketDuty("Turn tickets into PRs")], ["automate_tickets"]));
+    expect(tickets.lines.some((l) => l.includes("Studio runs"))).toBe(false);
+  });
+
+  it("AC7: a held Skill is flagged in plain words as a permission no crew member needs, never counted as covering a need", () => {
+    const r = readiness(routes(["Skill"]));
+    const line = `${READINESS_FLAG_PREFIX}permission to run skills: ${SURPLUS} (Studio runs that work itself)`;
+    expect(r.lines).toContain(line);
+    expect(line).not.toMatch(INTERNALS);
+    expect(r.open.map((i) => i.brief)).toContain("holds a permission no crew member needs (run skills)");
+    // The routes still read as covered by Studio, not by the held Skill.
+    expect(r.lines).toContain("  covered: Triage PR comments and Ask for a merge: Studio runs the fix and the merge for this member");
+    expect(r.agentNote).toContain("The charter holds Skill, Agent or a Loomwright shell prefix that no crew member needs");
+    expect(r.agentNote).not.toMatch(/to tool_policy\.allowedTools \(Skill|add Skill/);
+    // The same for an update, and for a charter granting no route job at all.
+    expect(readiness(routes(["Skill"]), { kind: "stored", raw: { github: "write" } }, "update").lines).toContain(line);
+    expect(readiness(crew([duty("Summarise reviews")], [], { tool_policy: { allowedTools: ["Read", "Skill"], allowedBashPrefixes: [], never: [] } })).lines).toContain(line);
+  });
+
+  it("AC7: Agent and a Loomwright shell prefix are flagged too, on one line; a read-only, broader or narrower prefix is not", () => {
+    const r = readiness(routes(["Skill", "Agent", "Bash"], ["git commit", "git push", "gh pr", "git", "git diff", "gh pr view", "git status"]));
+    const surplus = r.lines.filter((l) => l.includes(SURPLUS));
+    expect(surplus).toEqual([
+      `${READINESS_FLAG_PREFIX}permission to run skills, start helper agents, commit with git, push with git and work with pull requests on GitHub: ${SURPLUS} (Studio runs that work itself)`,
+    ]);
+    for (const line of r.lines) expect(line, line).not.toMatch(INTERNALS);
+    // Only the prefixes a Loomwright command asks for that change something: a read-only git diff, a narrower gh pr view or
+    // gh pr comment, git status, and a broader git (the member's own access, which its never list bounds) are the member's own.
+    expect(readiness(routes([], ["git diff", "gh pr view", "gh pr comment", "git status", "git"])).lines.some((l) => l.includes(SURPLUS))).toBe(false);
+    expect(readiness(routes([], ["git push"])).lines).toContain(`${READINESS_FLAG_PREFIX}permission to push with git: ${SURPLUS} (Studio runs that work itself)`);
+    // Nothing held, nothing flagged.
+    expect(readiness(routes(["Bash"])).lines.some((l) => l.includes(SURPLUS))).toBe(false);
+  });
+
+  it("AC7: a Skill a granted job still needs (a crew-launched row) is that job's need, not surplus", () => {
+    const row = LOOMWRIGHT_COMMAND_NEEDS["/loomwright:review-pr"];
+    if (row === undefined) throw new Error("no review-pr row");
+    const crewCatalogue = { ...CATALOGUE, commandNeeds: { ...LOOMWRIGHT_COMMAND_NEEDS, "/loomwright:review-pr": { ...row, launch: "crew" as const } } };
+    const c = validated(routes(["Skill"], ["git push"]));
+    const r = charterReadiness({ action: "create", charter: c, catalogue: crewCatalogue, grant: { kind: "proposed", connectors: [] }, dataDir, homeDir: home });
+    // The Skill and the git push prefix are the triage job's needs on that row; Agent is not held, so nothing is surplus.
+    expect(r.lines.some((l) => l.includes(SURPLUS))).toBe(false);
+    // On the shipped table the same charter holds both for no need.
+    expect(readiness(routes(["Skill"], ["git push"])).lines).toContain(`${READINESS_FLAG_PREFIX}permission to run skills and push with git: ${SURPLUS} (Studio runs that work itself)`);
+  });
+
+  it("AC7: the kernel does not refuse the draft: Wright's create holding Skill is held, and the card shows the surplus line", async () => {
+    const h = await boot();
+    const held = await h.create(routes(["Skill"]));
+    expect(held.permissionDecision).toBe("deny");
+    expect(held.permissionDecisionReason.startsWith(`${HELD_REASON} ${NOTE_START}`)).toBe(true);
+    const lines = readinessLines(h.display());
+    expect(lines).toContain(`${READINESS_FLAG_PREFIX}permission to run skills: ${SURPLUS} (Studio runs that work itself)`);
+    expect(lines).toContain("  covered: Triage PR comments and Ask for a merge: Studio runs the fix and the merge for this member");
+    expect(lines.some((l) => l.includes("no charter should grant it"))).toBe(false);
   });
 });
 

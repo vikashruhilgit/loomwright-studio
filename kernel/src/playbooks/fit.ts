@@ -82,7 +82,7 @@ export interface RefusedCall {
   readonly kind: NeedsGapKind;
   /** What the member can't do, in plain words (never a raw tool name or prefix): `run skills`, `GitHub write access`. */
   readonly what: readonly string[];
-  /** `true` when a charter change can close it, so `proposed_update` carries it; `false` when only the owner can, or no charter should (D44). */
+  /** `true` when a charter change can close it, so `proposed_update` carries it; `false` when only the owner can (a connector grant, a workspace). */
   readonly closable: boolean;
   /** The sentence the fit, the dry run and the enable show. */
   readonly line: string;
@@ -183,10 +183,9 @@ function grantNeeds(store: Store, row: PlaybookRow, tools: readonly CatalogueToo
   return needs;
 }
 
-/** The owner-facing end of a refused-call line: who can close it, or that no charter should. */
-function closeText(name: string, kind: NeedsGapKind, closable: boolean, commandRoute: boolean): string {
+/** The owner-facing end of a refused-call line: who can close it. */
+function closeText(name: string, kind: NeedsGapKind, closable: boolean): string {
   if (closable) return "a charter change can give it";
-  if (commandRoute) return "D44 leaves this route to the crew session, which no charter should allow, so no grant is proposed and you can enable the playbook anyway";
   return kind === "workspace" ? "only you know where your copy of the repo is: tell Wright, and it proposes a charter update listing it" : `only you can grant it: Team → ${name}'s inspector`;
 }
 
@@ -217,7 +216,7 @@ function refusedCalls(jobs: readonly ToolJob[], catalogue: ToolCatalogue, settin
         if (group.length === 0) continue;
         const what = [...new Set(group.map((g) => g.label))];
         const cant = kind === "claude_tool" || kind === "bash_prefix" ? `can't ${andList(what)}` : kind === "workspace" ? "has no copy of a repo to work in" : `has no ${andList(what)}`;
-        const line = `A real run of ${label} would be refused: ${name} ${cant}; ${closeText(name, kind, closable, (kind === "claude_tool" || kind === "bash_prefix") && group.some((g) => g.command !== undefined))}.`;
+        const line = `A real run of ${label} would be refused: ${name} ${cant}; ${closeText(name, kind, closable)}.`;
         calls.push({ id: job, label, kind, what, closable, line });
       }
     }

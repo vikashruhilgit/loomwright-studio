@@ -31,7 +31,8 @@ import type { Charter } from "../src/agents/index.js";
 import { TOOL_JOBS, buildToolCatalogue } from "../src/features/catalogue.js";
 import type { ToolCatalogue, ToolJob } from "../src/features/catalogue.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
-import { commandNeedsTable } from "../src/features/job-needs.js";
+import { LOOMWRIGHT_COMMAND_NEEDS, commandNeedsTable } from "../src/features/job-needs.js";
+import type { CommandNeeds } from "../src/features/job-needs.js";
 
 const K = "mcp__kernel__";
 const CATALOGUE = buildToolCatalogue(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools);
@@ -123,15 +124,26 @@ describe("AC3: a missing declared need is flagged in plain words", () => {
   const TRIAGE = (extra: Parameters<typeof crew>[2] = {}) =>
     crew([{ text: "Triage PR comments", jobs: ["triage_pr_comments"] }], ["triage_pr_comments"], { tools: ["Read"], ...extra });
   const READ_WRITE: ReadinessGrant = { kind: "stored", raw: { github: "write" } };
+  /** The shipped catalogue with review-pr marked crew-launched: no shipped row is (D45), but the comparison is still the mechanism. */
+  const crewRow = LOOMWRIGHT_COMMAND_NEEDS["/loomwright:review-pr"] as CommandNeeds;
+  const CREW_CATALOGUE: ToolCatalogue = { ...CATALOGUE, commandNeeds: { ...LOOMWRIGHT_COMMAND_NEEDS, "/loomwright:review-pr": { ...crewRow, launch: "crew" } } };
 
-  it("a job whose command the crew session runs itself gets one flagged line per kind, naming the job and what it could do", () => {
+  it("D45: a triage job, whose fix the kernel starts, gets no permission line and no 'no charter should grant it'", () => {
     const r = readiness(TRIAGE(), READ_WRITE);
+    expect(permissionLines(r)).toEqual([]);
+    for (const line of r.lines) expect(line).not.toContain("no charter should grant it");
+    expect(r.lines).toContain("  covered: Triage PR comments: Studio runs the fix for this member");
+  });
+
+  it("a crew-launched command (a test table) still gets one flagged line per kind, naming the job and what it could do", () => {
+    const r = readiness(TRIAGE(), READ_WRITE, CREW_CATALOGUE);
     expect(permissionLines(r)).toEqual([
       "  flagged: permission to run skills, run shell commands and start helper agents for Triage PR comments: no charter should grant it",
       "  flagged: permission to see changes with git, commit with git, push with git and work with pull requests on GitHub for Triage PR comments: no charter should grant it",
     ]);
-    expect(r.items.filter((i) => i.subject === "permission").map((i) => i.jobs)).toEqual([["triage_pr_comments"], ["triage_pr_comments"]]);
-    expect(r.open.length).toBeGreaterThanOrEqual(2);
+    expect(r.items.filter((i) => i.subject === "permission" && i.status === "flagged").map((i) => i.jobs)).toEqual([["triage_pr_comments"], ["triage_pr_comments"]]);
+    // Its route is not the kernel's, so it is not read as covered by Studio.
+    expect(r.lines.some((l) => l.includes("Studio runs"))).toBe(false);
   });
 
   it("no readiness line names a raw tool, a shell prefix or an mcp__kernel__ tool; the display's enforced line does", () => {
@@ -143,64 +155,65 @@ describe("AC3: a missing declared need is flagged in plain words", () => {
     expect(enforced).toContain("Skill");
     expect(enforced).toContain("gh pr");
     expect(enforced).toContain(K);
-    // Granting Skill closes that part of the first line, and "gh pr" part of the second.
+    // The held Skill and gh pr are read as held for no need (AC7), in plain words.
     expect(permissionLines(r)).toEqual([
-      "  flagged: permission to run shell commands and start helper agents for Triage PR comments: no charter should grant it",
-      "  flagged: permission to see changes with git, commit with git and push with git for Triage PR comments: no charter should grant it",
+      "  flagged: permission to run skills and work with pull requests on GitHub: this charter holds a permission no crew member needs (Studio runs that work itself)",
     ]);
   });
 
-  it("holding every Claude tool and shell prefix the command asks for closes every permission line", () => {
-    const r = readiness(TRIAGE({ tools: ["Read", "Skill", "Bash", "Agent"], prefixes: ["git", "gh"] }), READ_WRITE);
-    expect(permissionLines(r)).toEqual([]);
-  });
-
-  it("the block stays bounded by jobs, not tools: one line per job and kind however many tools are granted", () => {
+  it("the block stays bounded by jobs, not tools: at most one covered route line and one surplus line however many are held", () => {
     const both = crew(
       [
         { text: "Triage PR comments", jobs: ["triage_pr_comments"] },
         { text: "Ask for merges", jobs: ["ask_for_merge"] },
       ],
       ["triage_pr_comments", "ask_for_merge"],
-      { tools: ["Read"] },
+      { tools: ["Read", "Skill", "Agent"], prefixes: ["git commit", "git push", "gh pr", "git", "gh"] },
     );
-    const lines = permissionLines(readiness(both, READ_WRITE));
-    expect(lines).toHaveLength(4);
-    expect(lines.filter((l) => l.endsWith("for Triage PR comments: no charter should grant it"))).toHaveLength(2);
-    // Granting every kernel tool of every job adds jobs, never a line per tool: at most two permission lines per job.
+    const r = readiness(both, READ_WRITE);
+    expect(permissionLines(r)).toHaveLength(1);
+    expect(r.lines.filter((l) => l.includes("Studio runs"))).toEqual([
+      "  covered: Triage PR comments and Ask for a merge: Studio runs the fix and the merge for this member",
+      "  flagged: permission to run skills, start helper agents, commit with git, push with git and work with pull requests on GitHub: this charter holds a permission no crew member needs (Studio runs that work itself)",
+    ]);
+    // Granting every kernel tool of every job adds jobs, never a line per tool.
     const every = crew([{ text: "Everything", jobs: [] }], Object.keys(TOOL_JOBS) as ToolJob[], { tools: ["Read"] });
-    const all = permissionLines(readiness(every, READ_WRITE));
-    expect(all.length).toBeLessThanOrEqual(2 * Object.keys(TOOL_JOBS).length);
-    expect(all).toHaveLength(4);
+    expect(permissionLines(readiness(every, READ_WRITE))).toEqual([]);
   });
 
-  it("Wright's note proposes no Skill or shell grant for a crew-run command, and names the job and command it reaches", () => {
-    const r = readiness(TRIAGE(), READ_WRITE);
-    const note = r.agentNote ?? "";
-    expect(note).toContain("permission to run skills, run shell commands and start helper agents for Triage PR comments: not granted, and not for a charter to grant");
-    expect(note).toContain("Triage PR comments reaches /loomwright:review-pr");
-    expect(note).toContain("propose no tool or shell grant for it");
+  it("Wright's note proposes no Skill or shell grant, and for a held one says the kernel starts Loomwright's commands itself", () => {
+    const clean = readiness(TRIAGE(), READ_WRITE);
+    expect(clean.agentNote ?? "").not.toMatch(/allowedBashPrefixes|add .*Skill|reaches \/loomwright/);
+    const held = readiness(TRIAGE({ tools: ["Read", "Skill"] }), READ_WRITE);
+    const note = held.agentNote ?? "";
+    expect(note).toContain("holds a permission no crew member needs (run skills)");
+    expect(note).toContain("the kernel starts Loomwright's commands itself");
+    expect(note).toContain("Never draft one or copy one from another member");
     expect(note).not.toMatch(/allowedBashPrefixes|add .*Skill/);
   });
 
-  it("a command's needs come from the install's contract where it declares them (contract first)", () => {
-    const declared = [{ name: "review-pr", description: null, needs: { claude_tools: ["Skill"], bash_prefixes: [], connectors: [], workspace: true } }];
+  it("a command's needs come from the install's contract where it declares them, and a kernel-launched command's stay the kernel's (contract first)", () => {
+    const declared = [{ name: "review-pr", description: null, needs: { claude_tools: ["Skill"], bash_prefixes: ["git push"], connectors: [], workspace: true } }];
     const catalogue: ToolCatalogue = { ...CATALOGUE, commandNeeds: commandNeedsTable(declared) };
-    const r = readiness(TRIAGE(), READ_WRITE, catalogue);
-    expect(permissionLines(r)).toEqual(["  flagged: permission to run skills for Triage PR comments: no charter should grant it"]);
-    // A contract that declares nothing needed leaves no permission line.
-    const none = [{ name: "review-pr", description: null, needs: { claude_tools: [], bash_prefixes: [], connectors: [], workspace: true } }];
-    expect(permissionLines(readiness(TRIAGE(), READ_WRITE, { ...CATALOGUE, commandNeeds: commandNeedsTable(none) }))).toEqual([]);
+    expect(permissionLines(readiness(TRIAGE(), READ_WRITE, catalogue))).toEqual([]);
+    // On a crew-launched row, the contract's declaration is what is flagged.
+    const crewDeclared: ToolCatalogue = { ...CATALOGUE, commandNeeds: { ...LOOMWRIGHT_COMMAND_NEEDS, "/loomwright:review-pr": { ...(commandNeedsTable(declared)["/loomwright:review-pr"] as CommandNeeds), launch: "crew" } } };
+    expect(permissionLines(readiness(TRIAGE(), READ_WRITE, crewDeclared))).toEqual([
+      "  flagged: permission to run skills for Triage PR comments: no charter should grant it",
+      "  flagged: permission to push with git for Triage PR comments: no charter should grant it",
+    ]);
   });
 
   it("a flag never changes what is covered: the duty line and the other lines are as before, in order", () => {
-    const r = readiness(TRIAGE(), READ_WRITE);
+    const r = readiness(TRIAGE({ tools: ["Read", "Skill"] }), READ_WRITE);
     expect(r.lines[0]).toBe(READINESS_HEADING);
     expect(r.lines[1]).toBe("  covered: duty 1 by Triage PR comments: Triage PR comments");
-    // Permission lines come after the repo and connector lines.
+    // The covered route line and the surplus line come after the repo and connector lines.
+    const route = r.lines.findIndex((l) => l.includes("Studio runs the fix"));
     const first = r.lines.findIndex((l) => l.startsWith(PERMISSION));
-    expect(r.lines.slice(2, first).every((l) => !l.startsWith(PERMISSION))).toBe(true);
-    expect(r.lines.slice(first).every((l) => l.startsWith(PERMISSION))).toBe(true);
+    expect(route).toBeGreaterThan(1);
+    expect(first).toBe(route + 1);
+    expect(r.lines.slice(2, route).every((l) => !l.startsWith(PERMISSION))).toBe(true);
   });
 });
 

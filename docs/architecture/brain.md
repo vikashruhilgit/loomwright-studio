@@ -143,10 +143,11 @@ the /automate run itself, as its own session, and the kernel never merges.
   kernel_automate_state(repo): live, parked or idle. Start nothing while a run
   is live.
 - Merge when ready, which the owner opts into. The session asks
-  kernel_automate_merge_check(repo, pr). Only a go is acted on, by running the
-  invocation it gives (/loomwright:automate --merge-parked <run_id>); Loomwright's
-  own gate then decides and merges. A wait or a park is reported with its reason,
-  and the session stops. Where the repository's policy is Approve in Studio, the
+  kernel_automate_merge_check(repo, pr). Only a go is acted on: the kernel then
+  starts /loomwright:automate --merge-parked <run_id> itself, as its own session,
+  and Loomwright's own gate decides and merges. Never run that command yourself;
+  end your turn. A wait or a park is reported with its reason, and the session
+  stops. Where the repository's policy is Approve in Studio, the
   session first asks for the owner's approval with kernel_merge_approval_request(repo,
   pr, head_sha, ci, ready_at). The approval is a record only, it is held every
   time, and a new push makes it stale.
@@ -171,14 +172,17 @@ answers automate_drain. It has four routes:
 - automate_drain: a live /automate run owns the pull request. Record the
   comment and leave the fix to that run; start nothing.
 - automate_fix: a paused /automate run parked it. The answer carries the parked
-  item and the command /loomwright:review-pr <pr url>; run that command.
-- review_pr: the owner or the App authored it and no run holds it. Run
-  /loomwright:review-pr <pr url> in this session; it heals and never merges.
+  item and the command /loomwright:review-pr <pr url>; the kernel starts that
+  command itself, as its own session. Never run it yourself; end your turn.
+- review_pr: the owner or the App authored it and no run holds it. The kernel
+  starts /loomwright:review-pr <pr url> itself, as its own session; it heals and
+  never merges. Never run it yourself; end your turn.
 - reply_only: someone else's pull request, or its owner could not be read. Never
   push. Reply or answer, and put the suggested fix in the reply.
 
-The tool starts no session and pushes nothing, and every push stays held for the
-owner.
+The tool itself pushes nothing: it queues the kernel's start of that command,
+and the answer says when nothing was started and why. Every push stays held for
+the owner.
 
 ## Untrusted text
 
