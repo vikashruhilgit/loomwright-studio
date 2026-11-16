@@ -265,8 +265,8 @@ describe("AC5: the phase 8 walk's four playbooks against a read-only developer a
       ["This playbook needs Triage PR comments; Mason doesn't have it."],
       ["This playbook needs Ask for a merge; Mason doesn't have it."],
     ]);
-    // Item 20c, D44: the two crew-launched routes also name the calls a real run would be refused; the kernel-launched /automate names none (Mason lists a workspace).
-    expect(fits.map((f) => f?.refused_calls.map((c) => c.id))).toEqual([[], [], ["triage_pr_comments", "triage_pr_comments"], ["ask_for_merge"]]);
+    // Item 22g, D45: the kernel starts every Loomwright route of the four (the ticket run, the fix, the merge), so no real run is refused a call (Mason lists a workspace).
+    expect(fits.map((f) => f?.refused_calls.map((c) => c.id))).toEqual([[], [], [], []]);
   });
 
   it("a member holding the walk charter: the fit names none for any of the four", async () => {
@@ -275,11 +275,10 @@ describe("AC5: the phase 8 walk's four playbooks against a read-only developer a
       const { fit } = await draft(p.name, p.jobs);
       expect(fit?.missing, p.name).toEqual([]);
       expect(fit?.proposed_update).toBeUndefined();
-      // Item 20c, D44: a ticket job is whole (the kernel launches /automate); triage and merge reach a route the crew session runs itself, a refused call no charter should close.
-      const d44Open = p.jobs[0] !== "automate_tickets";
-      expect(fit?.status, p.name).toBe(d44Open ? "gap" : "fits");
-      expect(fit?.refused_calls.every((c) => !c.closable)).toBe(true);
-      expect(fit?.refused_calls.length === 0, p.name).toBe(!d44Open);
+      // Item 22g, D45: every job is whole, triage and merge too: the kernel launches their routes, so no Skill or shell prefix is refused.
+      expect(fit?.status, p.name).toBe("fits");
+      expect(fit?.refused_calls, p.name).toEqual([]);
+      expect(fit?.lines.join("\n") ?? "", p.name).not.toContain("D44 leaves this route");
     }
   });
 });
@@ -301,10 +300,10 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
       status: "gap",
       agent: "mason",
       jobs: ["ask_for_merge"],
-      // Item 20c, D44: the merge route runs in the crew session, so a real run would also be refused Skill and Bash: named, never proposed.
-      lines: ["This playbook needs Ask for a merge; Mason doesn't have it.", expect.stringContaining("D44 leaves this route to the crew session")],
+      // Item 22g, D45: the kernel starts the merge itself, so a real run is refused no Skill or Bash.
+      lines: ["This playbook needs Ask for a merge; Mason doesn't have it."],
       missing: [{ id: "ask_for_merge", label: "Ask for a merge", tools: added }],
-      refused_calls: [{ id: "ask_for_merge", label: "Ask for a merge", kind: "claude_tool", what: ["run skills", "run shell commands"], closable: false, line: expect.stringContaining("Mason can't run skills and run shell commands") }],
+      refused_calls: [],
       proposed_update: expectedUpdate,
       owner_steps: ["Mason needs GitHub write access for Ask for a merge; only you can grant it: Team → Mason's inspector."],
     });
@@ -342,13 +341,13 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
     expect(store.prepare("SELECT count(*) FROM events WHERE kind = 'agent_updated'").pluck().get()).toBe(1);
 
     // Closed: the fit fits, and the owner's approval of the enable enables it.
-    // Item 20c, D44: the kernel tools are covered now, but a real run is still refused the crew route's Skill and Bash: no charter closes that, so the owner enables anyway.
-    expect((await dryRun(created.id)).fit).toMatchObject({ status: "gap", missing: [], refused_calls: [{ id: "ask_for_merge", closable: false }] });
-    expect(held(ENABLE, { id: created.id, idempotency_key: "enable-2" }, WRIGHT_SESSION)).toEqual({ refuse: expect.stringContaining("charter_gap: A real run of Ask for a merge would be refused") });
-    const hold = held(ENABLE, { id: created.id, idempotency_key: "enable-2", enable_anyway: true }, WRIGHT_SESSION) as { display?: string; refuse?: string };
+    // Item 22g, D45: the kernel starts the merge itself, so once the kernel tools are covered no real-run call is refused.
+    expect((await dryRun(created.id)).fit).toMatchObject({ status: "fits", missing: [], refused_calls: [] });
+    const hold = held(ENABLE, { id: created.id, idempotency_key: "enable-2" }, WRIGHT_SESSION) as { display?: string; refuse?: string };
     expect(hold.refuse).toBeUndefined();
-    expect(hold.display).toContain("jobs: Ask for a merge\ncharter: A real run of Ask for a merge would be refused");
-    expect(applier(ENABLE, { id: created.id, idempotency_key: "enable-2", enable_anyway: true }, approvalNow(93, created.version), store, now())).toMatchObject({ applied: expect.stringContaining("enabled") });
+    expect(hold.display).toContain("jobs: Ask for a merge");
+    expect(hold.display).not.toContain("would be refused");
+    expect(applier(ENABLE, { id: created.id, idempotency_key: "enable-2" }, approvalNow(93, created.version), store, now())).toMatchObject({ applied: expect.stringContaining("enabled") });
     expect(getPlaybook(store, created.id)?.status).toBe("enabled");
   });
 
@@ -360,11 +359,10 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
     const hold = held(ENABLE, input, WRIGHT_SESSION) as { display?: string; subjectVersion?: number; refuse?: string };
     expect(hold.refuse).toBeUndefined();
     expect(hold.subjectVersion).toBe(created.version);
-    expect(hold.display?.split("\n").slice(-6)).toEqual([
+    // Item 22g, D45: the kernel starts the fix, so no real-run Skill or shell call is named.
+    expect(hold.display?.split("\n").slice(-4)).toEqual([
       "jobs: Triage PR comments",
       "charter: This playbook needs Triage PR comments; Mason doesn't have it.",
-      expect.stringContaining(`charter: ${REAL_RUN}Triage PR comments would be refused: Mason can't run skills`),
-      expect.stringContaining(`charter: ${REAL_RUN}Triage PR comments would be refused: Mason can't see changes with git`),
       "charter gap: open; the owner is enabling this playbook anyway, with the gap open",
       "owner step: Mason needs GitHub write access for Triage PR comments; only you can grant it: Team → Mason's inspector.",
     ]);
@@ -377,8 +375,8 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
   it("an update that adds jobs re-opens the gap: the new version's fit names the new job only", async () => {
     addMember([...READ_ONLY, `${K}kernel_automate_merge_check`, `${K}kernel_merge_approval_request`]);
     const created = await draft("Merge when ready", ["ask_for_merge"]);
-    // Item 20c, D44: no kernel tool is missing; only the crew route's refused call (never closable) keeps the status at gap.
-    expect(created.fit).toMatchObject({ status: "gap", missing: [] });
+    // Item 22g, D45: no kernel tool is missing and the kernel starts the merge, so it fits before the update.
+    expect(created.fit).toMatchObject({ status: "fits", missing: [], refused_calls: [] });
     const changed = value<Drafted & { changed: boolean }>(
       await tool("kernel_playbook_update", { id: created.id, changes: { jobs: ["ask_for_merge", "automate_tickets"] }, idempotency_key: "u1" }),
     );
@@ -451,7 +449,7 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
   it("a member holding part of a job: the line says so, and the update adds only the tools it lacks", async () => {
     addMember([...READ_ONLY, `${K}kernel_automate_merge_check`]);
     const { fit } = await draft("Merge when ready", ["ask_for_merge"]);
-    expect(fit?.lines).toEqual(["This playbook needs Ask for a merge; Mason has only part of it.", expect.stringContaining(`${REAL_RUN}Ask for a merge would be refused`)]);
+    expect(fit?.lines).toEqual(["This playbook needs Ask for a merge; Mason has only part of it."]);
     expect(fit?.proposed_update?.changes.tool_policy.allowedTools).toEqual(["Read", ...READ_ONLY, `${K}kernel_automate_merge_check`, `${K}kernel_merge_approval_request`]);
   });
 
@@ -606,8 +604,8 @@ describe("one 'job is granted' rule with the charter readiness check (`jobGrante
     const row = getPlaybook(store, id);
     if (row === undefined) throw new Error("no row");
     // The shipped catalogue: Mason holds the job.
-    // (Item 20c, D44: the crew route's Skill and Bash are a refused call, so a gap with no missing tool.)
-    expect(playbookFit(store, row, CATALOGUE)).toMatchObject({ status: "gap", missing: [] });
+    // (Item 22g, D45: the kernel starts the merge, so no refused call either: it fits.)
+    expect(playbookFit(store, row, CATALOGUE)).toMatchObject({ status: "fits", missing: [], refused_calls: [] });
     // A composition without ask_for_merge's tools: the job is missing, with nothing to add.
     const partial = buildToolCatalogue(SHIPPED_TOOLS.filter((t) => t.job !== "ask_for_merge"));
     expect(partial.tools.some((t) => t.job === "ask_for_merge")).toBe(false);

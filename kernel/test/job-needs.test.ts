@@ -5,7 +5,9 @@
 //   AC6 a job added to `TOOL_JOB_DEFINITIONS` without needs fails a runtime
 //       test (`npm test` is `vitest run` and does not typecheck);
 //   D44 `automate_tickets` needs no `Skill` and no shell prefix: the kernel
-//       starts `/loomwright:automate` under its own frozen policy.
+//       starts `/loomwright:automate` under its own frozen policy;
+//   D45 (item 22g, AC5) likewise `triage_pr_comments` and `ask_for_merge`:
+//       the kernel starts `/loomwright:review-pr` and `--merge-parked`.
 // The code is `kernel/src/features/job-needs.ts` and the declarations in
 // `kernel/src/features/catalogue.ts`.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,6 +28,7 @@ import {
   loadCommandNeeds,
   resolveJobNeeds,
 } from "../src/features/job-needs.js";
+import type { CommandNeeds, LoomwrightCommandNeedsTable } from "../src/features/job-needs.js";
 import { parseLoomwrightContract } from "../src/loomwright/contract.js";
 import type { LoomwrightContractEntry } from "../src/loomwright/contract.js";
 import { fixtureContract, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
@@ -110,17 +113,26 @@ describe("D44: which commands a job's crew must hold the tools for", () => {
     expect(LOOMWRIGHT_COMMAND_NEEDS["/loomwright:automate"]?.claudeTools.map((n) => n.name)).toContain("Skill");
   });
 
-  it("triage and merge reach crew-launched commands: Skill and shell prefixes are declared, none can be closed by a charter change", () => {
+  it("D45: triage and merge reach kernel-launched commands too, so their crew holds no Skill and no shell prefix", () => {
     for (const [id, invocation] of [["triage_pr_comments", "/loomwright:review-pr"], ["ask_for_merge", "/loomwright:automate --merge-parked"]] as const) {
       const needs = resolveJobNeeds(id, PINNED);
-      expect(needs.commands.map((c) => [c.invocation, c.launch]), id).toEqual([[invocation, "crew"]]);
-      expect(needs.claudeTools.map((n) => n.name), id).toContain("Skill");
-      expect(needs.bashPrefixes.length, id).toBeGreaterThan(0);
-      for (const n of [...needs.claudeTools, ...needs.bashPrefixes]) {
-        expect(n.closable, `${id}: ${n.name}`).toBe(false);
-        expect(n.command, id).toBe(invocation);
-      }
+      expect(needs.commands.map((c) => [c.invocation, c.launch]), id).toEqual([[invocation, "kernel"]]);
+      expect(needs.claudeTools, id).toEqual([]);
+      expect(needs.bashPrefixes, id).toEqual([]);
+      // The row stays truthful about what the command asks for; it is the kernel's, never a crew need.
+      expect(LOOMWRIGHT_COMMAND_NEEDS[invocation]?.claudeTools.map((n) => n.name), id).toContain("Skill");
     }
+  });
+
+  it("AC5: no job's needs include Skill, Agent, Bash or a Loomwright shell prefix, and no command row is crew-launched", () => {
+    const prefixes = new Set(Object.values(LOOMWRIGHT_COMMAND_NEEDS).flatMap((r) => r.bashPrefixes.map((p) => p.name)));
+    for (const id of TOOL_JOB_IDS) {
+      const needs = resolveJobNeeds(id, PINNED);
+      expect(needs.claudeTools.map((n) => n.name).filter((n) => ["Skill", "Agent", "Bash"].includes(n)), id).toEqual([]);
+      expect(needs.bashPrefixes.filter((p) => [...prefixes].some((lw) => bashPrefixHeld([p.name], lw) || bashPrefixHeld([lw], p.name))), id).toEqual([]);
+      for (const c of needs.commands) expect(c.launch, `${id}: ${c.invocation}`).toBe("kernel");
+    }
+    for (const row of Object.values(LOOMWRIGHT_COMMAND_NEEDS)) expect(row.launch, row.invocation).toBe("kernel");
   });
 });
 
@@ -139,20 +151,20 @@ describe("AC2: contract first, the pinned table where the contract declares noth
     expect(row?.bashPrefixes.map((n) => n.name)).toEqual(["git diff"]);
     expect(row?.connectors).toEqual([{ kind: "github", write: true }]);
     expect(row?.workspace).toBe(false);
-    expect(row?.launch).toBe("crew"); // launch is the kernel's own fact (D44), never the contract's
+    expect(row?.launch).toBe("kernel"); // launch is the kernel's own fact (D44, D45), never the contract's
     expect(table["/loomwright:automate"]).toBe(LOOMWRIGHT_COMMAND_NEEDS["/loomwright:automate"]);
     expect(table["/loomwright:automate --merge-parked"]).toBe(LOOMWRIGHT_COMMAND_NEEDS["/loomwright:automate --merge-parked"]);
   });
 
-  it("the resolved needs follow the table the catalogue carries: the contract's declaration replaces the pinned Skill need", () => {
-    const table = commandNeedsTable(contractCommands({ claude_tools: ["Read"], bash_prefixes: [] }));
+  it("the resolved needs follow the table the catalogue carries: a contract's declaration for a kernel-launched command stays the kernel's, never the job's", () => {
+    const table = commandNeedsTable(contractCommands({ claude_tools: ["Skill", "Read"], bash_prefixes: ["git push"] }));
+    expect(table["/loomwright:review-pr"]?.claudeTools.map((n) => n.name)).toEqual(["Skill", "Read"]);
     const viaContract = resolveJobNeeds("triage_pr_comments", buildToolCatalogue(TOOLS, table));
-    expect(viaContract.claudeTools.map((n) => n.name)).toEqual(["Read"]);
+    expect(viaContract.claudeTools).toEqual([]);
     expect(viaContract.bashPrefixes).toEqual([]);
-    const viaPinned = resolveJobNeeds("triage_pr_comments", PINNED);
-    expect(viaPinned.claudeTools.map((n) => n.name)).toContain("Skill");
+    expect(viaContract.commands.map((c) => [c.invocation, c.launch, c.claudeTools.map((n) => n.name)])).toEqual([["/loomwright:review-pr", "kernel", ["Skill", "Read"]]]);
     // A catalogue built without a table resolves to the pinned rows.
-    expect(resolveJobNeeds("triage_pr_comments", buildToolCatalogue(TOOLS)).claudeTools).toEqual(viaPinned.claudeTools);
+    expect(resolveJobNeeds("triage_pr_comments", buildToolCatalogue(TOOLS)).commands).toEqual(resolveJobNeeds("triage_pr_comments", PINNED).commands);
   });
 
   it("a contract that declares needs for `automate` changes the kernel-launched row's needs but they stay the kernel's, not the ticket job's", () => {
@@ -206,10 +218,18 @@ describe("AC2: contract first, the pinned table where the contract declares noth
 });
 
 describe("the needs-vs-policy comparison readiness and fit share", () => {
-  const triage = resolveJobNeeds("triage_pr_comments", PINNED);
+  // No shipped row is crew-launched (D45); the `crew` mechanism is still compared, on a test table that marks review-pr so.
+  const crewRow = LOOMWRIGHT_COMMAND_NEEDS["/loomwright:review-pr"] as CommandNeeds;
+  const CREW_TABLE: LoomwrightCommandNeedsTable = { ...LOOMWRIGHT_COMMAND_NEEDS, "/loomwright:review-pr": { ...crewRow, launch: "crew" } };
+  const triage = resolveJobNeeds("triage_pr_comments", buildToolCatalogue(TOOLS, CREW_TABLE));
   const none = { allowedTools: [] as string[], allowedBashPrefixes: [] as string[] };
 
-  it("a member holding nothing lacks each Claude tool and prefix the crew-launched command needs, in plain words and as gaps no charter should close", () => {
+  it("the shipped triage job lacks nothing a charter must hold: the kernel starts its fix (D45)", () => {
+    expect(jobNeedsGaps(resolveJobNeeds("triage_pr_comments", PINNED), none)).toEqual([]);
+    expect(jobNeedsGaps(resolveJobNeeds("ask_for_merge", PINNED), none)).toEqual([]);
+  });
+
+  it("a member holding nothing lacks each Claude tool and prefix a crew-launched command needs, in plain words and as gaps no charter should close", () => {
     const gaps = jobNeedsGaps(triage, none);
     expect(gaps.filter((g) => g.kind === "claude_tool").map((g) => g.name)).toEqual(["Skill", "Bash", "Agent"]);
     expect(gaps.filter((g) => g.kind === "bash_prefix").map((g) => g.name)).toEqual(["git diff", "git commit", "git push", "gh pr"]);
