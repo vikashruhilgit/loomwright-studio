@@ -8,14 +8,17 @@
 //       The crew member's `tool_policy` is drafted from the shipped catalogue by `allowedToolsForJobs` (AC7); a catalogue
 //       without the handover's grant drafts a policy that denies the call `tool_not_allowed`, and the walk reaches no run (AC9)
 //   (b) three comments on PR A are routed: PR A is a parked `/automate` item, so
-//       `kernel_pr_route` answers `automate_fix` and the fix runs
-//       `/loomwright:review-pr <pr url>` in the triage playbook's own session (never a
-//       second drain); the question gets an answer and the remark a reply
+//       `kernel_pr_route` answers `automate_fix` and the KERNEL starts
+//       `/loomwright:review-pr <pr url>` as its own session of the triage playbook (D45; never a
+//       second drain, and the crew session never runs it); the question gets an answer and the remark a reply
 //   (c) the owner is re-requested as reviewer (`requestReviewers`)
 //   (d) PR A merges under Solo, PR B under Approve in Studio (after the owner approves
-//       the merge card for PR B's head); both `merged_by_gate = 1`; the kernel never merges
+//       the merge card for PR B's head): each `go` from `kernel_automate_merge_check` makes the KERNEL start
+//       `/loomwright:automate --merge-parked <run_id>` as its own session (D45), whose stand-in is Loomwright's gate;
+//       both `merged_by_gate = 1`; the kernel never merges
 //   (e) a `gh pr merge` in the kernel-started run session is denied `merge_blocked`; the crew session, drafted from
-//       the catalogue, holds no Bash grant at all
+//       the catalogue, holds no Bash grant at all. The only Bash ever allowed is a kernel-started session's own
+//       Loomwright driver script, by its exact path under the install the session loads (AC15)
 //
 // The kernel is `startKernel` over `SHIPPED_CONTRIBUTIONS` with `triggers`, `integrations`
 // and `automate` rebuilt over the fakes (the shipped tracker, write tools and ticket reader
@@ -25,9 +28,11 @@
 //   - automate: the three parts rebuilt with `{ client }` over the same fake
 //   - triggers: one due work, `fireDueTriggers` then `firePollTriggers` with a ticket reader
 //     over the fake ClickUp MCP server (127.0.0.1) and a fake Keychain
-// Sessions are the fake spawner/query (session-fakes.ts): stand-in `/automate`,
-// `/review-pr` and merge sessions that call the real PreToolUse gate and the real kernel
-// MCP tool handlers, and write the run files of fixtures/loomwright-run-files/. One mutable
+// Sessions are the fake spawner/query (session-fakes.ts): stand-in crew sessions and the
+// kernel-started `/automate`, `/review-pr` and `--merge-parked` sessions (told apart by
+// prompt, since a kernel-started session runs on its calling playbook's model), which call the
+// real PreToolUse gate and the real kernel MCP tool handlers, and write the run files of
+// fixtures/loomwright-run-files/. One mutable
 // clock is read by `KernelDeps.now`, `loopDeps.now`, the brain's handler and the ticket reader.
 //
 // Guards: the run-wide notifier guard refuses `/usr/bin/security` (the failure names the
@@ -36,7 +41,7 @@
 //
 // The live half (a real model, a real sandbox repo) is the owner's run:
 // test/phase-8-exit-live.test.ts and docs/evidence/phase-8-exit-runbook.md.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,7 +145,10 @@ const prUrl = (n: number): string => `https://github.com/${REPO}/pull/${n}`;
 
 /** Mason's own model (`mason.json`): the owner's decision messages to mason run on it. */
 const MASON_MODEL = "claude-sonnet-4-5";
-/** Each playbook's model: its stand-in session is told apart by it. */
+/**
+ * Each playbook's model: a crew session's stand-in is told apart by it. A session the kernel starts runs on the calling playbook's
+ * model too (D44, D45), so those are told apart by their kernel-built prompt first (`RUN_PROMPTS`).
+ */
 const INTAKE_MODEL = "claude-opus-4-1";
 const TRIAGE_MODEL = "claude-haiku-4-5";
 const MERGE_MODEL = "claude-opus-4-5";
@@ -354,6 +362,33 @@ interface SessionRow {
 
 const sessionRows = (store: Store): SessionRow[] => store.prepare<[], SessionRow>("SELECT id, agent, status, model, playbook FROM sessions ORDER BY id").all();
 
+/** The session row whose SDK session id is `sdk` (a fake call's `options.sessionId`). */
+const sessionOfSdk = (store: Store, sdk: string): SessionRow | undefined =>
+  store.prepare<[string], SessionRow>("SELECT id, agent, status, model, playbook FROM sessions WHERE sdk_session_id = ?").get(sdk);
+
+/** The ids of the sessions the kernel's own `automate-run` step started (each done step's stored `session_id`), ascending. */
+const kernelStartedIds = (store: Store): number[] =>
+  store
+    .prepare<[], unknown>("SELECT json_extract(result_json, '$.session_id') FROM work_steps WHERE key LIKE 'event:%:automate-run' AND status = 'done'")
+    .pluck()
+    .all()
+    .filter((id): id is number => typeof id === "number")
+    .sort((a, b) => a - b);
+
+/**
+ * The Loomwright driver scripts the stand-in install holds (each named by one kernel run policy, AC15): a kernel-started stand-in
+ * calls its own driver by exact path, as the real command would, and the rail must allow it.
+ */
+const DRIVER_SCRIPTS = ["automate-next-step.sh", "review-heal-next-step.sh", "automate-helpers.sh"] as const;
+
+/** A session the kernel started (D44, D45): its kernel-built prompt, its SDK session id (the row's `sdk_session_id`), its cwd and its driver call's decision. */
+interface KernelRun {
+  readonly prompt: string;
+  readonly sdk: string;
+  readonly cwd: string | undefined;
+  readonly driver: Decision;
+}
+
 interface ApprovalRow {
   readonly id: number;
   readonly action: string;
@@ -505,10 +540,18 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
       ),
     );
 
-    // ---- The stand-in sessions: told apart by model; the intake's by the ticket in its prompt ----
+    // ---- The stand-in sessions: a kernel-started one told apart by its prompt (it runs on its calling playbook's model, the
+    // same as that playbook's crew session); a crew session by model; the intake's by the ticket in its prompt ----
     const failures: unknown[] = [];
     const drivers = new Map<string, (call: FakeCall) => Promise<void>>();
+    /** The kernel-started sessions' drivers, by the start of their kernel-built prompt (checked first). */
+    const runDrivers: [prefix: string, driver: (call: FakeCall, prompt: string) => Promise<void>][] = [];
     const prompts = new WeakMap<Options, string[]>();
+    /** The first prompt a session was started with (the fake query reads it asynchronously). */
+    async function firstPrompt(call: FakeCall): Promise<string> {
+      await vi.waitFor(() => expect(prompts.get(call.options)?.length ?? 0).toBeGreaterThan(0), WAIT);
+      return (prompts.get(call.options) as string[])[0] as string;
+    }
     const fakes = fakeSessions({
       script: (call) => {
         call.stream.push(fakeMsg.init(call.options.sessionId ?? call.options.resume ?? "unknown"));
@@ -516,9 +559,14 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
           failures.push(err);
           call.stream.end();
         };
-        const driver = drivers.get(String(call.options.model));
-        if (driver === undefined) return fail(new Error(`a session on ${String(call.options.model)} started with no driver`));
-        void driver(call).catch(fail);
+        void (async () => {
+          const prompt = await firstPrompt(call);
+          const run = runDrivers.find(([prefix]) => prompt.startsWith(prefix));
+          if (run !== undefined) return run[1](call, prompt);
+          const driver = drivers.get(String(call.options.model));
+          if (driver === undefined) throw new Error(`a session on ${String(call.options.model)} started with no driver: ${prompt}`);
+          return driver(call);
+        })().catch(fail);
       },
     });
     // Record each session's prompt (the fake query drops it): the intake driver reads which ticket it was started on.
@@ -541,7 +589,20 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
       mintedFor.push(repos);
       return { ok: true, token: "ghs_walkfixturetoken000001", expires_at: new Date(Date.parse(START) + 86_400_000).toISOString() };
     };
-    const sessionOptions = { loomwrightPath: makePluginDir(tmp), stopGraceMs: 10, sessionTokenMint };
+    const plugin = makePluginDir(tmp);
+    for (const name of DRIVER_SCRIPTS) writeFileSync(join(plugin, "scripts", name), "#!/usr/bin/env bash\n");
+    const sessionOptions = { loomwrightPath: plugin, stopGraceMs: 10, sessionTokenMint };
+    /** A kernel-started session's call of its own driver `name`, by exact path under the install the session loads, through its gate. */
+    const callDriver = (call: FakeCall, name: (typeof DRIVER_SCRIPTS)[number], args: string): Promise<Decision> => {
+      const loaded = (call.options.plugins?.[0] as { path?: string } | undefined)?.path;
+      if (loaded === undefined) throw new Error("the session loads no Loomwright install");
+      return gateOf(call)("Bash", { command: `bash ${join(loaded, "scripts", name)} ${args}` });
+    };
+    /** Each kernel-started session, in the order its driver ran. */
+    const kernelRuns: KernelRun[] = [];
+    const recordRun = async (call: FakeCall, prompt: string, driver: Promise<Decision>): Promise<void> => {
+      kernelRuns.push({ prompt, sdk: String(call.options.sessionId), cwd: call.options.cwd, driver: await driver });
+    };
 
     const d: KernelDeps = {
       keychain,
@@ -557,6 +618,26 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     kernels.push(kernel);
     const store = kernel.store;
     const noFailures = (): void => expect(failures).toEqual([]);
+
+    /**
+     * The kernel-started sessions whose prompt starts with `prefix` (D44, D45): each is a session the kernel's own `automate-run`
+     * step started (never a crew session's), ran to completion in the crew member's checkout, and its driver call by exact path
+     * was allowed (AC15). `want` is their agent, model and playbook, in any order. Returns their prompts, oldest first.
+     */
+    async function expectKernelRuns(prefix: string, want: readonly { agent: string; model: string; playbook: number }[]): Promise<string[]> {
+      const runs = kernelRuns.filter((r) => r.prompt.startsWith(prefix));
+      expect(runs).toHaveLength(want.length);
+      const started = kernelStartedIds(store);
+      for (const r of runs) {
+        await vi.waitFor(() => expect(sessionOfSdk(store, r.sdk)?.status).toBe("completed"), WAIT);
+        expect(started).toContain(sessionOfSdk(store, r.sdk)?.id);
+        expect(realpathSync(r.cwd ?? "")).toBe(realpathSync(workspace));
+        expect(r.driver).toMatchObject({ permissionDecision: "allow" });
+      }
+      const key = (s: { agent: string; model: string; playbook: number | null }): string => `${s.agent} ${s.model} ${s.playbook}`;
+      expect(runs.map((r) => key(sessionOfSdk(store, r.sdk) as SessionRow)).sort()).toEqual(want.map(key).sort());
+      return runs.map((r) => r.prompt);
+    }
 
     async function studio(argv: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
       const stdout: string[] = [];
@@ -694,12 +775,10 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     /** The handover calls the crew session's policy denied (AC9): only a drafted policy that lacks the grant ever lists one. */
     const handoverDenials: string[] = [];
     // Both ticket playbooks' sessions run on INTAKE_MODEL, and so does the /automate run the kernel starts for each (D44):
-    // the driver tells them apart by the prompt, the way it tells the intake session's ticket apart by its ref.
-    let intakes = 0;
-    drivers.set(INTAKE_MODEL, async (call) => {
-      await vi.waitFor(() => expect(prompts.get(call.options)?.length ?? 0).toBeGreaterThan(0), WAIT);
-      const prompt = (prompts.get(call.options) as string[])[0] as string;
-      if (prompt.startsWith("/loomwright:automate --backlog")) {
+    // the run is told apart by its prompt, the way the intake session's ticket is told apart by its ref.
+    runDrivers.push([
+      "/loomwright:automate --backlog ",
+      async (call, prompt) => {
         // The kernel-started stand-in /automate (safe mode): it reads its backlog, opens the PR and parks it awaiting_merge at its READY head.
         const backlog = /^\/loomwright:automate --backlog (\S+) --inline-phases$/.exec(prompt)?.[1];
         if (backlog === undefined) throw new Error(`the run session was started with an unexpected prompt: ${prompt}`);
@@ -708,13 +787,18 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
         if (ran === undefined) throw new Error("the run session's backlog lists no known ticket");
         const item = `.supervisor/requirements/studio/${itemFileName(ran.ref)}`;
         automateRuns.push(prompt);
+        // Its first driver call, by exact path (AC15): the ticket run's policy admits it.
+        await recordRun(call, prompt, callDriver(call, "automate-next-step.sh", "--resume"));
         // (e) the run session's `gh pr merge` (its policy allows `gh`): the rail denies it `merge_blocked` (D40), whatever the policy.
         runMergeAttempts.push(await gateOf(call)("Bash", { command: `gh pr merge ${ran.pr} --squash --delete-branch` }));
         writeRunFile(workspace, ran, item, false);
         prepared.push({ ref: ran.ref, invocation: prompt, item });
         endSession(call);
-        return;
-      }
+      },
+    ]);
+    let intakes = 0;
+    drivers.set(INTAKE_MODEL, async (call) => {
+      const prompt = await firstPrompt(call);
       const ticket = TICKETS.find((t) => prompt.includes(t.ref));
       if (ticket === undefined) throw new Error("the intake session was started on no known ticket");
       // One backlog file per checkout, and one drain: the second ticket is handed over once the first run has parked.
@@ -790,6 +874,12 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     expect(runMergeAttempts).toHaveLength(2);
     for (const attempt of runMergeAttempts) expect(attempt).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "merge_blocked" });
     for (const run of automateRuns) expect(run).toMatch(/^\/loomwright:automate --backlog \S*_BACKLOG\.md --inline-phases$/);
+    // Each /automate run is a session the kernel's own step started, as mason, of a ticket playbook, on its model, in the checkout,
+    // and its driver call by exact path was allowed.
+    await expectKernelRuns("/loomwright:automate --backlog ", [
+      { agent: "mason", model: INTAKE_MODEL, playbook: intakeGithub.playbook.id },
+      { agent: "mason", model: INTAKE_MODEL, playbook: intakeClickup.playbook.id },
+    ]);
     // Two ticket tasks, each linked to its own PR in `pr_tracks`, none merged by the gate yet.
     expect(tracks(store)).toEqual([
       expect.objectContaining({ repo: REPO, number: PR_A, head_sha: TICKET_A.head, state: "parked", ticket_ref: TICKET_A.ref, owner_kind: "automate_parked", run_file: TICKET_A.runId, merged_by_gate: 0 }),
@@ -810,20 +900,32 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     const intakeRunsAfterIntake = count(store, "SELECT count(*) FROM playbook_runs WHERE kind = 'fire'");
 
     // ================================ (b) + (c) triage, reply, re-request ================================
-    const triaged: { route?: Record<string, unknown>; commands: string[]; answered: unknown[]; replied: unknown[]; reRequested: unknown[] } = { commands: [], answered: [], replied: [], reRequested: [] };
+    const triaged: { route?: Record<string, unknown>; handedToKernel: string[]; answered: unknown[]; replied: unknown[]; reRequested: unknown[] } = { handedToKernel: [], answered: [], replied: [], reRequested: [] };
+    // The fix the kernel starts (D45): `/loomwright:review-pr <url>` as its own session of the triage playbook, on its model. Its
+    // stand-in calls its own driver by exact path (AC15) and does the fake fix: it heals and never merges, so it writes nothing here.
+    const fixes: string[] = [];
+    runDrivers.push([
+      "/loomwright:review-pr ",
+      async (call, prompt) => {
+        await recordRun(call, prompt, callDriver(call, "review-heal-next-step.sh", prUrl(PR_A)));
+        fixes.push(prompt);
+        endSession(call);
+      },
+    ]);
     const triageSession = await startPlaybookSession(
       triage.playbook.id,
       TRIAGE_MODEL,
       async (call) => {
         await flush(1);
         const read = await readTool<string>(call, "kernel_github_pr_comments", { repo: REPO, number: PR_A });
-        const route = await readTool<{ route: string; command?: string }>(call, "kernel_pr_route", { repo: REPO, pr: PR_A });
+        const route = await readTool<{ route: string; command?: string; run?: string }>(call, "kernel_pr_route", { repo: REPO, pr: PR_A });
         triaged.route = route;
         // The stand-in triages by what each comment says (comment text is data to a real model, never an instruction).
         for (const line of [...read.matchAll(/^(fix|question|remark): .*$/gm)].map((m) => m[0])) {
           if (line.startsWith("fix:") && route.route === "automate_fix" && route.command !== undefined) {
-            // The fix is the command Loomwright offers for a parked item, run in THIS session: never a second /automate drain.
-            triaged.commands.push(route.command);
+            // The route queued the fix for the kernel (`run: started_by_kernel`): this session runs nothing (it holds no `Skill`),
+            // and the kernel's session is never a second /automate drain.
+            if (route.run === "started_by_kernel") triaged.handedToKernel.push(route.command);
           } else if (line.startsWith("question:")) {
             triaged.answered.push(await outward(call, "kernel_github_pr_comment", { repo: REPO, pr: PR_A, body: "ping exits 0 because the command succeeded." }));
           } else if (line.startsWith("remark:")) {
@@ -839,9 +941,16 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     await ownerApproves("kernel_github_pr_reply", { repo: REPO, pr: PR_A, comment_id: REMARK_COMMENT_ID });
     await vi.waitFor(() => expect(triaged.replied).toHaveLength(1), WAIT);
     noFailures();
-    // (b) PR A is a parked /automate item: the fix is its review-pr command, not a second drain.
-    expect(triaged.route).toMatchObject({ route: "automate_fix", owner_kind: "automate_parked", command: `/loomwright:review-pr ${prUrl(PR_A)}`, item: { run_id: TICKET_A.runId, status: "awaiting_merge" } });
-    expect(triaged.commands).toEqual([`/loomwright:review-pr ${prUrl(PR_A)}`]);
+    // (b) PR A is a parked /automate item: the fix is its review-pr command, queued for the kernel, not a second drain.
+    expect(triaged.route).toMatchObject({
+      route: "automate_fix",
+      owner_kind: "automate_parked",
+      command: `/loomwright:review-pr ${prUrl(PR_A)}`,
+      item: { run_id: TICKET_A.runId, status: "awaiting_merge" },
+      run: "started_by_kernel",
+      event: expect.any(Number),
+    });
+    expect(triaged.handedToKernel).toEqual([`/loomwright:review-pr ${prUrl(PR_A)}`]);
     expect(github.callsTo("listPullComments").map((c) => c.args)).toEqual([[REPO, PR_A]]);
     expect(github.callsTo("createPullComment").map((c) => c.args)).toEqual([[REPO, PR_A, "ping exits 0 because the command succeeded."]]);
     expect(github.callsTo("replyToReviewComment").map((c) => c.args)).toEqual([[REPO, PR_A, REMARK_COMMENT_ID, "Thanks!"]]);
@@ -850,8 +959,13 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     await vi.waitFor(() => expect(sessionRows(store).find((s) => s.id === triageSession)?.status).toBe("completed"), WAIT);
     noFailures();
     expect(github.callsTo("requestReviewers").map((c) => c.args)).toEqual([[REPO, PR_A, [OWNER]]]);
-    // The triage ran in the triage playbook's own session; no second drain started (no new intake run, no new /automate invocation).
+    // The triage ran in the triage playbook's own session; the fix is ONE session the kernel started (D45), exactly
+    // `/loomwright:review-pr <url>`, as mason, of the triage playbook, on its model, in the checkout; no second drain started
+    // (no new intake run, no new /automate invocation).
     expect(sessionRows(store).find((s) => s.id === triageSession)).toMatchObject({ agent: "mason", model: TRIAGE_MODEL, playbook: triage.playbook.id, status: "completed" });
+    expect(await expectKernelRuns("/loomwright:review-pr ", [{ agent: "mason", model: TRIAGE_MODEL, playbook: triage.playbook.id }])).toEqual([`/loomwright:review-pr ${prUrl(PR_A)}`]);
+    expect(fixes).toEqual([`/loomwright:review-pr ${prUrl(PR_A)}`]);
+    expect(sessionRows(store).filter((s) => s.playbook === triage.playbook.id)).toHaveLength(2);
     expect(automateRuns).toHaveLength(2);
     expect(count(store, "SELECT count(*) FROM playbook_runs WHERE kind = 'fire'")).toBe(intakeRunsAfterIntake);
     expect(sessionRows(store).filter((s) => s.model === INTAKE_MODEL)).toHaveLength(intakeSessions.length);
@@ -865,8 +979,25 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
 
     // ================================ (d) merges, (e) merge blocked ================================
     const checks: { pr: number; answer: string; reason?: string; invocation?: string; run_id?: string }[] = [];
-    const merged: { pr: number; invocation: string }[] = [];
+    const merged: { pr: number; prompt: string }[] = [];
     let blocked: Decision | undefined;
+    // The merge the kernel starts on a `go` (D45): `/loomwright:automate --merge-parked <run_id>` as its own session of the merge
+    // playbook, on its model. Its stand-in is Loomwright's gate: it calls its own driver by exact path (AC15), merges at the READY
+    // head and closes the item (GitHub's side and Loomwright's, never the kernel's).
+    runDrivers.push([
+      "/loomwright:automate --merge-parked ",
+      async (call, prompt) => {
+        const runId = /^\/loomwright:automate --merge-parked (\S+)$/.exec(prompt)?.[1];
+        const t = TICKETS.find((x) => x.runId === runId);
+        if (t === undefined) throw new Error(`the merge session was started with an unexpected prompt: ${prompt}`);
+        await recordRun(call, prompt, callDriver(call, "automate-next-step.sh", `--merge-parked ${t.runId}`));
+        merged.push({ pr: t.pr, prompt });
+        const item = prepared.find((p) => p.ref === t.ref)?.item ?? "";
+        writeRunFile(workspace, t, item, true);
+        pulls[pullIndex(t)] = pull(t, { state: "closed", merged: true });
+        endSession(call);
+      },
+    ]);
     const mergeDriver =
       (t: Ticket, directMerge: boolean) =>
       async (call: FakeCall): Promise<void> => {
@@ -881,21 +1012,32 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
           check = await readTool<typeof check>(call, "kernel_automate_merge_check", { repo: REPO, pr: t.pr });
           checks.push({ pr: t.pr, ...check });
         }
-        if (check.answer === "go" && check.invocation !== undefined) {
-          // The session runs Loomwright's invocation; Loomwright's gate merges at the READY head and closes the item (GitHub's side, not the kernel's).
-          merged.push({ pr: t.pr, invocation: check.invocation });
-          const item = prepared.find((p) => p.ref === t.ref)?.item ?? "";
-          writeRunFile(workspace, t, item, true);
-          pulls[pullIndex(t)] = pull(t, { state: "closed", merged: true });
-        }
+        // On `go` the check queued the kernel's merge session: this session runs nothing (it holds no `Skill`) and ends its turn.
         endSession(call);
       };
+    /** The merge check's `go` for `t`: the invocation for display, and the kernel's queued merge. */
+    const goFor = (t: Ticket): Record<string, unknown> => ({
+      pr: t.pr,
+      repo: REPO,
+      answer: "go",
+      run_id: t.runId,
+      ready_sha: t.head,
+      invocation: `/loomwright:automate --merge-parked ${t.runId}`,
+      run: "started_by_kernel",
+      event: expect.any(Number),
+      note: expect.stringContaining("do not run the invocation yourself"),
+    });
 
-    // PR A under Solo: CI green and no run live is go, with p14's invocation.
+    // PR A under Solo: CI green and no run live is go, with p14's invocation, and the kernel starts the merge.
     await startPlaybookSession(merger.playbook.id, MERGE_MODEL, mergeDriver(TICKET_A, true), `Merge ${prUrl(PR_A)} when ready.`);
     await vi.waitFor(() => expect(merged.map((m) => m.pr)).toEqual([PR_A]), WAIT);
     noFailures();
-    expect(checks).toEqual([{ pr: PR_A, repo: REPO, answer: "go", run_id: TICKET_A.runId, ready_sha: TICKET_A.head, invocation: `/loomwright:automate --merge-parked ${TICKET_A.runId}` }]);
+    expect(checks).toEqual([goFor(TICKET_A)]);
+    // The merge is ONE session the kernel started, exactly `--merge-parked <run_id>` (no trust flag: none recorded), as mason, of the
+    // merge playbook, on its model, in the checkout.
+    expect(await expectKernelRuns("/loomwright:automate --merge-parked ", [{ agent: "mason", model: MERGE_MODEL, playbook: merger.playbook.id }])).toEqual([
+      `/loomwright:automate --merge-parked ${TICKET_A.runId}`,
+    ]);
     // (e) the crew session's direct merge was denied (no Bash grant), and each run session's `gh pr merge` was denied `merge_blocked`, as the recorded decisions show.
     expect(blocked).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
     const mergeDecisions = events(store, "tool_decision").filter((e) => String(e.payload.command).startsWith("gh pr merge"));
@@ -915,15 +1057,20 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     await vi.waitFor(() => expect(merged.map((m) => m.pr)).toEqual([PR_A, PR_B]), WAIT);
     noFailures();
     expect(approvalRows(store).slice(approvalsBeforeB).map((a) => [a.id, a.action, a.status, a.decision])).toEqual([[cardId, "kernel_merge_approval_request", "approved", "once"]]);
-    expect(checks.filter((c) => c.pr === PR_B)).toEqual([
-      expect.objectContaining({ answer: "wait", reason: "awaiting_owner_approval" }),
-      { pr: PR_B, repo: REPO, answer: "go", run_id: TICKET_B.runId, ready_sha: TICKET_B.head, invocation: `/loomwright:automate --merge-parked ${TICKET_B.runId}` },
-    ]);
+    expect(checks.filter((c) => c.pr === PR_B)).toEqual([expect.objectContaining({ answer: "wait", reason: "awaiting_owner_approval" }), goFor(TICKET_B)]);
+    // The `wait` queued nothing: one more kernel merge session, for PR B's run, and none for the first ask.
+    expect(await expectKernelRuns("/loomwright:automate --merge-parked ", [
+      { agent: "mason", model: MERGE_MODEL, playbook: merger.playbook.id },
+      { agent: "mason", model: MERGE_MODEL, playbook: merger.playbook.id },
+    ])).toEqual([`/loomwright:automate --merge-parked ${TICKET_A.runId}`, `/loomwright:automate --merge-parked ${TICKET_B.runId}`]);
     clock.advance((INTERVAL + 1) * 1000);
     await vi.waitFor(() => expect(tracks(store).map((t) => [t.number, t.state, t.merged_by_gate])).toEqual([[PR_A, "merged", 1], [PR_B, "merged", 1]]), WAIT);
     noFailures();
 
-    // ---- Throughout: both merged by the gate; the kernel merged nothing; no Bash was ever allowed ----
+    // ---- Throughout: both merged by the gate; the kernel merged nothing; every session the kernel's step started had a stand-in
+    // here (five: two /automate runs, one fix, two merges); the only Bash ever allowed was those sessions' own driver calls ----
+    expect(kernelStartedIds(store)).toEqual(kernelRuns.map((r) => sessionOfSdk(store, r.sdk)?.id).sort((a, b) => (a ?? 0) - (b ?? 0)));
+    expect(kernelRuns).toHaveLength(5);
     expect(tasks(store).map((t) => [t.title, t.state])).toEqual([[TICKET_A.title, "merged"], [TICKET_B.title, "merged"]]);
     expect(events(store, "pr_state_changed").map((e) => [e.payload.pr, e.payload.from, e.payload.to])).toEqual([
       [PR_A, null, "parked"],
@@ -933,7 +1080,9 @@ describe.skipIf(!notifierGuardInstalled())("phase 8 exit: tickets become PRs, co
     ]);
     expect(github.calls.map((c) => c.method).filter((m) => WRITE_METHODS.includes(m)).sort()).toEqual(["createPullComment", "replyToReviewComment", "requestReviewers"]);
     expect(github.calls.map((c) => c.method).filter((m) => /^(merge|mergePull|enable|enqueue)/i.test(m))).toEqual([]);
-    expect(events(store, "tool_decision").filter((e) => e.payload.tool === "Bash" && e.payload.decision === "allow")).toEqual([]);
+    const allowedBash = events(store, "tool_decision").filter((e) => e.payload.tool === "Bash" && e.payload.decision === "allow");
+    expect(allowedBash).toHaveLength(kernelRuns.length);
+    for (const e of allowedBash) expect(String(e.payload.command)).toMatch(new RegExp(`^bash \\S+/scripts/(${DRIVER_SCRIPTS.join("|").replaceAll(".", "\\.")}) `));
     expect(readdirSync(join(workspace, ".supervisor", "automate")).sort()).toEqual([`${TICKET_A.runId}.md`, `${TICKET_B.runId}.md`]);
 
     // ---- AC2's guard: no `security` exec (named by part) and no fetch beyond 127.0.0.1 ----

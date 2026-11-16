@@ -8,14 +8,17 @@
 //      the PR and parks it. The crew member's `tool_policy` is drafted from the shipped catalogue (`crewCharter`,
 //      `allowedToolsForJobs`): kernel tools only, no `Read`, `Skill` or Bash prefix.
 //   b. Three comments on PR A are triaged by the triage playbook's own stand-in sessions. PR A is a parked
-//      /automate item, so `kernel_pr_route` answers `automate_fix` with `/loomwright:review-pr <pr url>`. The drafted crew
-//      policy holds no `Skill`, so the session cannot run it (D44 names this path as open); it is not a second drain either
-//      way. The question gets an answer (`createPullComment`) and the remark
+//      /automate item, so `kernel_pr_route` answers `automate_fix` with `/loomwright:review-pr <pr url>` and queues it: the
+//      KERNEL starts that command as its own session of the triage playbook (D45), told apart from the crew sessions by
+//      its prompt (both run on the triage playbook's model). The crew session runs nothing and its drafted policy still
+//      holds no `Skill`; the fix is not a second drain. The question gets an answer (`createPullComment`) and the remark
 //      a reply (`replyToReviewComment`), both held and sent only after the owner allows them in Approvals.
 //   c. The owner is re-requested as the reviewer (`requestReviewers`), held and allowed the same way.
 //   d. PR A merges under Solo through the merge-when-ready playbook (`kernel_automate_merge_check` answers `go`);
-//      PR B merges under Approve in Studio after the owner allows its merge card for PR B's head in the app. Both end
-//      with `pr_tracks.merged_by_gate = 1`, and the fake GitHub records no merge call from the kernel.
+//      PR B merges under Approve in Studio after the owner allows its merge card for PR B's head in the app. Each `go`
+//      makes the KERNEL start `/loomwright:automate --merge-parked <run_id>` as its own session of the merge playbook
+//      (D45), whose stand-in is Loomwright's gate. Both end with `pr_tracks.merged_by_gate = 1`, and the fake GitHub
+//      records no merge call from the kernel.
 //   e. A `gh pr merge` in each kernel-started run session is denied `merge_blocked`, as its recorded `tool_decision`
 //      shows; the crew session, drafted without a Bash grant, is denied its own attempt by the policy.
 //   f. The Tasks screen shows each ticket's PR, approvals and CI at each step.
@@ -49,6 +52,7 @@ import { join, relative } from "node:path";
 import { expect, test } from "@playwright/test";
 import type { ElectronApplication, Locator, Page } from "@playwright/test";
 import { createAgent, getAgent } from "../../kernel/src/agents/index.js";
+import { readAgentSettings } from "../../kernel/src/agents/settings.js";
 import type { AuthProvider } from "../../kernel/src/auth/index.js";
 import { startKernel } from "../../kernel/src/kernel.js";
 import type { Kernel, KernelDeps } from "../../kernel/src/kernel.js";
@@ -122,6 +126,13 @@ const RUN_A = "2026-11-09-091000-tickets";
 const RUN_B = "2026-11-09-092000-tickets";
 /** The prompt of a kernel-started `/automate` run session (it runs on the ticket playbook's model, as the ticket's session does). */
 const RUN_PROMPT = /\/loomwright:automate --backlog /;
+/** The exact kernel-built prompt of the triage fix the kernel starts for PR A (D45): the first message's whole content. */
+const FIX_PROMPT = (url: string): RegExp => new RegExp(`"content":"${escapeRegExp(`/loomwright:review-pr ${url}`)}"`);
+/** The exact kernel-built prompt of the merge the kernel starts for run `id` (D45; no trust flag: the owner recorded none). */
+const MERGE_PROMPT = (id: string): RegExp => new RegExp(`"content":"${escapeRegExp(`/loomwright:automate --merge-parked ${id}`)}"`);
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+}
 const SHA_A = { pr: PR_A, head: HEAD_A, readyAt: READY_AT_A } as const;
 const SHA_B = { pr: PR_B, head: HEAD_B, readyAt: READY_AT_B } as const;
 
@@ -247,12 +258,29 @@ interface PolicyRow {
 const policyRow = (store: Store): PolicyRow | undefined =>
   store.prepare<[string], PolicyRow>("SELECT policy_kind, set_by, detected_json FROM repo_policies WHERE repo = ?").get(REPO);
 
-/** The `tool_decision` events of `session`, as {tool, decision, reason, command}. */
 /** The sessions of playbook `id`, oldest first: who ran them, on which model, and how they ended. */
 function playbookSessions(store: Store, id: number): { agent: string; model: string; status: string }[] {
   return store.prepare<[number], { agent: string; model: string; status: string }>("SELECT agent, model, status FROM sessions WHERE playbook = ? ORDER BY id").all(id);
 }
 
+/**
+ * The session a stand-in ran as (its fake call's SDK session id), and whether the kernel's own `automate-run` step started it
+ * (D44, D45: the step stores the session it started). Who ran it, of which playbook, on which model, and how it ended.
+ */
+function kernelStarted(store: Store, call: FakeCall): { kernel: boolean; agent: string; playbook: number | null; model: string; status: string } | undefined {
+  const row = store
+    .prepare<[string], { id: number; agent: string; playbook: number | null; model: string; status: string }>("SELECT id, agent, playbook, model, status FROM sessions WHERE sdk_session_id = ?")
+    .get(String(call.options.sessionId));
+  if (row === undefined) return undefined;
+  const started = store
+    .prepare<[], unknown>("SELECT json_extract(result_json, '$.session_id') FROM work_steps WHERE key LIKE 'event:%:automate-run' AND status = 'done'")
+    .pluck()
+    .all();
+  const { id, ...rest } = row;
+  return { kernel: started.includes(id), ...rest };
+}
+
+/** The `tool_decision` events of `session`, as {tool, decision, reason, command}. */
 function decisionsOf(store: Store, session: number): { tool: unknown; decision: unknown; reason: unknown; command: unknown }[] {
   return events(store, "tool_decision")
     .filter((e) => e.session_id === session)
@@ -364,14 +392,13 @@ interface Seen {
   readonly handovers: { ref: string; before: string; run: string; invocation: string }[];
   /** The kernel-started /automate run sessions: its prompt, and the run state when it started, while it worked and after it parked the PR. */
   readonly runs: { ref: string; prompt: string; started: string; during: string; after: string; mergeAttempt: Decision }[];
-  /** What the fix session was refused when it tried the routed command (its drafted policy holds no `Skill`). */
-  readonly refused: { tool: string; decision: string; reason: string }[];
   readonly routes: Record<string, unknown>[];
-  /** The slash commands the fix session ran. */
-  readonly ran: string[];
+  /** The fix sessions the kernel started (D45): each one's prompt and the session it ran as. */
+  readonly fixes: { prompt: string; call: FakeCall }[];
   readonly held: Record<string, number>;
   readonly checks: { pr: number; answer: Record<string, unknown> }[];
-  readonly merges: { pr: number; invocation: string }[];
+  /** The merge sessions the kernel started (D45), whose stand-in is Loomwright's gate: the PR, the prompt and the session it ran as. */
+  readonly merges: { pr: number; prompt: string; call: FakeCall }[];
   readonly mergeAttempts: { command: string; decision: string; reason: string }[];
 }
 
@@ -475,7 +502,7 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     clock.advance(STEP_MS);
     await syncAppClock();
   };
-  const seen: Seen = { handovers: [], runs: [], refused: [], routes: [], ran: [], held: {}, checks: [], merges: [], mergeAttempts: [] };
+  const seen: Seen = { handovers: [], runs: [], routes: [], fixes: [], held: {}, checks: [], merges: [], mergeAttempts: [] };
 
   // ---- 0. Setup: what the live run's runbook has the owner click through before the walk ----
   // GitHub is connected (the connector row the App's connect writes) and reaches the sandbox repo; ClickUp is signed in against the fake server.
@@ -490,6 +517,13 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   expect((await api("POST", `/agents/${CREW}/set`, { field: "connectors", value: "github:write" })).status).toBe(200);
   expect((await api("POST", `/agents/${CREW}/set`, { field: "connectors", value: `clickup:${CLICKUP_LIST_TOOL}` })).status).toBe(200);
   expect(getAgent(store, CREW)).toMatchObject({ status: "active", created_by: "owner" });
+  /** The crew member's own policy holds no `Skill` and no shell prefix (D45): the fix and the merges are the kernel's sessions. */
+  const expectCrewHoldsNoSkill = (): void => {
+    const read = readAgentSettings(dataDir, CREW);
+    expect(read.ok ? read.settings.policy.allowedTools : ["unreadable"]).not.toContain("Skill");
+    expect(read.ok ? read.settings.policy.allowedBashPrefixes : ["unreadable"]).toEqual([]);
+  };
+  expectCrewHoldsNoSkill();
 
   app = await launchApp({ ...processEnv(), STUDIO_DATA_DIR: dataDir, STUDIO_APP_FIXTURE_TOKEN: token });
   const launched = app;
@@ -649,20 +683,22 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     TRIAGE_MODEL,
     ITEM_KEY,
   );
-  // The fix: the route is read, the parked item's command run in this same session, and the owner asked to look again (held).
+  // The fix: the route is read and queues the parked item's command for the kernel; this session runs nothing, and asks the owner
+  // to look again (held).
   s.ready("triage: fix", TRIAGE_MODEL, async (call) => {
     await flush(1);
     const route = await use(call, "kernel_pr_route", { repo: REPO, pr: PR_A });
     seen.routes.push(route);
-    const command = typeof route.command === "string" ? route.command : "";
-    // The route answers Loomwright's review-pr command, which the session would run itself as the Skill. The drafted crew policy holds no
-    // `Skill` (D44 names this path as open), so the call is refused by the policy and nothing is run; it starts no drain either way.
-    const d = await gate(call, "Skill", { skill: "loomwright:review-pr", args: URL_A });
-    seen.refused.push({ tool: "Skill", decision: d.permissionDecision, reason: d.permissionDecisionReason });
-    if (d.permissionDecision === "allow") seen.ran.push(command);
     seen.held.rerequest = await hold(call, "kernel_github_pr_request_reviewers", REREQUEST);
-    finish(call, "I ran /loomwright:review-pr on the parked item; my re-request for review is waiting for your approval.");
+    finish(call, "The kernel is running /loomwright:review-pr on the parked item; my re-request for review is waiting for your approval.");
   }, new RegExp(`review_comment:${COMMENT_FIX.id}`));
+  // The kernel-started fix (D45): exactly `/loomwright:review-pr <url>`, on the triage playbook's model, told apart from the crew
+  // sessions by its prompt. Its stand-in does the fake fix: it heals and never merges, so it writes nothing here.
+  s.ready("kernel-started fix: PR A", TRIAGE_MODEL, async (call, prompt) => {
+    await flush(1);
+    seen.fixes.push({ prompt, call });
+    finish(call, `Healed ${URL_A}; nothing merged.`);
+  }, FIX_PROMPT(URL_A));
   // The question gets an answer, held; the remark gets a reply, held.
   s.ready("triage: question", TRIAGE_MODEL, async (call) => {
     await flush(1);
@@ -679,12 +715,24 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   noFailures();
   // Three runs, one per comment, each on its own session.
   expect(sessionRuns(store, triage).map((r) => r.item_ref).sort()).toEqual([commentRef(COMMENT_FIX), commentRef(COMMENT_QUESTION), commentRef(COMMENT_REMARK)].sort());
-  // (b) PR A is a parked /automate item: the route is automate_fix with that item and the review-pr command, which the drafted policy does not let the fix session run.
+  // (b) PR A is a parked /automate item: the route is automate_fix with that item and the review-pr command, queued for the kernel.
   expect(seen.routes).toEqual([
-    expect.objectContaining({ route: "automate_fix", repo: REPO, pr: PR_A, owner_kind: "automate_parked", command: `/loomwright:review-pr ${URL_A}`, item: expect.objectContaining({ run_id: RUN_A, status: "awaiting_merge", pr: URL_A }) }),
+    expect.objectContaining({
+      route: "automate_fix",
+      repo: REPO,
+      pr: PR_A,
+      owner_kind: "automate_parked",
+      command: `/loomwright:review-pr ${URL_A}`,
+      item: expect.objectContaining({ run_id: RUN_A, status: "awaiting_merge", pr: URL_A }),
+      run: "started_by_kernel",
+    }),
   ]);
-  expect(seen.refused).toEqual([{ tool: "Skill", decision: "deny", reason: "tool_not_allowed" }]);
-  expect(seen.ran).toEqual([]);
+  // The fix is ONE session the kernel's own step started: the exact command, as the crew member, of the triage playbook, on its model.
+  await expect.poll(() => seen.fixes.length, WAIT).toBe(1);
+  expect(seen.fixes[0]?.prompt).toMatch(FIX_PROMPT(URL_A));
+  await expect.poll(() => kernelStarted(store, (seen.fixes[0] as { call: FakeCall }).call), WAIT).toEqual({ kernel: true, agent: CREW, playbook: triage, model: TRIAGE_MODEL, status: "completed" });
+  // The crew's policy still holds no `Skill`: the crew session never runs the fix itself.
+  expectCrewHoldsNoSkill();
   // Never a second drain: the triage sessions never called the handover, and no run file was written or changed.
   const triageSessions = sessionRuns(store, triage).map((r) => r.session_id as number);
   for (const session of triageSessions) expect(decisionsOf(store, session).map((d) => String(d.tool))).not.toContain(`${K}kernel_automate_prepare`);
@@ -745,13 +793,31 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     const res = await api("POST", `/playbooks/${mergeReady}/run`);
     expect(res.status).toBe(200);
   };
-  /** The stand-in Loomwright's gate: `/loomwright:automate --merge-parked <run>` merges the PR on GitHub and finishes the run. */
-  const gateMerges = (pr: number, run: AutomateRun, invocation: string): void => {
-    seen.merges.push({ pr, invocation });
-    const item = trackOf(store, pr)?.item_id ?? "";
-    writeRunFile(checkout, { id: run.id, state: "merged", item, pr: run.pr, head: run.head, readyAt: run.readyAt });
-    github.markMerged(pr);
-  };
+  /**
+   * The merge the kernel starts on a `go` (D45): exactly `/loomwright:automate --merge-parked <run>`, on the merge playbook's model,
+   * told apart from the crew sessions by its prompt. Its stand-in is Loomwright's gate: it merges the PR on GitHub and finishes the run.
+   */
+  const readyGateMerge = (label: string, run: AutomateRun): void =>
+    s.ready(label, MERGE_MODEL, async (call, prompt) => {
+      await flush(1);
+      seen.merges.push({ pr: run.pr, prompt, call });
+      const item = trackOf(store, run.pr)?.item_id ?? "";
+      writeRunFile(checkout, { id: run.id, state: "merged", item, pr: run.pr, head: run.head, readyAt: run.readyAt });
+      github.markMerged(run.pr);
+      finish(call, `Merged PR ${run.pr} through Loomwright's gate.`);
+    }, MERGE_PROMPT(run.id));
+  /** The check's `go` for `run`: the invocation for display, and the kernel's queued merge. */
+  const goFor = (run: AutomateRun): Record<string, unknown> => ({
+    answer: "go",
+    repo: REPO,
+    pr: run.pr,
+    run_id: run.id,
+    ready_sha: run.head,
+    invocation: `/loomwright:automate --merge-parked ${run.id}`,
+    run: "started_by_kernel",
+    event: expect.any(Number),
+    note: expect.stringContaining("do not run the invocation yourself"),
+  });
   s.ready("merge-when-ready: PR A", MERGE_MODEL, async (call) => {
     await flush(1);
     // The session tries the merge itself, as a model might. Its drafted policy holds no Bash prefix, so the policy denies it before the rail.
@@ -759,21 +825,26 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
     const d = await gate(call, "Bash", { command: direct });
     seen.mergeAttempts.push({ command: direct, decision: d.permissionDecision, reason: d.permissionDecisionReason });
     // The check is the way: Solo is met (CI green at the READY head), nothing is live, and the item is parked awaiting the merge.
+    // On `go` it queues the kernel's merge; this session runs nothing.
     const answer = await use(call, "kernel_automate_merge_check", { repo: REPO, pr: PR_A });
     seen.checks.push({ pr: PR_A, answer });
-    if (answer.answer === "go" && typeof answer.invocation === "string") gateMerges(PR_A, { id: RUN_A, ...SHA_A }, answer.invocation);
     finish(call, `merge check for PR ${PR_A}: ${String(answer.answer)}`);
   });
+  readyGateMerge("kernel-started merge: PR A", { id: RUN_A, ...SHA_A });
   await runNow();
   await expect.poll(() => sessionRuns(store, mergeReady).map((r) => r.status), WAIT).toEqual(["done"]);
+  await expect.poll(() => seen.merges.length, WAIT).toBe(1);
+  // The merge is ONE session the kernel's own step started, as the crew member, of the merge playbook, on its model.
+  await expect.poll(() => kernelStarted(store, (seen.merges[0] as { call: FakeCall }).call), WAIT).toEqual({ kernel: true, agent: CREW, playbook: mergeReady, model: MERGE_MODEL, status: "completed" });
   noFailures();
   // (e) The crew session's direct `gh pr merge` was denied (no Bash grant), and its recorded decision says so; the run sessions' were merge_blocked.
   expect(seen.mergeAttempts).toEqual([{ command: `gh pr merge ${PR_A} --squash`, decision: "deny", reason: "bash_prefix_not_allowed" }]);
   const mergeSession = sessionRuns(store, mergeReady)[0]?.session_id as number;
   expect(decisionsOf(store, mergeSession).filter((d) => d.tool === "Bash")).toEqual([{ tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: `gh pr merge ${PR_A} --squash` }]);
-  // (d) The check answered go with Loomwright's own invocation for the parked run.
-  expect(seen.checks).toEqual([{ pr: PR_A, answer: { answer: "go", repo: REPO, pr: PR_A, run_id: RUN_A, ready_sha: HEAD_A, invocation: `/loomwright:automate --merge-parked ${RUN_A}` } }]);
-  expect(seen.merges).toEqual([{ pr: PR_A, invocation: `/loomwright:automate --merge-parked ${RUN_A}` }]);
+  // (d) The check answered go with Loomwright's own invocation for the parked run, and the kernel started exactly that command.
+  expect(seen.checks).toEqual([{ pr: PR_A, answer: goFor({ id: RUN_A, ...SHA_A }) }]);
+  expect(seen.merges.map((m) => m.pr)).toEqual([PR_A]);
+  expect(seen.merges[0]?.prompt).toMatch(MERGE_PROMPT(RUN_A));
   await step();
   await expect.poll(() => trackOf(store, PR_A)?.state, WAIT).toBe("merged");
   expect(trackOf(store, PR_A)).toMatchObject({ state: "merged", merged_by_gate: 1, head_sha: HEAD_A, ticket_ref: ISSUE_REF });
@@ -840,19 +911,24 @@ test("phase 8 exit: tickets become PRs, comments are triaged, the owner is re-re
   expect(github.callsTo("requestReviewers")).toHaveLength(1);
   await expect.poll(() => s.unused().filter((l) => l === "merge approval decision"), WAIT).toEqual([]);
 
-  // The next merge-when-ready run sees the approval at PR B's head through the check: go. Loomwright's gate merges.
+  // The next merge-when-ready run sees the approval at PR B's head through the check: go. The kernel starts the merge; Loomwright's gate merges.
   s.ready("merge-when-ready: PR B merges", MERGE_MODEL, async (call) => {
     await flush(1);
     const answer = await use(call, "kernel_automate_merge_check", { repo: REPO, pr: PR_B });
     seen.checks.push({ pr: PR_B, answer });
-    if (answer.answer === "go" && typeof answer.invocation === "string") gateMerges(PR_B, { id: RUN_B, ...SHA_B }, answer.invocation);
     finish(call, `merge check for PR ${PR_B}: ${String(answer.answer)}`);
   });
+  readyGateMerge("kernel-started merge: PR B", { id: RUN_B, ...SHA_B });
   await step();
   await runNow();
   await expect.poll(() => sessionRuns(store, mergeReady).map((r) => r.status), WAIT).toEqual(["done", "done", "done"]);
+  await expect.poll(() => seen.merges.length, WAIT).toBe(2);
+  await expect.poll(() => kernelStarted(store, (seen.merges[1] as { call: FakeCall }).call), WAIT).toEqual({ kernel: true, agent: CREW, playbook: mergeReady, model: MERGE_MODEL, status: "completed" });
   noFailures();
-  expect(seen.checks[2]).toEqual({ pr: PR_B, answer: { answer: "go", repo: REPO, pr: PR_B, run_id: RUN_B, ready_sha: HEAD_B, invocation: `/loomwright:automate --merge-parked ${RUN_B}` } });
+  expect(seen.checks[2]).toEqual({ pr: PR_B, answer: goFor({ id: RUN_B, ...SHA_B }) });
+  // The first ask (`wait`) queued nothing: one kernel merge per `go`, each the exact command for its run.
+  expect(seen.merges.map((m) => m.pr)).toEqual([PR_A, PR_B]);
+  expect(seen.merges[1]?.prompt).toMatch(MERGE_PROMPT(RUN_B));
   await step();
   await expect.poll(() => trackOf(store, PR_B)?.state, WAIT).toBe("merged");
 
