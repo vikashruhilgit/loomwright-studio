@@ -468,7 +468,7 @@ describe("kernel_playbook_update / _list / _disable (AC4, AC6, AC9)", () => {
     const offResult = disablePlaybook(env.store, { id, by: "owner" }, env.now());
     expect(offResult).toMatchObject({ changed: true, playbook: { status: "disabled", version: 2 } });
     expect(events(env.store, "playbook_disabled").map((e) => [e.payload, e.session_id])).toEqual([[{ playbook_id: id, by: "owner" }, null]]);
-    const message = `playbook ${id} was turned off by the owner; an agent cannot change, disable or re-enable it`;
+    const message = `playbook ${id} was turned off by the owner; an agent cannot change or disable it. To turn it back on, ask the owner with kernel_playbook_enable: only the owner's approval turns it on`;
 
     expect(errorText(await update(id, { intent: "v3" }))).toBe(`kernel_playbook_update: ${message}`);
     expect(errorText(await update(id, { intent: "v2" }, { key: "early" }))).toBe(`kernel_playbook_update: ${message}`);

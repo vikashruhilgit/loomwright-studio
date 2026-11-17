@@ -39,7 +39,7 @@ import type { MintedGithubToken } from "./github-session-auth.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { GITHUB_CLI_DENY_REASON, draftDecision, draftDenyReason, draftPayloadOf, githubCliDecision } from "./draft-mode.js";
 import { latestOrphanReason } from "./orphans.js";
-import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, checkoutTargets, classifyToolCall, decideToolUse, freezePolicy, mayCreateRunFile, NEVER_CATEGORIES, safeRunFileCreation } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, checkoutTargets, classifyToolCall, decideToolUse, freezePolicy, mayCreateRunFile, NEVER_CATEGORIES, safeRunFileCreation, TICKET_RUN_SYSTEM_NOTE } from "./policy.js";
 import type { NeverCategory, ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -1735,6 +1735,8 @@ export class SessionManager {
       ...(mcpServers === undefined ? {} : { mcpServers }),
       abortController: attempt.abortController,
       spawnClaudeCodeProcess: (o: SpawnOptions) => this.#spawnFor(live, attempt, o),
+      // The ticket run is told how to create its first run file (item 23e); no other session gets a system prompt.
+      ...(mayCreateRunFile(live.policy) ? { systemPrompt: TICKET_RUN_SYSTEM_NOTE } : {}),
       ...config.sessionOptions,
     };
     attempt.query = this.#query({ prompt: attempt.input, options });

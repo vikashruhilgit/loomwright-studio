@@ -445,7 +445,7 @@ function ownerTurnedOff(store: Store, row: PlaybookRow): boolean {
 }
 
 function ownerOff(id: number): PlaybookError {
-  return new PlaybookError("owner_off", `playbook ${id} was turned off by the owner; an agent cannot change, disable or re-enable it`);
+  return new PlaybookError("owner_off", `playbook ${id} was turned off by the owner; an agent cannot change or disable it. To turn it back on, ask the owner with kernel_playbook_enable: only the owner's approval turns it on`);
 }
 
 /**
@@ -804,8 +804,9 @@ export function enablePlaybook(store: Store, params: EnablePlaybookParams, now: 
     if (row.version !== params.version) {
       throw invalid(`version changed: playbook ${row.id} is at version ${row.version}, not the approved version ${params.version}`);
     }
-    if (row.status !== "draft") throw invalid(`playbook ${row.id} is ${row.status}, not draft: only a draft is enabled`);
-    store.prepare("UPDATE playbooks SET status = 'enabled', updated_at = ? WHERE id = ? AND version = ? AND status = 'draft'").run(at, row.id, params.version);
+    // A draft, or a playbook that was turned off (item 23g: the owner's own once-approval turns it back on).
+    if (row.status !== "draft" && row.status !== "disabled") throw invalid(`playbook ${row.id} is ${row.status}: only a draft or a turned-off playbook is enabled`);
+    store.prepare("UPDATE playbooks SET status = 'enabled', updated_at = ? WHERE id = ? AND version = ? AND status IN ('draft', 'disabled')").run(at, row.id, params.version);
     appendEvent(store, "playbook_enabled", refOf(params.sessionId), { playbook_id: row.id, version: params.version, approval_id: params.approvalId, by: OWNER }, at);
     const after = readRow(store, row.id) as PlaybookRow;
     return { playbook: after, trigger: linkedTriggerOf(store, after), changed: true };

@@ -81,7 +81,7 @@ import { DRY_RUN_TOOL_NAME, latestDryRun } from "./dry-run.js";
 import type { DryRunRecord } from "./dry-run.js";
 import { fitGapOpen, playbookFit, ticketPollOwnerSteps } from "./fit.js";
 import type { PlaybookFit } from "./fit.js";
-import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, parseMergeRequirement, playbookJobsOf, refuseIfOwnerTurnedOff } from "./store.js";
+import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, parseMergeRequirement, playbookJobsOf } from "./store.js";
 import type { PlaybookRow } from "./store.js";
 import { targetRepoRefusal } from "./target-repo.js";
 import type { PlaybookPart } from "./types.js";
@@ -165,17 +165,17 @@ function draftOf(store: Store, id: number, agent: string | null): PlaybookRow {
   if (agent === null || !mayManage(store, agent, row.owning_agent)) {
     throw new EnableRefused("not_owner", `playbook ${row.id} belongs to agent ${row.owning_agent}; an agent can enable only its own playbooks`);
   }
-  try {
-    refuseIfOwnerTurnedOff(store, row.id);
-  } catch (err) {
-    if (err instanceof PlaybookError && err.code === "owner_off") throw new EnableRefused("turned_off_by_owner", err.message);
-    throw err;
+  // Item 23g: a turned-off playbook, the owner's off included, may be the target of an enable request. The request
+  // is always held for the owner (ALWAYS_HELD_TOOLS) and applied only in the owner's once-approval, so the owner's
+  // own decision is what turns it back on; an agent alone never does. Every other agent path on an owner-off
+  // playbook (update, disable, dry run) still refuses `owner_off` (`refuseIfOwnerTurnedOff`).
+  if (row.status !== "draft" && row.status !== "disabled") {
+    throw new EnableRefused("not_draft", `playbook ${row.id} is ${row.status}: only a draft or a turned-off playbook is enabled`);
   }
-  if (row.status !== "draft") throw new EnableRefused("not_draft", `playbook ${row.id} is ${row.status}, not draft: only a draft is enabled`);
   return row;
 }
 
-/** Playbook `id` if the caller may enable it: it exists, it may manage it, it is not turned off by the owner, and it is a draft. */
+/** Playbook `id` if the caller may ask to enable it: it exists, it may manage it, and it is a draft or turned off. */
 function ownDraft(store: Store, id: number, agent: string): PlaybookRow {
   return asPlaybookError(() => draftOf(store, id, agent));
 }
@@ -440,6 +440,21 @@ function editedSince(store: Store, id: number, eventId: number): boolean {
   );
 }
 
+/**
+ * Who turned playbook `id` off after event `eventId`, or `undefined` when nothing did: the `by` of the newest
+ * `playbook_disabled` event for it with a greater id (item 23g). An approval requested before an off never turns
+ * it back on: the owner approves only a request made after the playbook was turned off.
+ */
+function disabledSince(store: Store, id: number, eventId: number): string | undefined {
+  const by = store
+    .prepare<[number, number], unknown>(
+      "SELECT json_extract(payload_json, '$.by') FROM events WHERE kind = 'playbook_disabled' AND json_valid(payload_json) AND json_extract(payload_json, '$.playbook_id') = ? AND id > ? ORDER BY id DESC LIMIT 1",
+    )
+    .pluck()
+    .get(id, eventId);
+  return by === undefined ? undefined : String(by);
+}
+
 /** What `enableApproved` runs on. */
 export interface EnableApprovedParams {
   readonly playbookId: number;
@@ -459,8 +474,9 @@ export interface EnableApprovedParams {
 /**
  * Enable playbook `p.playbookId` on the owner's approval, the one enable both
  * paths use (the kernel's `applyOnApproval` and the tool's handler). Checks,
- * in order: `draftOf` (`not_found`, `crew_cannot_draft`, `not_owner`,
- * `turned_off_by_owner`, `not_draft`); the approval's `subject_version` is the current version and
+ * in order: `draftOf` (`not_found`, `crew_cannot_draft`, `not_owner`, `not_draft`: a draft or a turned-off
+ * playbook, item 23g); no off after the approval was requested (`disabledSince`: `turned_off_by_owner` for the
+ * owner's, so a stale approval never undoes the owner's off); the approval's `subject_version` is the current version and
  * no `playbook_updated` came after its request (`version_changed`); the
  * current version has a `done` dry run (`no_dry_run`); its `merge_requirement` is not
  * looser than a repo it polls or targets (`playbook_looser_than_repo`); a ticket
@@ -479,6 +495,14 @@ export function enableApproved(store: Store, p: EnableApprovedParams): EnableToo
     throw new EnableRefused(
       "version_changed",
       `approval ${approval.id} was for version ${String(approval.subjectVersion ?? "unknown")}, the playbook is at version ${row.version}; it stays draft`,
+    );
+  }
+  const offBy = disabledSince(store, row.id, approval.requestedEventId);
+  if (offBy !== undefined) {
+    const owner = offBy !== "wright";
+    throw new EnableRefused(
+      owner ? "turned_off_by_owner" : "not_draft",
+      `playbook ${row.id} was turned off${owner ? " by the owner" : ""} after approval ${approval.id} was requested; it stays off (a new enable request made after the off can turn it back on)`,
     );
   }
   if (editedSince(store, row.id, approval.requestedEventId)) {
@@ -580,7 +604,7 @@ const enableTool = defineTool({
   name: ENABLE_TOOL_NAME,
   job: "manage_playbooks",
   description:
-    "Ask the owner to enable a draft playbook you own, or (Wright) one of a registered crew member's, at its current version. Its current version needs a done kernel_playbook_dry_run first; otherwise this is refused. " +
+    "Ask the owner to enable a draft playbook you own, or (Wright) one of a registered crew member's, at its current version. It also asks to turn back on a playbook that was turned off, the owner's off included: only the owner's approval of this new request turns it on. Its current version needs a done kernel_playbook_dry_run first; otherwise this is refused. " +
     "The kernel always holds this call for the owner, showing the playbook, its values and the dry run; end your turn. " +
     "The owner's approval enables it: the kernel applies it itself, at the version the owner saw, and tells you what it did in a new message; do not repeat the call. " +
     "If it was changed since (a new version), the kernel does not enable it and it stays a draft: dry-run it again and ask again. " +

@@ -494,7 +494,7 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     // A retry after the kernel applied it is refused before the hold (no longer a draft): nothing held, nothing enabled twice.
     const retried = await h.enable(input);
     expect(retried.decision.permissionDecision).toBe("deny");
-    expect(retried.decision.permissionDecisionReason).toBe(`kernel_playbook_enable: playbook ${id} is enabled, not draft: only a draft is enabled`);
+    expect(retried.decision.permissionDecisionReason).toBe(`kernel_playbook_enable: playbook ${id} is enabled: only a draft or a turned-off playbook is enabled`);
     expect(retried.result).toBeUndefined();
     expect(count(h.store, "SELECT count(*) FROM approvals")).toBe(1);
     expect(events(h.store, "playbook_enabled")).toHaveLength(1);
@@ -557,10 +557,31 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect((await h.studio(["playbooks", "off", String(id)])).code).toBe(0);
     const approved = await h.studio(["approve", "1", "once"]);
     expect(approved.code).toBe(0);
-    expect(approved.stdout).toContain(`\nstudio: not applied: turned_off_by_owner: The kernel did not enable playbook ${slug} (#${id}): turned_off_by_owner (playbook ${id} was turned off by the owner;`);
+    expect(approved.stdout).toContain(`\nstudio: not applied: turned_off_by_owner: The kernel did not enable playbook ${slug} (#${id}): turned_off_by_owner (playbook ${id} was turned off by the owner after approval 1 was requested; it stays off`);
     expect(listApprovals(h.store, { all: true })[0]).toMatchObject({ status: "approved", apply_refused: "turned_off_by_owner" });
     expect(getPlaybook(h.store, id)?.status).toBe("disabled");
     expect(events(h.store, "playbook_enabled")).toEqual([]);
+  });
+
+  it("item 23g: a playbook the owner turned off can be requested again and the owner's new approval turns it back on; an agent alone never does", async () => {
+    const h = await bootKernel();
+    const { id } = await h.create();
+    value(await h.dryRun(id, "d1"));
+    await h.enable({ id, idempotency_key: "e1" });
+    expect((await h.studio(["approve", "1", "once"])).code).toBe(0);
+    expect(getPlaybook(h.store, id)?.status).toBe("enabled");
+    // The owner turns it off.
+    expect((await h.studio(["playbooks", "off", String(id)])).code).toBe(0);
+    expect(getPlaybook(h.store, id)?.status).toBe("disabled");
+    // Wright asks again, after the off: the call is held (never run by the agent), and the playbook stays off until the owner decides.
+    const held = await h.enable({ id, idempotency_key: "e2" });
+    expect(held.decision.permissionDecision).toBe("deny");
+    expect(getPlaybook(h.store, id)?.status).toBe("disabled");
+    const pending = listApprovals(h.store, {}).filter((a) => a.status === "pending");
+    expect(pending).toHaveLength(1);
+    // The owner approves the new request once: it is enabled at the same version, by the owner.
+    expect((await h.studio(["approve", String(pending[0]?.id), "once"])).code).toBe(0);
+    expect(getPlaybook(h.store, id)).toMatchObject({ status: "enabled", version: 1 });
   });
 
   it("a key a kernel-applied enable used is no work step: after an edit and a new dry run the same key is held anew, and the owner's approval enables the new version", async () => {
@@ -1112,7 +1133,7 @@ describe("enablePlaybook", () => {
     expect(events(h.store, "playbook_enabled")).toEqual([]);
     expect(enablePlaybook(h.store, { id, version: 1, sessionId: h.wright.id, approvalId: 4 }, clock.at).playbook).toMatchObject({ status: "enabled", version: 1 });
     expect(events(h.store, "playbook_enabled").map((e) => e.payload)).toEqual([{ playbook_id: id, version: 1, approval_id: 4, by: "owner" }]);
-    expect(() => enablePlaybook(h.store, { id, version: 1, sessionId: null, approvalId: 4 }, clock.at)).toThrow(/is enabled, not draft/);
+    expect(() => enablePlaybook(h.store, { id, version: 1, sessionId: null, approvalId: 4 }, clock.at)).toThrow(/is enabled: only a draft or a turned-off playbook is enabled/);
     expect(() => enablePlaybook(h.store, { id: 99, version: 1, sessionId: null, approvalId: 4 }, clock.at)).toThrow(/no playbook 99/);
   });
 });
