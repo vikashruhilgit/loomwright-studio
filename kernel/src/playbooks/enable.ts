@@ -81,7 +81,7 @@ import { DRY_RUN_TOOL_NAME, latestDryRun } from "./dry-run.js";
 import type { DryRunRecord } from "./dry-run.js";
 import { fitGapOpen, playbookFit, ticketPollOwnerSteps } from "./fit.js";
 import type { PlaybookFit } from "./fit.js";
-import { PlaybookError, enablePlaybook, getPlaybook, linkedTriggerOf, parseMergeRequirement, playbookJobsOf } from "./store.js";
+import { PlaybookError, enablePlaybook, getPlaybook, lastDisabledEvent, linkedTriggerOf, parseMergeRequirement, playbookJobsOf } from "./store.js";
 import type { PlaybookRow } from "./store.js";
 import { targetRepoRefusal } from "./target-repo.js";
 import type { PlaybookPart } from "./types.js";
@@ -302,7 +302,8 @@ function charterLines(store: Store, row: PlaybookRow, fit: PlaybookFit | undefin
 
 /**
  * What `studio approvals` shows for an enable: the playbook (name, slug, id,
- * version, agent), its schedule, every policy value (` (proposed)` where
+ * version, agent), for a playbook that is off a `turning back on:` line
+ * naming who turned it off and when (`turningBackOnLine`), its schedule, every policy value (` (proposed)` where
  * Wright set it), the dry run's summary, and for a crew member's playbook
  * that names jobs, its charter lines (`fit`; `enableAnyway` over an open gap
  * says the owner is enabling it anyway). Stored text throughout: the CLI
@@ -311,6 +312,7 @@ function charterLines(store: Store, row: PlaybookRow, fit: PlaybookFit | undefin
 export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunRecord, fit?: PlaybookFit, enableAnyway = false): string {
   return [
     `Enable playbook ${JSON.stringify(row.name)} (${row.slug}, #${row.id}) at version ${row.version}${row.mode === "live" ? ", LIVE" : ""}, agent ${row.owning_agent}`,
+    ...(row.status === "disabled" ? [turningBackOnLine(store, row.id)] : []),
     scheduleText(linkedTriggerOf(store, row)),
     valueLine("mode", row.mode, row.mode_set_by),
     valueLine("model", row.model, row.model_set_by),
@@ -324,6 +326,18 @@ export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunReco
     `dry run: ${dryRun.summary}`,
     ...charterLines(store, row, fit, enableAnyway),
   ].join("\n");
+}
+
+/**
+ * The held card's line for a playbook that is off (item 23g): it says the playbook is off and, from the newest
+ * `playbook_disabled` event, who turned it off and when. A `by` other than Wright's counts as the owner's (the rule
+ * `ownerTurnedOff` in `./store.ts` uses); with no event, it says only that the playbook is off.
+ */
+function turningBackOnLine(store: Store, id: number): string {
+  const last = lastDisabledEvent(store, id);
+  if (last === null) return "turning back on: this playbook is off";
+  const who = last.by === "wright" ? "wright" : "the owner";
+  return `turning back on: this playbook is off; ${who} turned it off on ${last.at}`;
 }
 
 /** The refusal for an idempotency key an earlier enable of this session already used. */

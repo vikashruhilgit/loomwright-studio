@@ -568,6 +568,8 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     const { id } = await h.create();
     value(await h.dryRun(id, "d1"));
     await h.enable({ id, idempotency_key: "e1" });
+    // A draft's card never says it is turning a playbook back on.
+    expect(listApprovals(h.store, {})[0]?.display).not.toContain("turning back on");
     expect((await h.studio(["approve", "1", "once"])).code).toBe(0);
     expect(getPlaybook(h.store, id)?.status).toBe("enabled");
     // The owner turns it off.
@@ -579,6 +581,9 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect(getPlaybook(h.store, id)?.status).toBe("disabled");
     const pending = listApprovals(h.store, {}).filter((a) => a.status === "pending");
     expect(pending).toHaveLength(1);
+    // The held card says the playbook is off and that the owner turned it off, and when.
+    const offAt = h.store.prepare("SELECT at FROM events WHERE kind = 'playbook_disabled' ORDER BY id DESC LIMIT 1").pluck().get() as string;
+    expect(pending[0]?.display?.split("\n")[1]).toBe(`turning back on: this playbook is off; the owner turned it off on ${offAt}`);
     // The owner approves the new request once: it is enabled at the same version, by the owner.
     expect((await h.studio(["approve", String(pending[0]?.id), "once"])).code).toBe(0);
     expect(getPlaybook(h.store, id)).toMatchObject({ status: "enabled", version: 1 });

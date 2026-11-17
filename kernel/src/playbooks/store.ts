@@ -420,18 +420,26 @@ export function listPlaybookVersions(store: Store, id: number): PlaybookVersion[
 }
 
 /**
- * Who last turned playbook `id` off: the `by` of the newest
- * `playbook_disabled` event for it, or `null` when there is none.
+ * The newest `playbook_disabled` event for playbook `id`: its `by` (null when
+ * not a string) and its `at`, or `null` when there is none. Read only.
  */
-function lastDisabledBy(store: Store, id: number): string | null {
+export function lastDisabledEvent(store: Store, id: number): { readonly by: string | null; readonly at: string } | null {
   const last = store
-    .prepare<[number], { by: unknown }>(
-      `SELECT json_extract(payload_json, '$.by') AS by FROM events
+    .prepare<[number], { by: unknown; at: string }>(
+      `SELECT json_extract(payload_json, '$.by') AS by, at FROM events
         WHERE kind = 'playbook_disabled' AND json_valid(payload_json) AND json_extract(payload_json, '$.playbook_id') = ?
         ORDER BY id DESC LIMIT 1`,
     )
     .get(id);
-  return typeof last?.by === "string" ? last.by : null;
+  return last === undefined ? null : { by: typeof last.by === "string" ? last.by : null, at: last.at };
+}
+
+/**
+ * Who last turned playbook `id` off: the `by` of the newest
+ * `playbook_disabled` event for it, or `null` when there is none.
+ */
+function lastDisabledBy(store: Store, id: number): string | null {
+  return lastDisabledEvent(store, id)?.by ?? null;
 }
 
 /**
