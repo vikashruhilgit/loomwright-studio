@@ -45,7 +45,7 @@ import { AdmissionRefusedError, SessionError, SessionManager, decideToolUse } fr
 import type { SessionHandle, SessionRow, StartSessionParams, ToolPolicy } from "../src/sessions/index.js";
 import { LoomwrightSessionError } from "../src/sessions/index.js";
 import type { SessionTokenMint } from "../src/sessions/github-session-auth.js";
-import { classifyToolCall, mayCreateRunFile } from "../src/sessions/policy.js";
+import { classifyToolCall, mayCreateRunFile, TICKET_RUN_SYSTEM_NOTE } from "../src/sessions/policy.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 import { HEAD, NOW, PARKED_RUN_ID, PR, installRunFiles, toolEnv, writeCrewSettings } from "./fixtures/loomwright-run-files/harness.js";
@@ -718,10 +718,13 @@ describe("through a real session manager", () => {
           }).hookSpecificOutput;
       };
       const merge = await gateFor({ ...MERGE_PARKED_RUN_POLICY, loomwrightRunId: PARKED_RUN_ID });
+      // Item 23e: only the ticket run gets the first-run-file note as its system prompt.
+      expect(fakes.calls[fakes.calls.length - 1]?.options.systemPrompt).toBeUndefined();
       for (const file of ["automate-2099-01-01-000000.md", `${PARKED_RUN_ID}-new.md`]) {
         expect(await merge(file), file).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" });
       }
       const ticket = await gateFor(AUTOMATE_RUN_POLICY);
+      expect(fakes.calls[fakes.calls.length - 1]?.options.systemPrompt).toBe(TICKET_RUN_SYSTEM_NOTE);
       expect(await ticket("automate-2099-01-01-000000.md")).toMatchObject({ permissionDecision: "allow", permissionDecisionReason: "loomwright_run_file_created" });
     } finally {
       await stopAll(manager);

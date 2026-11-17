@@ -190,7 +190,8 @@ const POLICY_COLUMNS: Readonly<Record<PlaybookPolicyField, { readonly value: key
 
 type ColumnValue = string | number | null;
 
-const WRIGHT: PolicySetter = "wright";
+/** The `by` an agent's (Wright's) change records; anything else counts as the owner's. */
+export const WRIGHT: PolicySetter = "wright";
 const OWNER: PolicySetter = "owner";
 
 function invalid(message: string): PlaybookError {
@@ -420,18 +421,26 @@ export function listPlaybookVersions(store: Store, id: number): PlaybookVersion[
 }
 
 /**
- * Who last turned playbook `id` off: the `by` of the newest
- * `playbook_disabled` event for it, or `null` when there is none.
+ * The newest `playbook_disabled` event for playbook `id`: its `by` (null when
+ * not a string) and its `at`, or `null` when there is none. Read only.
  */
-function lastDisabledBy(store: Store, id: number): string | null {
+export function lastDisabledEvent(store: Store, id: number): { readonly by: string | null; readonly at: string } | null {
   const last = store
-    .prepare<[number], { by: unknown }>(
-      `SELECT json_extract(payload_json, '$.by') AS by FROM events
+    .prepare<[number], { by: unknown; at: string }>(
+      `SELECT json_extract(payload_json, '$.by') AS by, at FROM events
         WHERE kind = 'playbook_disabled' AND json_valid(payload_json) AND json_extract(payload_json, '$.playbook_id') = ?
         ORDER BY id DESC LIMIT 1`,
     )
     .get(id);
-  return typeof last?.by === "string" ? last.by : null;
+  return last === undefined ? null : { by: typeof last.by === "string" ? last.by : null, at: last.at };
+}
+
+/**
+ * Who last turned playbook `id` off: the `by` of the newest
+ * `playbook_disabled` event for it, or `null` when there is none.
+ */
+function lastDisabledBy(store: Store, id: number): string | null {
+  return lastDisabledEvent(store, id)?.by ?? null;
 }
 
 /**
@@ -445,14 +454,16 @@ function ownerTurnedOff(store: Store, row: PlaybookRow): boolean {
 }
 
 function ownerOff(id: number): PlaybookError {
-  return new PlaybookError("owner_off", `playbook ${id} was turned off by the owner; an agent cannot change, disable or re-enable it`);
+  return new PlaybookError("owner_off", `playbook ${id} was turned off by the owner; an agent cannot change or disable it. To turn it back on, ask the owner with kernel_playbook_enable: only the owner's approval turns it on`);
 }
 
 /**
  * Throws `PlaybookError("owner_off")` when the owner turned playbook `id` off
  * (a missing playbook passes). Every agent path that changes, disables or
- * enables a playbook calls it, including a repeated tool call whose stored
- * first result predates the owner's off.
+ * dry-runs a playbook calls it, including a repeated tool call whose stored
+ * first result predates the owner's off. The enable request does not (item
+ * 23g): it is always held, and the owner's approval is what turns an
+ * owner-off playbook back on (`enable.ts`, `draftOf` and `enableApproved`).
  */
 export function refuseIfOwnerTurnedOff(store: Store, id: number): void {
   const row = readRow(store, id);
@@ -788,13 +799,14 @@ export interface EnablePlaybookParams {
 
 /**
  * Enable playbook `id` at exactly `version` (phase 3 item 07): in one
- * transaction, `status = 'enabled'` only while the row is a `draft` at that
- * version, and one `playbook_enabled` event `{playbook_id, version,
- * approval_id, by: "owner"}` (the owner approved it; the agent's retry only
- * carried it out). Makes no version. Throws `PlaybookError`: `not_found`;
- * `invalid_input` naming why otherwise (`version changed` when the row moved
- * on, or the status it has instead of `draft`). Callers check ownership and
- * the owner's off before.
+ * transaction, `status = 'enabled'` only while the row is a `draft` or
+ * `disabled` (turned off, the owner's off included: item 23g) at that version,
+ * and one `playbook_enabled` event `{playbook_id, version, approval_id, by:
+ * "owner"}` (the owner approved it; the agent's retry only carried it out).
+ * Makes no version. Throws `PlaybookError`: `not_found`; `invalid_input` naming
+ * why otherwise (`version changed` when the row moved on, or a status other
+ * than `draft` or `disabled`). Callers check ownership, and that no off came
+ * after the approval was requested (`enableApproved`), before.
  */
 export function enablePlaybook(store: Store, params: EnablePlaybookParams, now: Date): PlaybookChange {
   const at = now.toISOString();
@@ -804,8 +816,9 @@ export function enablePlaybook(store: Store, params: EnablePlaybookParams, now: 
     if (row.version !== params.version) {
       throw invalid(`version changed: playbook ${row.id} is at version ${row.version}, not the approved version ${params.version}`);
     }
-    if (row.status !== "draft") throw invalid(`playbook ${row.id} is ${row.status}, not draft: only a draft is enabled`);
-    store.prepare("UPDATE playbooks SET status = 'enabled', updated_at = ? WHERE id = ? AND version = ? AND status = 'draft'").run(at, row.id, params.version);
+    // A draft, or a playbook that was turned off (item 23g: the owner's own once-approval turns it back on).
+    if (row.status !== "draft" && row.status !== "disabled") throw invalid(`playbook ${row.id} is ${row.status}: only a draft or a turned-off playbook is enabled`);
+    store.prepare("UPDATE playbooks SET status = 'enabled', updated_at = ? WHERE id = ? AND version = ? AND status IN ('draft', 'disabled')").run(at, row.id, params.version);
     appendEvent(store, "playbook_enabled", refOf(params.sessionId), { playbook_id: row.id, version: params.version, approval_id: params.approvalId, by: OWNER }, at);
     const after = readRow(store, row.id) as PlaybookRow;
     return { playbook: after, trigger: linkedTriggerOf(store, after), changed: true };

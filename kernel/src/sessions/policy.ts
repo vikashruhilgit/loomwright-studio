@@ -199,6 +199,7 @@ function runConfigValue(line: string, key: string): string | undefined {
  * a merge run pinned to one run could create a safe-mode run file for another
  * (review iteration 5). Pure.
  */
+
 export function mayCreateRunFile(policy: ToolPolicy): boolean {
   return (
     (policy.loomwrightScripts ?? []).includes("automate-next-step.sh") &&
@@ -206,6 +207,23 @@ export function mayCreateRunFile(policy: ToolPolicy): boolean {
     policy.loomwrightRunId === undefined
   );
 }
+
+/**
+ * The system prompt a session that may create a run file starts with (item 23e). Without it the
+ * ticket run follows Loomwright's skill, which writes the run file only through `runfile-write`
+ * on stdin; the policy refuses every pipe and redirect, so the run stopped before its run file
+ * existed (live, session 205). It is a frozen kernel constant, never from a charter or a payload.
+ * The SDK sends an empty system prompt when none is given, as read from its bundle code, not observed
+ * (NEEDS VERIFICATION, `docs/OPEN_QUESTIONS.md`; `@anthropic-ai/claude-agent-sdk`
+ * 0.3.284, `systemPrompt === undefined` maps to `""`), so this note is the whole system prompt
+ * and nothing else about the session changes.
+ */
+export const TICKET_RUN_SYSTEM_NOTE = [
+  "Studio kernel note for this Loomwright /automate run. The kernel's tool policy refuses every shell pipe and redirect (`|`, `<`, `>`), so `automate-helpers.sh runfile-write` cannot receive its content on stdin here.",
+  "To create this run's FIRST run file (`.supervisor/automate/<run_id>.md`), use the Write tool once with exactly the content runfile-write would have received. The kernel allows that one Write only while nothing exists at that path, and only for a safe-mode run file: the `## Run Config` first `- mode:` line says `mode: safe`, `trust_unprotected` is absent or `false`, and there is no `- ready_sha:` line.",
+  "Every later change to the run file or its `.next-step.json` sidecar goes through Loomwright's own scripts (automate-next-step.sh, progress-append, current-set, queue-checkoff), never Write or Edit: the kernel refuses those.",
+  "Read Loomwright's skill and script files with the Read tool, not cat or grep in a shell.",
+].join("\n");
 
 export function safeRunFileCreation(toolName: string, toolInput: unknown, cwd: string | undefined): string | undefined {
   if (toolName !== "Write" || typeof toolInput !== "object" || toolInput === null) return undefined;
