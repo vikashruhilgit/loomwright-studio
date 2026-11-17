@@ -204,7 +204,8 @@ function runConfigValue(line: string, key: string): string | undefined {
  * ticket run follows Loomwright's skill, which writes the run file only through `runfile-write`
  * on stdin; the policy refuses every pipe and redirect, so the run stopped before its run file
  * existed (live, session 205). It is a frozen kernel constant, never from a charter or a payload.
- * The SDK sends an empty system prompt when none is given (`@anthropic-ai/claude-agent-sdk`
+ * The SDK sends an empty system prompt when none is given, as read from its bundle code, not observed
+ * (NEEDS VERIFICATION, `docs/OPEN_QUESTIONS.md`; `@anthropic-ai/claude-agent-sdk`
  * 0.3.284, `systemPrompt === undefined` maps to `""`), so this note is the whole system prompt
  * and nothing else about the session changes.
  */
