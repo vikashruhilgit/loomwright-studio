@@ -796,13 +796,14 @@ export interface EnablePlaybookParams {
 
 /**
  * Enable playbook `id` at exactly `version` (phase 3 item 07): in one
- * transaction, `status = 'enabled'` only while the row is a `draft` at that
- * version, and one `playbook_enabled` event `{playbook_id, version,
- * approval_id, by: "owner"}` (the owner approved it; the agent's retry only
- * carried it out). Makes no version. Throws `PlaybookError`: `not_found`;
- * `invalid_input` naming why otherwise (`version changed` when the row moved
- * on, or the status it has instead of `draft`). Callers check ownership and
- * the owner's off before.
+ * transaction, `status = 'enabled'` only while the row is a `draft` or
+ * `disabled` (turned off, the owner's off included: item 23g) at that version,
+ * and one `playbook_enabled` event `{playbook_id, version, approval_id, by:
+ * "owner"}` (the owner approved it; the agent's retry only carried it out).
+ * Makes no version. Throws `PlaybookError`: `not_found`; `invalid_input` naming
+ * why otherwise (`version changed` when the row moved on, or a status other
+ * than `draft` or `disabled`). Callers check ownership, and that no off came
+ * after the approval was requested (`enableApproved`), before.
  */
 export function enablePlaybook(store: Store, params: EnablePlaybookParams, now: Date): PlaybookChange {
   const at = now.toISOString();

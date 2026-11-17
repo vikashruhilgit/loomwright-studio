@@ -155,8 +155,10 @@ function asPlaybookError<T>(body: () => T): T {
  * (`crew_cannot_draft`: a defence, since `beforeHold` never holds a crew
  * session's call), `agent` may manage it (`not_owner` unless it is its own,
  * or Wright's request for a registered crew member's; a null agent never
- * matches), the owner did not turn it off (`turned_off_by_owner`), and it is
- * a draft (`not_draft`). Throws `EnableRefused`.
+ * matches), and it is a draft or a turned-off playbook, the owner's off
+ * included (`not_draft` otherwise; item 23g: the request is always held, so only
+ * the owner's approval turns it back on, and `enableApproved` refuses an approval
+ * requested before a later off). Throws `EnableRefused`.
  */
 function draftOf(store: Store, id: number, agent: string | null): PlaybookRow {
   const row = getPlaybook(store, id);
