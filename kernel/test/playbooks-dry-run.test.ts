@@ -26,7 +26,7 @@ import { startKernel } from "../src/kernel.js";
 import type { Kernel, KernelDeps } from "../src/kernel.js";
 import { getPlaybook, mirrorPath, playbooksContribution } from "../src/playbooks/index.js";
 import { DRY_RUN_NEXT_FIRES, formatDryRunSummary, latestDryRun, nextFiresOf, previewDedupeKey } from "../src/playbooks/dry-run.js";
-import { enablePlaybook } from "../src/playbooks/store.js";
+import { disablePlaybook, enablePlaybook } from "../src/playbooks/store.js";
 import { SessionManager } from "../src/sessions/manager.js";
 import type { DryRunReport, HeldToolCheck, SessionHandle, SessionRow, SessionStatus, StartSessionParams, ToolPolicy, WouldDoEntry } from "../src/sessions/types.js";
 import { Store } from "../src/store/index.js";
@@ -559,6 +559,23 @@ describe("kernel_playbook_enable (AC2-AC5)", () => {
     expect(approved.code).toBe(0);
     expect(approved.stdout).toContain(`\nstudio: not applied: turned_off_by_owner: The kernel did not enable playbook ${slug} (#${id}): turned_off_by_owner (playbook ${id} was turned off by the owner after approval 1 was requested; it stays off`);
     expect(listApprovals(h.store, { all: true })[0]).toMatchObject({ status: "approved", apply_refused: "turned_off_by_owner" });
+    expect(getPlaybook(h.store, id)?.status).toBe("disabled");
+    expect(events(h.store, "playbook_enabled")).toEqual([]);
+  });
+
+  it("item 23g: Wright turns its own playbook off after its enable request; the owner's approval of that request applies nothing (not_draft, not the owner's off)", async () => {
+    const h = await bootKernel();
+    const { id } = await h.create();
+    value(await h.dryRun(id, "d1"));
+    await h.enable({ id, idempotency_key: "e1" });
+    const owner = getPlaybook(h.store, id)?.owning_agent as string;
+    disablePlaybook(h.store, { id, by: "wright", agent: owner }, new Date());
+    expect(getPlaybook(h.store, id)?.status).toBe("disabled");
+    const approved = await h.studio(["approve", "1", "once"]);
+    expect(approved.code).toBe(0);
+    expect(approved.stdout).toContain("not applied: not_draft");
+    expect(approved.stdout).toContain(`playbook ${id} was turned off after approval 1 was requested; it stays off`);
+    expect(listApprovals(h.store, { all: true })[0]).toMatchObject({ status: "approved", apply_refused: "not_draft" });
     expect(getPlaybook(h.store, id)?.status).toBe("disabled");
     expect(events(h.store, "playbook_enabled")).toEqual([]);
   });

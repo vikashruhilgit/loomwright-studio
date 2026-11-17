@@ -81,7 +81,7 @@ import { DRY_RUN_TOOL_NAME, latestDryRun } from "./dry-run.js";
 import type { DryRunRecord } from "./dry-run.js";
 import { fitGapOpen, playbookFit, ticketPollOwnerSteps } from "./fit.js";
 import type { PlaybookFit } from "./fit.js";
-import { PlaybookError, enablePlaybook, getPlaybook, lastDisabledEvent, linkedTriggerOf, parseMergeRequirement, playbookJobsOf } from "./store.js";
+import { PlaybookError, WRIGHT, enablePlaybook, getPlaybook, lastDisabledEvent, linkedTriggerOf, parseMergeRequirement, playbookJobsOf } from "./store.js";
 import type { PlaybookRow } from "./store.js";
 import { targetRepoRefusal } from "./target-repo.js";
 import type { PlaybookPart } from "./types.js";
@@ -338,7 +338,7 @@ export function enableDisplay(store: Store, row: PlaybookRow, dryRun: DryRunReco
 function turningBackOnLine(store: Store, id: number): string {
   const last = lastDisabledEvent(store, id);
   if (last === null) return "turning back on: this playbook is off";
-  const who = last.by === "wright" ? "wright" : "the owner";
+  const who = last.by === WRIGHT ? "wright" : "the owner";
   return `turning back on: this playbook is off; ${who} turned it off on ${last.at}`;
 }
 
@@ -515,7 +515,7 @@ export function enableApproved(store: Store, p: EnableApprovedParams): EnableToo
   }
   const offBy = disabledSince(store, row.id, approval.requestedEventId);
   if (offBy !== undefined) {
-    const owner = offBy !== "wright";
+    const owner = offBy !== WRIGHT;
     throw new EnableRefused(
       owner ? "turned_off_by_owner" : "not_draft",
       `playbook ${row.id} was turned off${owner ? " by the owner" : ""} after approval ${approval.id} was requested; it stays off (a new enable request made after the off can turn it back on)`,

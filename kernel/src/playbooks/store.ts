@@ -190,7 +190,8 @@ const POLICY_COLUMNS: Readonly<Record<PlaybookPolicyField, { readonly value: key
 
 type ColumnValue = string | number | null;
 
-const WRIGHT: PolicySetter = "wright";
+/** The `by` an agent's (Wright's) change records; anything else counts as the owner's. */
+export const WRIGHT: PolicySetter = "wright";
 const OWNER: PolicySetter = "owner";
 
 function invalid(message: string): PlaybookError {
