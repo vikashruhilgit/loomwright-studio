@@ -90,6 +90,7 @@ function minus(a: UsageTotals, b: UsageTotals): UsageTotals {
 }
 
 interface SessionUsageRow {
+  readonly sdk_session_id: string | null;
   readonly agent: string | null;
   readonly task_id: number | null;
   /** `sessions.playbook` (migration 13): the playbook the session runs for, or null. */
@@ -123,6 +124,9 @@ interface PlaybookLimitRow {
  *   safe choice either way: taking 0 as the baseline would count the next real
  *   total twice.
  * - A model missing from a new result keeps its stored total.
+ * - A row with no stored totals yet starts from the latest earlier row on the
+ *   same SDK session (`#inheritedTotals`): a thread continuation is a new row
+ *   resuming that SDK session, whose totals already include the earlier rows'.
  *
  * Limit of the design (`kill -9`): tokens spent after the last `result` the
  * kernel recorded (a kernel killed mid-stream, or before this transaction
@@ -180,7 +184,9 @@ export class BudgetMeter {
 
     this.#store.transaction(() => {
       const row = this.#store
-        .prepare<[number], SessionUsageRow>("SELECT agent, task_id, playbook, model_usage_json FROM sessions WHERE id = ?")
+        .prepare<[number], SessionUsageRow>(
+          "SELECT sdk_session_id, agent, task_id, playbook, model_usage_json FROM sessions WHERE id = ?",
+        )
         .get(sessionId);
       const ref: EventRef = { sessionId, taskId: row?.task_id ?? null };
       if (row === undefined) {
@@ -201,7 +207,7 @@ export class BudgetMeter {
         return;
       }
 
-      const stored = this.#readStored(row.model_usage_json, ref, at);
+      const stored = this.#readStored(row.model_usage_json ?? this.#inheritedTotals(sessionId, row.sdk_session_id), ref, at);
       const merged: Totals = Object.assign(emptyTotals(), stored);
       const insert = this.#store.prepare(
         `INSERT INTO budget (day, session_id, agent, playbook, model, input_tokens, output_tokens, cache_write_tokens,
@@ -245,6 +251,29 @@ export class BudgetMeter {
       if (row.agent !== null) this.#checkLimit(row.agent, day, now, ref, at);
       if (row.playbook !== null) this.#checkPlaybookLimit(row.playbook, day, now, ref, at);
     });
+  }
+
+  /**
+   * The baseline of a row with no totals of its own: the totals of the latest
+   * EARLIER row on the same SDK session that has some, else null. `modelUsage`
+   * is cumulative per SDK session, not per row (p7), and a thread continuation
+   * is a new row resuming an earlier row's SDK session, so its first result
+   * carries every earlier row's usage; without this it would be recorded again
+   * (seen live 2026-11-16: recorded API-key spend $6.42 against $4.21 billed).
+   * A row with no SDK session id never inherits.
+   */
+  #inheritedTotals(sessionId: number, sdkSessionId: string | null): string | null {
+    if (sdkSessionId === null) return null;
+    return (
+      this.#store
+        .prepare<[string, number], string>(
+          `SELECT model_usage_json FROM sessions
+            WHERE sdk_session_id = ? AND id < ? AND model_usage_json IS NOT NULL
+            ORDER BY id DESC LIMIT 1`,
+        )
+        .pluck()
+        .get(sdkSessionId, sessionId) ?? null
+    );
   }
 
   /** The stored totals; an unreadable value is a fresh baseline, recorded as such. */

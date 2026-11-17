@@ -97,6 +97,48 @@ describe("BudgetMeter: recording result.modelUsage (AC1)", () => {
     expect(events(env.store, "budget_baseline_reset")).toEqual([]);
   });
 
+  it("a continuation row (same SDK session) records only the delta past the earlier row's total", () => {
+    // A thread continuation is a NEW row resuming the earlier row's SDK session, and
+    // modelUsage is cumulative per SDK session (p7), so its first result carries the
+    // earlier rows' usage too. Live 2026-11-16: counting it in full doubled Opus tokens.
+    const first = insertSession(env.store, { sdk: "sdk-a" });
+    const m = meter();
+    m.observe(first, result({ opus: { input: 12, output: 9_330, cacheWrite: 23_580, cacheRead: 313_307, cost: 0.4379 } }));
+    const second = insertSession(env.store, { sdk: "sdk-a" });
+    m.observe(second, result({ opus: { input: 16, output: 12_428, cacheWrite: 49_562, cacheRead: 413_253, cost: 0.7278 } }));
+    const third = insertSession(env.store, { sdk: "sdk-a" });
+    m.observe(third, result({ opus: { input: 22, output: 14_935, cacheWrite: 52_714, cacheRead: 542_805, cost: 0.8291 } }));
+
+    const rows = budgetRows();
+    expect(rows.map((r) => [r.session_id, r.input_tokens, r.output_tokens, r.cache_write_tokens, r.cache_read_tokens])).toEqual([
+      [first, 12, 9_330, 23_580, 313_307],
+      [second, 4, 3_098, 25_982, 99_946],
+      [third, 6, 2_507, 3_152, 129_552],
+    ]);
+    expect(rows.reduce((s, r) => s + r.counted_tokens, 0)).toBe(22 + 14_935 + 52_714);
+    expect(rows.reduce((s, r) => s + r.cost_usd, 0)).toBeCloseTo(0.8291, 10);
+    expect(storedTotals(third).opus).toMatchObject({ inputTokens: 22, outputTokens: 14_935 });
+    expect(events(env.store, "budget_baseline_reset")).toEqual([]);
+  });
+
+  it("a continuation takes the latest earlier row that has a total; other SDK sessions and later rows are never a baseline", () => {
+    const m = meter();
+    const first = insertSession(env.store, { sdk: "sdk-a" });
+    m.observe(first, result({ haiku: { input: 100, output: 10, cost: 0.01 } }));
+    // An earlier continuation that never produced a result: no total of its own.
+    insertSession(env.store, { sdk: "sdk-a" });
+    const other = insertSession(env.store, { sdk: "sdk-b" });
+    m.observe(other, result({ haiku: { input: 900, output: 90, cost: 0.09 } }));
+    const later = insertSession(env.store, { sdk: "sdk-a" });
+    m.observe(later, result({ haiku: { input: 130, output: 15, cost: 0.013 } }));
+    // A row with no SDK session id never inherits.
+    const bare = insertSession(env.store);
+    m.observe(bare, result({ haiku: { input: 5, output: 1, cost: 0.001 } }));
+
+    const byRow = Object.fromEntries(budgetRows().map((r) => [r.session_id, [r.input_tokens, r.output_tokens]]));
+    expect(byRow).toEqual({ [first]: [100, 10], [other]: [900, 90], [later]: [30, 5], [bare]: [5, 1] });
+  });
+
   it("writes no row for an unchanged total", () => {
     const id = insertSession(env.store);
     const m = meter();
