@@ -42,16 +42,17 @@ export function testEnv(start = "2026-10-02T10:00:00.000Z"): TestEnv {
 
 export function insertSession(
   store: Store,
-  fields: { agent?: string | null; account?: string | null; status?: string; task?: number | null } = {},
+  fields: { agent?: string | null; account?: string | null; status?: string; task?: number | null; sdk?: string | null } = {},
 ): number {
   return Number(
     store
-      .prepare("INSERT INTO sessions (agent, status, auth_account, task_id) VALUES (?, ?, ?, ?)")
+      .prepare("INSERT INTO sessions (agent, status, auth_account, task_id, sdk_session_id) VALUES (?, ?, ?, ?, ?)")
       .run(
         fields.agent === undefined ? "wright" : fields.agent,
         fields.status ?? "running",
         fields.account === undefined ? AUTH.account : fields.account,
         fields.task ?? null,
+        fields.sdk ?? null,
       ).lastInsertRowid,
   );
 }
