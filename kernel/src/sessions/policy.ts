@@ -199,6 +199,15 @@ function runConfigValue(line: string, key: string): string | undefined {
  * a merge run pinned to one run could create a safe-mode run file for another
  * (review iteration 5). Pure.
  */
+
+export function mayCreateRunFile(policy: ToolPolicy): boolean {
+  return (
+    (policy.loomwrightScripts ?? []).includes("automate-next-step.sh") &&
+    (policy.loomwrightDriverProfile ?? "automate_run") === "automate_run" &&
+    policy.loomwrightRunId === undefined
+  );
+}
+
 /**
  * The system prompt a session that may create a run file starts with (item 23e). Without it the
  * ticket run follows Loomwright's skill, which writes the run file only through `runfile-write`
@@ -215,14 +224,6 @@ export const TICKET_RUN_SYSTEM_NOTE = [
   "Every later change to the run file or its `.next-step.json` sidecar goes through Loomwright's own scripts (automate-next-step.sh, progress-append, current-set, queue-checkoff), never Write or Edit: the kernel refuses those.",
   "Read Loomwright's skill and script files with the Read tool, not cat or grep in a shell.",
 ].join("\n");
-
-export function mayCreateRunFile(policy: ToolPolicy): boolean {
-  return (
-    (policy.loomwrightScripts ?? []).includes("automate-next-step.sh") &&
-    (policy.loomwrightDriverProfile ?? "automate_run") === "automate_run" &&
-    policy.loomwrightRunId === undefined
-  );
-}
 
 export function safeRunFileCreation(toolName: string, toolInput: unknown, cwd: string | undefined): string | undefined {
   if (toolName !== "Write" || typeof toolInput !== "object" || toolInput === null) return undefined;
