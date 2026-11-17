@@ -460,8 +460,10 @@ function ownerOff(id: number): PlaybookError {
 /**
  * Throws `PlaybookError("owner_off")` when the owner turned playbook `id` off
  * (a missing playbook passes). Every agent path that changes, disables or
- * enables a playbook calls it, including a repeated tool call whose stored
- * first result predates the owner's off.
+ * dry-runs a playbook calls it, including a repeated tool call whose stored
+ * first result predates the owner's off. The enable request does not (item
+ * 23g): it is always held, and the owner's approval is what turns an
+ * owner-off playbook back on (`enable.ts`, `draftOf` and `enableApproved`).
  */
 export function refuseIfOwnerTurnedOff(store: Store, id: number): void {
   const row = readRow(store, id);

@@ -13,8 +13,10 @@
 // - `beforeHold`, which the gate asks before it holds the call (it can only
 //   narrow): a crew member's session (`crew_cannot_draft`: Wright drafts and
 //   enables a crew member's playbooks), a playbook that is missing, not one
-//   the caller may manage (`mayManage`, `./drafts.ts`), turned off by the
-//   owner or not a draft, an idempotency key whose work step already exists
+//   the caller may manage (`mayManage`, `./drafts.ts`), or neither a draft
+//   nor turned off (item 23g: a turned-off playbook, the owner's off
+//   included, may be requested; only the owner's approval turns it back
+//   on), an idempotency key whose work step already exists
 //   in this session (an earlier enable used it: its stored result would be
 //   replayed, so a new approval could only be spent with no effect), or a
 //   playbook whose current version has no `done` dry run (`latestDryRun`), or
@@ -36,7 +38,9 @@
 //   version as the approval's `subject_version`.
 // - `applyOnApproval`, which the approvals decision runs when the owner
 //   approves the held call `once`: `enableApproved` re-checks the playbook
-//   (its agent, the owner's off, `draft`), refuses "version changed" unless
+//   (its agent, a draft or turned off), refuses when it was turned off after
+//   the request (`turned_off_by_owner` for the owner's off, `not_draft` for
+//   Wright's: a stale approval never undoes a later off), refuses "version changed" unless
 //   the approval's `subject_version` is the current version and no
 //   `playbook_updated` came after the request, refuses with no `done` dry run
 //   of the current version, refuses `playbook_looser_than_repo` when the repo's
@@ -507,18 +511,19 @@ export interface EnableApprovedParams {
 export function enableApproved(store: Store, p: EnableApprovedParams): EnableToolResult {
   const row = draftOf(store, p.playbookId, p.agent);
   const { approval } = p;
-  if (approval.subjectVersion !== row.version) {
-    throw new EnableRefused(
-      "version_changed",
-      `approval ${approval.id} was for version ${String(approval.subjectVersion ?? "unknown")}, the playbook is at version ${row.version}; it stays draft`,
-    );
-  }
+  // A later off first (item 23g), so a stale approval reports the off, as documented, before any version reason.
   const offBy = disabledSince(store, row.id, approval.requestedEventId);
   if (offBy !== undefined) {
     const owner = offBy !== WRIGHT;
     throw new EnableRefused(
       owner ? "turned_off_by_owner" : "not_draft",
       `playbook ${row.id} was turned off${owner ? " by the owner" : ""} after approval ${approval.id} was requested; it stays off (a new enable request made after the off can turn it back on)`,
+    );
+  }
+  if (approval.subjectVersion !== row.version) {
+    throw new EnableRefused(
+      "version_changed",
+      `approval ${approval.id} was for version ${String(approval.subjectVersion ?? "unknown")}, the playbook is at version ${row.version}; it stays draft`,
     );
   }
   if (editedSince(store, row.id, approval.requestedEventId)) {
