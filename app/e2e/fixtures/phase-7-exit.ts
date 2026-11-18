@@ -26,10 +26,13 @@
 //   GET /triggers       schedules   the Schedules screen owns the trigger list and its switches. The Playbooks rows
 //                                   then find no trigger for their `trigger_id`, which the Playbooks markers here do not read
 //   GET /drafts         (declared)  no fixture serves it for these screens: an empty list, as the kernel with no draft answers
+//   GET /automate/paused-runs
+//                       (declared)  Tasks reads it for the Parked run card (phase 8 item 23l); no fixture serves it: no
+//                                   paused run and no unreadable workspace, as the kernel with no paused run answers
 //
 // Every other key has exactly one fixture that serves it. The unreachable state is the shell's: `GET /status`
 // answers 503, as `tasks.spec.ts` AC7 forces it.
-import type { DraftsResponse, RouteKey } from "../../src/api/contract";
+import type { DraftsResponse, PausedRunsResponse, RouteKey } from "../../src/api/contract";
 import type { FixtureKernel, FixtureRoute } from "../fixture-kernel";
 import { budgetFixture } from "./budget";
 import type { BudgetFixture, BudgetFixtureOptions } from "./budget";
@@ -66,6 +69,8 @@ export const PHASE_7_EXIT_ROUTE_KEYS = [
   // Tasks, the session list a session card takes its kernel title from (phase 8 item 17c), and the log of the session behind a card.
   "GET /tasks",
   "GET /tasks/:kind/:id",
+  // The Parked run card's paused Loomwright runs (phase 8 item 23l).
+  "GET /automate/paused-runs",
   "GET /sessions",
   "GET /sessions/:id/output",
   "POST /sessions/:id/stop",
@@ -194,6 +199,7 @@ export function phase7ExitFixture(init: Phase7ExitInit = {}): Phase7ExitFixture 
     // Tasks.
     "GET /tasks": t("GET /tasks"),
     "GET /tasks/:kind/:id": t("GET /tasks/:kind/:id"),
+    "GET /automate/paused-runs": () => ({ status: 200, body: { runs: [], unreadable: [] } satisfies PausedRunsResponse }),
     "GET /sessions": t("GET /sessions"),
     "GET /sessions/:id/output": t("GET /sessions/:id/output"),
     "POST /sessions/:id/stop": t("POST /sessions/:id/stop"),

@@ -163,7 +163,7 @@ test.describe.serial("Avatar component page", () => {
 
   test("under reduced motion every avatar layer is still and each state shows its thread", async () => {
     const moving = await page.evaluate(() =>
-      [...document.querySelectorAll(".bot .drift, .bot .rig, .bot .tail, .bot .ring, .bot .st, .bot .ln, .bot .stitch")]
+      [...document.querySelectorAll(".bot .spin, .bot .drift, .bot .rig, .bot .tail, .bot .ring, .bot .st, .bot .ln, .bot .stitch")]
         .filter((el) => getComputedStyle(el).animationName !== "none")
         .map((el) => el.getAttribute("class")),
     );
