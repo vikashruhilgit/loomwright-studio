@@ -55,7 +55,7 @@ export type RouteOrigin =
   | "p8-item-18"
   | "p8-item-23"
   | "github-app"
-  | "d48";
+  | "d42";
 
 export interface ContractRoute {
   readonly method: HttpMethod;
@@ -154,8 +154,8 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/budget/usage", origin: "p7-item-07" },
   { method: "GET", path: "/audit", origin: "p7-item-07" },
   { method: "GET", path: "/settings", origin: "p7-item-08" },
-  { method: "PUT", path: "/settings/auth-provider", origin: "d48" },
-  { method: "PUT", path: "/settings/api-key", origin: "d48" },
+  { method: "PUT", path: "/settings/auth-provider", origin: "d42" },
+  { method: "PUT", path: "/settings/api-key", origin: "d42" },
   { method: "GET", path: "/connectors/github/app/upgrade", origin: "p8-item-03" },
   { method: "POST", path: "/connectors/mcp/:kind/connect", origin: "p8-item-06" },
   { method: "POST", path: "/connectors/mcp/:kind/connect/cancel", origin: "p8-item-06" },
@@ -172,7 +172,7 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "POST", path: "/workspaces/:id/remove", origin: "p8-item-18" },
   { method: "GET", path: "/automate/paused-runs", origin: "p8-item-23" },
   { method: "POST", path: "/automate/paused-runs/:run_id/resume", origin: "p8-item-23" },
-  { method: "POST", path: "/automate/paused-runs/:run_id/reply", origin: "d48" },
+  { method: "POST", path: "/automate/paused-runs/:run_id/reply", origin: "d42" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -1483,7 +1483,7 @@ export type NotifierKind = "terminal-notifier" | "osascript" | "none";
 /**
  * `GET /settings`: it never carries a secret: the provider's health
  * and when its token was made, never the token (invariant 6 keeps sign-in out of the app).
- * `providers` (D48) lists every provider the build has, the in-use one first;
+ * `providers` (D42) lists every provider the build has, the in-use one first;
  * `provider_source` says what picked it (`flag` and `env` override the owner's choice).
  */
 export interface SettingsResponse {
@@ -1494,9 +1494,9 @@ export interface SettingsResponse {
     /** When the credential was created (`auth_providers.token_created_at`), for expiry; `null` when unknown. */
     readonly token_created_at: IsoTime | null;
   };
-  /** D48. Absent from an older kernel. */
+  /** D42. Absent from an older kernel. */
   readonly providers?: readonly { readonly id: string; readonly account: string | null; readonly health: AuthHealth; readonly in_use: boolean }[];
-  /** D48. Absent from an older kernel; `null` when the kernel wired no auth controls. */
+  /** D42. Absent from an older kernel; `null` when the kernel wired no auth controls. */
   readonly provider_source?: "flag" | "env" | "choice" | "default" | null;
   readonly data_dir: string;
   readonly notifier: NotifierKind;
@@ -1504,7 +1504,7 @@ export interface SettingsResponse {
   readonly loomwright: LoomwrightAdapterStatus;
 }
 
-/** `PUT /settings/auth-provider` (D48): the provider the owner chooses for every session. */
+/** `PUT /settings/auth-provider` (D42): the provider the owner chooses for every session. */
 export interface AuthProviderChoiceBody {
   readonly provider: string;
 }
@@ -1520,7 +1520,7 @@ export interface AuthProviderChoiceResponse {
   readonly restarting: boolean;
 }
 
-/** `PUT /settings/api-key` (D48): the API key, sent once to the kernel, which stores it in the Keychain. Never echoed back. */
+/** `PUT /settings/api-key` (D42): the API key, sent once to the kernel, which stores it in the Keychain. Never echoed back. */
 export interface ApiKeyBody {
   readonly key: string;
 }

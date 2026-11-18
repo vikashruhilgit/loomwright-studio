@@ -1,4 +1,4 @@
-// D48: the owner chooses the auth provider and stores an API key from Settings.
+// D42: the owner chooses the auth provider and stores an API key from Settings.
 // `PUT /settings/auth-provider` and `PUT /settings/api-key`, called as handlers
 // over a real store with an in-memory Keychain. Never a real Keychain or restart.
 import { existsSync, readFileSync } from "node:fs";
@@ -15,7 +15,7 @@ import { loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
 
 const NOW = "2026-11-18T10:00:00.000Z";
-const KEY = "sk-ant-api03-known-test-key-value_AB-cd";
+const KEY = `sk-ant-api03-${"known-test-key-value_AB-cd-".repeat(4)}end`;
 let env: LoopEnv;
 
 beforeEach(() => {
@@ -77,7 +77,7 @@ const choice = () => {
 };
 const events = (kind: string) => env.store.prepare<[string], string>("SELECT payload_json FROM events WHERE kind = ?").pluck().all(kind);
 
-describe("PUT /settings/auth-provider (D48)", () => {
+describe("PUT /settings/auth-provider (D42)", () => {
   const put = route("/settings/auth-provider");
 
   it("records the choice and restarts the kernel on it after the answer", async () => {
@@ -135,7 +135,7 @@ describe("PUT /settings/auth-provider (D48)", () => {
   });
 });
 
-describe("PUT /settings/api-key (D48)", () => {
+describe("PUT /settings/api-key (D42)", () => {
   const put = route("/settings/api-key");
 
   it("replaces the Keychain item, reads it back, and never echoes or records the key", async () => {
@@ -151,7 +151,9 @@ describe("PUT /settings/api-key (D48)", () => {
 
   it("refuses an empty key, whitespace, or a character the Keychain writer cannot take, without echoing it", async () => {
     const kc = keychain();
-    for (const key of ["", "sk-ant key", `${KEY}\n`, "sk'ant", "-sk"]) {
+    // D42 / OPEN_QUESTIONS: the entry needs the sk-ant- prefix and a whole length, and never takes a subscription token.
+    const cases = ["", "sk-ant key", `${KEY}\n`, "sk'ant", "-sk", KEY.slice(0, 60), `x${KEY.slice(1)}`, `sk-ant-oat01-${"a".repeat(90)}`, `${KEY.slice(0, 40)} ${KEY.slice(40)}`];
+    for (const key of cases) {
       const res = await put.handler(request({ key }, { kc }));
       expect(res.status).toBe(400);
       expect((res.body as { error: string }).error).toBe("invalid_key");

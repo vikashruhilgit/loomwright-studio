@@ -20,7 +20,7 @@ function exitWith(exit: DaemonExit): never {
 async function main(args: readonly string[]): Promise<void> {
   const launchd = underLaunchd(args);
   let kernel: Kernel;
-  // D48: under launchd a Settings switch of the auth provider stops the kernel
+  // D42: under launchd a Settings switch of the auth provider stops the kernel
   // gracefully and exits 1, so KeepAlive {SuccessfulExit: false} starts it
   // again on the new choice. Started by hand, nothing would restart it, so no
   // restart is wired and the choice applies at the next start.

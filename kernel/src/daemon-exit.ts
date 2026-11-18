@@ -17,7 +17,7 @@ import { StoreLockedError } from "./store/lock.js";
 
 export const DAEMON_NAME = "loomwright-studio-kernel";
 
-/** The exit status of a restart the owner asked for (D48): non-zero, so launchd starts the kernel again. */
+/** The exit status of a restart the owner asked for (D42): non-zero, so launchd starts the kernel again. */
 export const RESTART_EXIT_STATUS = 1;
 
 /** A bad command-line argument: permanent, since launchd passes the same ones again. */

@@ -55,7 +55,7 @@ describe("parseSettings: the contract's known fields, nothing else", () => {
   it("reads the provider, the data dir, the notifier and the Loomwright install", () => {
     expect(parseSettings(body())).toEqual({
       provider: { id: "subscription-token", account: "personal subscription", health: { status: "ok" }, tokenCreatedAt: daysAgo(100) },
-      // An older kernel names no providers (D48): the choice is not drawn.
+      // An older kernel names no providers (D42): the choice is not drawn.
       providers: [],
       providerSource: null,
       dataDir: "/Users/o/.loomwright-studio",
@@ -64,7 +64,7 @@ describe("parseSettings: the contract's known fields, nothing else", () => {
     });
   });
 
-  it("reads D48's provider list and source, leaving out an entry that is not the contract's shape", () => {
+  it("reads D42's provider list and source, leaving out an entry that is not the contract's shape", () => {
     const parsed = parseSettings({
       ...body(),
       providers: [

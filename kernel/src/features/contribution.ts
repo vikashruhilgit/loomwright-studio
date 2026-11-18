@@ -328,7 +328,7 @@ export interface ContributedRouteRequest {
    */
   readonly origin?: string;
   /**
-   * The owner's auth provider controls (D48): the in-use provider, the build's
+   * The owner's auth provider controls (D42): the in-use provider, the build's
    * providers, the Keychain calls that store an API key, and the restart that
    * applies a new choice. Only the Settings auth routes read it. Absent in a
    * composition that wires none: those routes then answer a typed refusal.

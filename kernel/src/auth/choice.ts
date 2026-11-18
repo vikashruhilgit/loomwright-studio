@@ -1,4 +1,4 @@
-// The owner's choice of auth provider (D48): which provider the kernel's
+// The owner's choice of auth provider (D42): which provider the kernel's
 // sessions run on, kept as an inspectable file, `<dataDir>/config/auth.json`
 // (`{"provider": "<id>"}`). Mechanism only: the kernel never picks for the
 // owner beyond the build default when nothing is chosen. The file never holds a

@@ -145,10 +145,10 @@ export interface ApiServerOptions {
    * methods of. Default none: the request then carries no `sessions`.
    */
   readonly sessionManager?: SessionManager;
-  /** The owner's auth provider controls (D48), passed on every contributed route request as `auth`. Default none. */
+  /** The owner's auth provider controls (D42), passed on every contributed route request as `auth`. Default none. */
   readonly authControl?: AuthControl;
   /**
-   * The build's other providers (D48), listed after `authProviders` only in the `StatusView` the Settings route reads,
+   * The build's other providers (D42), listed after `authProviders` only in the `StatusView` the Settings route reads,
    * never in `/status`: each `health()` is a Keychain subprocess, and `/status` is polled. Default none.
    */
   readonly otherAuthProviders?: readonly AuthProvider[];

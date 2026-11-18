@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// D48: the provider choice and the API key field, rendered against a stub bridge.
+// D42: the provider choice and the API key field, rendered against a stub bridge.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiRequest, StudioBridge } from "../../api/contract";
@@ -37,7 +37,7 @@ function bridge(answer: (req: ApiRequest) => { status: number; body: unknown }) 
   return { api, calls };
 }
 
-describe("ProviderChoice (D48)", () => {
+describe("ProviderChoice (D42)", () => {
   it("marks the provider in use and offers the other, then sends the switch and says the kernel is restarting", async () => {
     const { api, calls } = bridge(() => ({ status: 202, body: { in_use: "subscription-token", chosen: "api-key", restarting: true } }));
     render(<ProviderChoice api={api} view={view()} offline={false} onChanged={() => {}} />);

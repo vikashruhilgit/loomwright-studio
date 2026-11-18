@@ -118,9 +118,9 @@ export interface SettingsView {
     readonly health: HealthState;
     readonly tokenCreatedAt: string | null;
   };
-  /** D48: every provider the build has, the in-use one first. Empty from an older kernel. */
+  /** D42: every provider the build has, the in-use one first. Empty from an older kernel. */
   readonly providers: readonly { readonly id: string; readonly account: string | null; readonly health: HealthState; readonly inUse: boolean }[];
-  /** D48: what picked the in-use provider; `flag` and `env` override the owner's choice. `null` when unknown. */
+  /** D42: what picked the in-use provider; `flag` and `env` override the owner's choice. `null` when unknown. */
   readonly providerSource: "flag" | "env" | "choice" | "default" | null;
   readonly dataDir: string;
   /** `terminal-notifier`, `osascript` or `none`; a word this build does not know is kept as inert text. */
@@ -152,7 +152,7 @@ function healthOf(raw: unknown): HealthState | undefined {
   }
 }
 
-/** D48's provider list, field by field: an entry that is not the contract's shape is left out. */
+/** D42's provider list, field by field: an entry that is not the contract's shape is left out. */
 function providersOf(raw: unknown): SettingsView["providers"] {
   if (!Array.isArray(raw)) return [];
   const out: SettingsView["providers"][number][] = [];

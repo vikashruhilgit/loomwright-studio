@@ -72,7 +72,7 @@ async function get(api: ApiServer, auth = true): Promise<{ status: number; text:
 }
 
 describe("the settings part (phase 7 item 08)", () => {
-  it("is the sixth gui part, holds the read route and the two auth routes (D48), none unauthenticated", () => {
+  it("is the sixth gui part, holds the read route and the two auth routes (D42), none unauthenticated", () => {
     expect(GUI_PARTS[5]).toBe(settingsPart);
     expect(settingsPart.name).toBe("settings");
     expect(settingsPart.routes).toBe(settingsRoutes);

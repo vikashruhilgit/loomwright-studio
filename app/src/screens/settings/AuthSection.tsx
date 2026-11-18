@@ -5,7 +5,7 @@
 //   exists its creation day and life. The Token row says where the value is kept and that
 //   it is never shown. There is no sign-in and no field for the subscription token in this
 //   file (invariants 6 and 7, D27): that token is made in the owner's own terminal. Below
-//   the rows, `ProviderChoice` (D48) lets the owner pick the provider every session runs on
+//   the rows, `ProviderChoice` (D42) lets the owner pick the provider every session runs on
 //   and store an API key.
 // - "Change it in your terminal": the three commands of the first-run screen
 //   (`SETUP_STEPS`, reused, never copied), each with a Copy button.
@@ -53,7 +53,7 @@ export interface AuthSectionProps {
   readonly now: Date;
   /** The kernel is unreachable (the screen's own flag, the one that disables Reveal): a held Health is drawn neutral and marked last known. */
   readonly offline: boolean;
-  /** D48: the provider choice drawn under the rows (`ProviderChoice`); `null` while there is no view. */
+  /** D42: the provider choice drawn under the rows (`ProviderChoice`); `null` while there is no view. */
   readonly choice?: ReactNode;
 }
 

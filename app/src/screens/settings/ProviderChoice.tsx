@@ -1,4 +1,4 @@
-// D48: the owner chooses which auth provider every session runs on, and stores an API key.
+// D42: the owner chooses which auth provider every session runs on, and stores an API key.
 //
 // - "Use for all sessions" sends `PUT /settings/auth-provider`. The kernel refuses while a
 //   session runs (switching restarts it), while a flag or env var picks the provider, or
@@ -54,7 +54,7 @@ export function choiceNote(status: number, body: unknown, provider: string): Not
 export function keyNote(status: number, body: unknown): Note {
   if (status === 0) return { tone: "danger", text: "The kernel did not answer, so the key was not stored. Enter it again." };
   if (status === 200) return { tone: "ok", text: `Stored in the Keychain as ${API_KEY_KEYCHAIN_ITEM}. Studio never shows it again.` };
-  if (refusalCode(body) === "invalid_key") return { tone: "danger", text: "That key is empty or has spaces or characters a key can't have. Nothing was stored." };
+  if (refusalCode(body) === "invalid_key") return { tone: "danger", text: "That isn't a whole API key: it starts sk-ant-, is longer than 80 characters, and has no spaces. A subscription token (sk-ant-oat…) can't go here. Nothing was stored." };
   if (refusalCode(body) === "keychain_write_failed") return { tone: "danger", text: "The Keychain refused the write. Nothing was stored." };
   return { tone: "danger", text: `The kernel refused the key (${status}). Nothing was stored.` };
 }

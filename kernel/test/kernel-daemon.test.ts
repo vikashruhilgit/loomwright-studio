@@ -111,9 +111,9 @@ describe("startKernel", () => {
     const res = await fetch(`http://127.0.0.1:${kernel.api.port}/status`, { headers: { Authorization: `Bearer ${token as string}` } });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { auth: unknown[]; kill_switch: unknown };
-    // Only the in-use provider: each health is a Keychain read and `/status` is polled; Settings lists the others (D48).
+    // Only the in-use provider: each health is a Keychain read and `/status` is polled; Settings lists the others (D42).
     expect(body.auth).toEqual([{ id: "stub-provider", account: "owner@example.test", health: { status: "ok" } }]);
-    // Settings, which is read on demand, lists every provider the build has (D48), the in-use one first.
+    // Settings, which is read on demand, lists every provider the build has (D42), the in-use one first.
     const settings = (await (await fetch(`http://127.0.0.1:${kernel.api.port}/settings`, { headers: { Authorization: `Bearer ${token as string}` } })).json()) as { providers: { in_use: boolean }[] };
     expect(settings.providers).toHaveLength(2); // the stub names every provider "stub-provider", so in_use is not told apart here
     expect(body.kill_switch).toEqual({ engaged: false, since: null });
@@ -232,7 +232,7 @@ describe("startKernel", () => {
     expect(kinds).toEqual(["event_done"]);
   });
 
-  it("selects the owner's recorded choice (D48) over the build default, and a flag or env var over the choice", async () => {
+  it("selects the owner's recorded choice (D42) over the build default, and a flag or env var over the choice", async () => {
     writeAuthChoice(dataDir, "api-key");
     const c = deps();
     const chosen = await start(options(), c.d);
@@ -262,7 +262,7 @@ describe("startKernel", () => {
     await (await start(options(), c.d)).stop();
     const dist = deps({ availableProviderIds: async () => ["api-key"] });
     await (await start(options(), dist.d)).stop();
-    // The first selection is the in-use provider; the rest are built for their health only (D48).
+    // The first selection is the in-use provider; the rest are built for their health only (D42).
     expect([a.selected[0], b.selected[0], c.selected[0], dist.selected[0]]).toEqual(["api-key", "api-key", "subscription-token", "api-key"]);
   });
 

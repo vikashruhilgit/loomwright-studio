@@ -87,7 +87,7 @@ export interface KernelOptions {
   readonly contributions?: readonly FeatureContribution[];
   /**
    * Called (after the answer is sent) when the owner switches the auth provider
-   * in Settings (D48): it must stop the kernel gracefully and have it start
+   * in Settings (D42): it must stop the kernel gracefully and have it start
    * again, so the new choice applies. The daemon wires it only under launchd,
    * whose KeepAlive starts the kernel again. Absent: the choice is recorded and
    * applies at the next start.
@@ -368,7 +368,7 @@ export function agentLimitsFor(dataDir: string): (agent: string) => AgentLimitsL
  * the same way, named: the phase 1 tools when they fail to list alone,
  * else the failing contributed ones); open
  * the `Store` (taking its lock); select
- * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the owner's choice in `config/auth.json` (D48), else the
+ * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the owner's choice in `config/auth.json` (D42), else the
  * build default); the `Budget` (each agent's limits read from its settings
  * file, `agentLimitsFor`); the `SessionManager` (wired to the budget and
  * given the kernel MCP server per launch); reap orphans left by an earlier
@@ -432,7 +432,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
 
   try {
     const keychain = deps.keychain ?? securityCliKeychain();
-    // D48: the flag, then the env var, then the owner's recorded choice (when this build has it), then the build default.
+    // D42: the flag, then the env var, then the owner's recorded choice (when this build has it), then the build default.
     const listProviders = deps.availableProviderIds ?? availableProviderIds;
     const available = await listProviders();
     const flagId = nonEmpty(options.authProviderId);
@@ -538,7 +538,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         // The whole manager, for contributed routes (`ContributedRouteRequest.sessions`).
         sessionManager: manager,
         loop: eventLoop,
-        // `/status` reports the in-use provider only; Settings also lists the others (D48), each health a Keychain read.
+        // `/status` reports the in-use provider only; Settings also lists the others (D42), each health a Keychain read.
         authProviders: [authProvider],
         otherAuthProviders: otherProviders,
         authControl,

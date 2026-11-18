@@ -4,8 +4,8 @@
 // API token: none sets `unauthenticated`. The route is read-only: nothing is written.
 //
 //   GET /settings                {provider, providers, provider_source, data_dir, notifier, loomwright}
-//   PUT /settings/auth-provider  {provider}  the owner's choice of provider (D48)
-//   PUT /settings/api-key        {key}       store the owner's API key in the Keychain (D48)
+//   PUT /settings/auth-provider  {provider}  the owner's choice of provider (D42)
+//   PUT /settings/api-key        {key}       store the owner's API key in the Keychain (D42)
 //
 // The two PUTs are the owner's own settings, made in the app: the key is
 // written to the Keychain and never echoed, logged or put in an event. A switch
@@ -33,7 +33,7 @@ import { API_KEY_KEYCHAIN_SERVICE, API_KEY_PROVIDER_ID } from "../auth/api-key.j
 import { writeAuthChoice } from "../auth/choice.js";
 import { WRITE_ARG } from "../auth/keychain.js";
 import { readProviderMetadata } from "../auth/metadata.js";
-import { isPlausibleApiKey } from "../auth/token-shape.js";
+import { isWholeApiKey } from "../auth/token-shape.js";
 import { chooseNotifier } from "../notifications/notifier.js";
 import type { NotifierChoice } from "../notifications/notifier.js";
 import type { GuiPart } from "./types.js";
@@ -86,7 +86,7 @@ async function settings(req: ContributedRouteRequest): Promise<ContributedRouteR
         health: provider.health,
         token_created_at: tokenCreatedAt(req, provider.id),
       },
-      // Every provider this build has, the in-use one first (D48); `chosen` is the recorded choice.
+      // Every provider this build has, the in-use one first (D42); `chosen` is the recorded choice.
       providers: all.map((p) => ({ id: p.id, account: p.account, health: p.health, in_use: p.id === provider.id })),
       provider_source: req.auth?.source ?? null,
       data_dir: req.store.dataDir,
@@ -157,8 +157,9 @@ async function chooseProvider(req: ContributedRouteRequest): Promise<Contributed
  * `PUT /settings/api-key {key}`: replace the Keychain item the `api-key`
  * provider reads, then read it back (the only proof it was stored). The key is
  * never echoed, logged or recorded; refusals name the field, never the value.
- * `400 invalid_key` (empty, whitespace, or a character the Keychain writer
- * cannot take); `500 keychain_write_failed`. Appends `auth_api_key_set` (no
+ * `400 invalid_key` (not a whole API key, `isWholeApiKey`: no `sk-ant-` prefix,
+ * a subscription token, 80 characters or fewer, whitespace, or a character the
+ * Keychain writer cannot take); `500 keychain_write_failed`. Appends `auth_api_key_set` (no
  * key). The provider in use is not changed.
  */
 async function setApiKey(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
@@ -167,8 +168,8 @@ async function setApiKey(req: ContributedRouteRequest): Promise<ContributedRoute
   if (!auth.available.includes(API_KEY_PROVIDER_ID)) return { status: 400, body: { error: "unknown_provider", available: auth.available } };
   const key = bodyField(req.body, "key");
   if (key === undefined) return { status: 400, body: { error: "invalid_body", message: "the body is {key}, the API key" } };
-  if (!isPlausibleApiKey(key) || !WRITE_ARG.test(key)) {
-    return { status: 400, body: { error: "invalid_key", message: "the key is empty, has whitespace, or has a character the Keychain cannot take" } };
+  if (!isWholeApiKey(key) || !WRITE_ARG.test(key)) {
+    return { status: 400, body: { error: "invalid_key", message: "not a whole API key: it starts sk-ant- (not a sk-ant-oat subscription token), is longer than 80 characters, and has no whitespace or character the Keychain cannot take" } };
   }
   try {
     auth.keychainDeleter.delete(API_KEY_KEYCHAIN_SERVICE);
