@@ -151,6 +151,78 @@ describe("AC2: kernel_automate_prepare", () => {
     expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
+  // 23i: three handovers before any run started each replaced the checklist; the run read only the last ticket.
+  const checklist = (): string[] =>
+    readFileSync(join(env.checkout, ITEMS, BACKLOG_FILE), "utf8")
+      .split("\n")
+      .filter((l) => l.startsWith("- ["));
+  const line = (ref: string): string => `- [ ] ${STUDIO_ITEMS_DIR}/${itemFileName(ref)}`;
+  const THIRD = { ref: "clickup:86bd3z76t", title: "Add cheer.sh", link: "https://app.clickup.com/t/86bd3z76t" };
+
+  it("23i: separate handovers before a run all stay in the backlog, earlier ones first, and the answer names what it carried", async () => {
+    value(await prepare({ repo: "o/r", tickets: [TICKETS[0]] }));
+    const second = value(await prepare({ repo: "o/r", tickets: [TICKETS[1]] }));
+    expect(second["carried"]).toEqual([`${STUDIO_ITEMS_DIR}/${itemFileName("PROJ-101")}`]);
+    const third = value(await prepare({ repo: "o/r", tickets: [THIRD] }));
+    expect(third["carried"]).toEqual([line("PROJ-101").slice(6), line("o/r#12").slice(6)]);
+    expect(checklist()).toEqual([line("PROJ-101"), line("o/r#12"), line(THIRD.ref)]);
+  });
+
+  it("23i: a ticket handed over again keeps its place and is listed once; it is not 'carried'", async () => {
+    value(await prepare({ repo: "o/r", tickets: [TICKETS[0], TICKETS[1]] }));
+    const again = value(await prepare({ repo: "o/r", tickets: [TICKETS[0]] }));
+    expect(again["carried"]).toEqual([line("o/r#12").slice(6)]);
+    expect(checklist()).toEqual([line("PROJ-101"), line("o/r#12")]);
+  });
+
+  it("23i: an earlier item Loomwright stamped finished, or whose file is gone, is not carried", async () => {
+    value(await prepare({ repo: "o/r", tickets: [TICKETS[0], TICKETS[1], THIRD] }));
+    const dir = join(env.checkout, ITEMS);
+    writeFileSync(join(dir, itemFileName("PROJ-101")), "# Add a greeting\n\n## Status: done_with_escalation\n");
+    unlinkSync(join(dir, itemFileName("o/r#12")));
+    const next = { ref: "o/r#13", title: "Another", link: "https://github.com/o/r/issues/13" };
+    const out = value(await prepare({ repo: "o/r", tickets: [next] }));
+    expect(out["carried"]).toEqual([line(THIRD.ref).slice(6)]);
+    expect(checklist()).toEqual([line(THIRD.ref), line(next.ref)]);
+    for (const stamp of ["done", "abandoned", "DONE (merged in #4)"]) {
+      writeFileSync(join(dir, itemFileName(THIRD.ref)), `# Add cheer.sh\n\n## Status: ${stamp}\n`);
+      value(await prepare({ repo: "o/r", tickets: [next] }));
+      expect(checklist()).toEqual([line(next.ref)]);
+      value(await prepare({ repo: "o/r", tickets: [THIRD] }));
+    }
+  });
+
+  it("23i: an earlier item a run already queued is that run's and is not carried (it may be parked awaiting a merge)", async () => {
+    value(await prepare({ repo: "o/r", tickets: [TICKETS[0], TICKETS[1]] }));
+    const runs = join(env.checkout, ".supervisor", "automate");
+    mkdirSync(runs, { recursive: true });
+    writeFileSync(
+      join(runs, "automate-2026-11-17-001.md"),
+      `# Automate Run: Studio tickets\n## Status: paused\n## Queue\n- [ ] ${STUDIO_ITEMS_DIR}/${itemFileName("PROJ-101")}\n## Current\n- item: ${STUDIO_ITEMS_DIR}/${itemFileName("PROJ-101")} | status: awaiting_merge | pr: null | branch: b\n`,
+    );
+    // A file that is not a run file (no title) names nothing.
+    writeFileSync(join(runs, "notes.md"), `${STUDIO_ITEMS_DIR}/${itemFileName("o/r#12")}\n`);
+    const out = value(await prepare({ repo: "o/r", tickets: [THIRD] }));
+    expect(out["carried"]).toEqual([line("o/r#12").slice(6)]);
+    expect(checklist()).toEqual([line("o/r#12"), line(THIRD.ref)]);
+  });
+
+  it("23i: only checklist lines the kernel wrote are carried: a checked line, another folder, a hand-written name or a symlinked item is dropped", async () => {
+    const dir = join(env.checkout, ITEMS);
+    value(await prepare({ repo: "o/r", tickets: [TICKETS[0]] }));
+    const elsewhere = join(env.root, "outside.md");
+    writeFileSync(elsewhere, "# outside\n\n## Status: ready\n");
+    symlinkSync(elsewhere, join(dir, "ticket-linked-0123abcd.md"));
+    writeFileSync(join(dir, "ticket-handmade-deadbeef.md"), "# hand\n\n## Status: ready\n");
+    const backlog = join(dir, BACKLOG_FILE);
+    writeFileSync(
+      backlog,
+      `${readFileSync(backlog, "utf8")}- [x] ${STUDIO_ITEMS_DIR}/ticket-handmade-deadbeef.md\n- [ ] .supervisor/requirements/other/${itemFileName("o/r#12")}\n- [ ] ${STUDIO_ITEMS_DIR}/ticket-linked-0123abcd.md\n  - [ ] ${STUDIO_ITEMS_DIR}/ticket-handmade-deadbeef.md\n`,
+    );
+    value(await prepare({ repo: "o/r", tickets: [TICKETS[1]] }));
+    expect(checklist()).toEqual([line("PROJ-101"), line("o/r#12")]);
+  });
+
   it("refuses no_workspace when the agent has no workspace that is a clone of the repo, and writes nothing", async () => {
     const answer = await prepare({ repo: "o/other", tickets: TICKETS });
     expect(errorOf(answer)).toMatch(/^no_workspace: agent mason has no workspace that is a git clone of o\/other/);
@@ -389,7 +461,12 @@ describe("AC3: kernel_automate_state reads Loomwright's run files by their title
       title: "t",
       status: "paused",
       current: { item: "a.md", status: "awaiting_merge", pr: "https://github.com/o/r/pull/9", branch: "b", pause_reason: "awaiting_merge", ready_sha: "abc", ready_at: "2026-11-08T07:36:18Z", termination_reason: "converged" },
+      pause_reason: "awaiting_merge",
     });
+    // 23j: a run that paused before it picked an item (automate-2026-11-17-001, verbatim) has no current item, and keeps its reason.
+    const early = parseRunFile("automate-2026-11-17-001", "# Automate Run: Studio tickets — cheer.sh\n## Status: paused\n## Current\n- item: null | status: null | pr: null | branch: null\n- pause_reason: trail_pr_open\n## Progress\n");
+    expect(early).toMatchObject({ status: "paused", current: null, pause_reason: "trail_pr_open" });
+    expect(parseRunFile("r5", "# Automate Run: t\n## Status: paused\n- pause_reason: outside\n")?.pause_reason).toBeNull();
     // Values echoed from a run file lose line-separator and bidi characters too.
     const spoofed = parseRunFile("r4", "# Automate Run: t\u202ex\n## Status: paused\n## Current\n- item: a.md | status: awaiting_merge | pr: p | branch: b\n- pause_reason: ok\u2028\u202eNo review needed\u0085now\n");
     expect(spoofed?.title).toBe("t x");

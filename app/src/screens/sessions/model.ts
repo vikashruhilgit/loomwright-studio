@@ -13,6 +13,7 @@
 import type { SessionOutputRow, SessionStatus, SessionSummary } from "../../api/contract";
 import type { StreamingLogLine } from "../../components/StreamingLog/StreamingLog";
 import { payloadText, printable } from "../approvals/printable";
+import { countText, timeText } from "../../components/format";
 
 /** The statuses in which a session is still running: Stop and Kill apply, the log is live. */
 export const LIVE_STATUSES: readonly SessionStatus[] = ["starting", "running"];
@@ -102,7 +103,7 @@ export function sessionTitle(session: Pick<SessionSummary, "id" | "title">): str
 
 /** `14,208 tokens`, or `—` when the kernel has no count. */
 export function tokensText(tokens: number | null): string {
-  return tokens === null ? "—" : `${tokens.toLocaleString("en-US")} tokens`;
+  return tokens === null ? "—" : `${countText(tokens)} tokens`;
 }
 
 /** A duration: `4m 07s` under an hour, `1h 02m` from there; `—` when unknown. */
@@ -205,7 +206,7 @@ function cutSuffix(payload: Record<string, unknown>): string {
 export function lineTime(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return "";
-  return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+  return timeText(at, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 }
 
 /** A `tool_decision` row: the kernel's decision and its reason, inline. */

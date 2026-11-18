@@ -4,6 +4,7 @@
 // docs/design/design-system/components/Avatar/preview.html and the rules in
 // that component's README. Non-interactive: `role="img"` with the label as
 // both `aria-label` and the `title` tooltip.
+import { useEffect, useRef } from "react";
 import type { CSSProperties, ReactElement } from "react";
 import "./Avatar.css";
 import { CREW_CREATURES, CREW_HUES, SHAPES, WHALE_CROWN, crownPath, seedOf, threadPaths } from "./creatures";
@@ -73,6 +74,42 @@ export interface AvatarProps {
   readonly size?: number;
   /** The agent's current action, appended to the label ("Mason · waiting on you · {action}"). */
   readonly action?: string;
+  /**
+   * The avatar shows an agent's CURRENT state (a crew row, a Team card, the inspector) for an agent that is on. Only
+   * then does `idle` sway: an idle avatar anywhere else (a finished card, a chat message, a folder mark, a picker, a
+   * crew member that is off) is still, its thread's shape alone carrying the state, as under reduced motion. The
+   * other states keep their motion wherever they are drawn: it says something is happening.
+   */
+  readonly live?: boolean;
+}
+
+/**
+ * Why `idle` motion is opt-in (2026-11-17, measured): every avatar animated forever, wherever it was drawn, and SVG
+ * part animations are redrawn by the CPU every frame. Visible on Tasks with 199 finished cards, the renderer used
+ * ~69% CPU with motion on and ~0.7% with Reduce motion on; 14 idle crew rows alone kept it near 35% on any screen.
+ * So the number of moving avatars follows what is happening, never the length of a list.
+ */
+export function avatarIsStill(state: AvatarState, live: boolean | undefined): boolean {
+  return state === "idle" && live !== true;
+}
+
+/** One observer for every avatar: an avatar out of the viewport gets `data-offscreen`, which pauses its animations (CSS). */
+let offscreenObserver: IntersectionObserver | null | undefined;
+
+function observerOf(): IntersectionObserver | null {
+  if (offscreenObserver === undefined) {
+    offscreenObserver =
+      typeof IntersectionObserver === "function"
+        ? new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+              // Set on the element itself, never through React state: no avatar re-renders when the list scrolls.
+              if (entry.isIntersecting) entry.target.removeAttribute("data-offscreen");
+              else entry.target.setAttribute("data-offscreen", "");
+            }
+          })
+        : null;
+  }
+  return offscreenObserver;
 }
 
 function isCrewCreature(shape: string | undefined): shape is CrewCreature {
@@ -111,6 +148,25 @@ function clampSize(size: number | undefined): number {
   return Math.max(MIN_AVATAR_SIZE, size);
 }
 
+/**
+ * Why the moving parts are HTML layers, each holding its own copy of the viewBox (2026-11-18, measured live).
+ * The design animates `transform` on `<g>` groups inside one SVG. Chromium cannot hand an animation inside an SVG
+ * to the compositor, so every display frame (120 Hz here) ran style, layout and paint for the whole page on the
+ * main thread: on Tasks, two moving avatars held the renderer at ~38% CPU, and pausing only the in-SVG animations
+ * took it to ~3% while the HTML ring kept animating. A `transform` animation on an HTML element runs on the
+ * compositor thread with no main-thread frame at all, so drift, rig, tail and the stitch ring's spin are spans.
+ * The layers stack exactly as the groups nested: every layer fills the root, and each SVG shares the viewBox.
+ */
+const VIEW_BOX = "-2 -2 36 36";
+const VIEW_MIN = -2;
+const VIEW_SIZE = 36;
+
+/** A point of the viewBox as a `transform-origin` in percent of the layer, which is the viewBox drawn at full size. */
+export function originOf(x: number, y: number): string {
+  const percent = (v: number): string => `${+(((v - VIEW_MIN) / VIEW_SIZE) * 100).toFixed(4)}%`;
+  return `${percent(x)} ${percent(y)}`;
+}
+
 function Part({ part }: { readonly part: CreaturePart }): ReactElement {
   switch (part.tag) {
     case "path":
@@ -122,7 +178,20 @@ function Part({ part }: { readonly part: CreaturePart }): ReactElement {
   }
 }
 
-export function Avatar({ agent, state, size, action }: AvatarProps): ReactElement {
+export function Avatar({ agent, state, size, action, live }: AvatarProps): ReactElement {
+  const still = avatarIsStill(state, live);
+  const ref = useRef<HTMLSpanElement>(null);
+  // A still avatar runs no animation, so only a moving one is watched for leaving the viewport.
+  useEffect(() => {
+    const el = ref.current;
+    const observer = still ? null : observerOf();
+    if (el === null || observer === null) return;
+    observer.observe(el);
+    return () => {
+      observer.unobserve(el);
+      el.removeAttribute("data-offscreen");
+    };
+  }, [still]);
   const isWright = agent.id === WRIGHT_ID;
   const creature = SHAPES[creatureFor(agent)];
   const [tx, ty] = creature.tail;
@@ -135,24 +204,30 @@ export function Avatar({ agent, state, size, action }: AvatarProps): ReactElemen
   } as CSSProperties;
 
   return (
-    <span className={isWright ? `bot ${state} lead` : `bot ${state}`} style={style} role="img" aria-label={label} title={label}>
+    <span ref={ref} className={`bot ${state}${isWright ? " lead" : ""}${still ? " still" : ""}`} style={style} role="img" aria-label={label} title={label}>
       <span className="ring" aria-hidden="true" />
-      <svg viewBox="-2 -2 36 36">
-        <circle className="stitch" cx="16" cy="16" r="16.5" />
-        <g className="drift">
-          <g className="rig">
+      <span className="layer spin">
+        <svg viewBox={VIEW_BOX}>
+          <circle className="stitch" cx="16" cy="16" r="16.5" />
+        </svg>
+      </span>
+      <span className="layer drift">
+        <span className="layer rig">
+          <svg viewBox={VIEW_BOX}>
             {creature.parts.map((part, index) => (
               <Part key={index} part={part} />
             ))}
             {isWright ? <path className="crown" d={crownPath(WHALE_CROWN)} /> : null}
-            <g className="tail" style={{ transformOrigin: `${tx}px ${ty}px` }}>
+          </svg>
+          <span className="layer tail" style={{ transformOrigin: originOf(tx, ty) }}>
+            <svg viewBox={VIEW_BOX}>
               {STATE_THREADS[state].map((name) => (
                 <path key={name} className={`t ${name}`} d={threads[name]} />
               ))}
-            </g>
-          </g>
-        </g>
-      </svg>
+            </svg>
+          </span>
+        </span>
+      </span>
     </span>
   );
 }

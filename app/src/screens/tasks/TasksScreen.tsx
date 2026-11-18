@@ -22,6 +22,9 @@
 // - A ticket's PR (`ticket_pr`, phase 8 item 14) is placed by `./TicketPrCard.tsx` (open / draft / ready: Working, parked:
 //   Parked, merged / closed: Done today); it sits in "Waiting on you" only while a PENDING merge approval in the shared
 //   `approvals` resource names its PR. The resource is the store's (never a second fetch); with none loaded, nothing waits.
+// - A paused Loomwright run (`GET /automate/paused-runs`, phase 8 item 23j) is a Parked run card after the Parked
+//   column's cards (`./ParkedRunCard.tsx`), read with every read of the board. A read that fails keeps the runs on
+//   screen (a run never vanishes on a hiccup); Resume reads both again whenever the kernel answered it.
 // - Any task state the board does not read (`waiting on owner`) is in the Other
 //   group with its own word; it is never guessed into a column.
 // - The keys: J / K and the arrows move between cards across the columns, Enter
@@ -31,7 +34,7 @@
 //
 // `index.tsx` hands this screen the bridge, so no store hook runs without one.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ApiResult, StudioBridge, TasksResponse } from "../../api/contract";
+import type { ApiResult, PausedRunView, StudioBridge, TasksResponse } from "../../api/contract";
 import { isComposingKey, isEditableTarget } from "../../commands/keyboard";
 import { commandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
@@ -42,6 +45,7 @@ import { useKernelReach, withLastKnown } from "../../shell/last-known";
 import { useLiveStore, useResource } from "../../store/react";
 import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
+import { readPausedRuns, resumePausedRun } from "./ParkedRunCard";
 import { ticketColumnOf, waitingApprovalOf } from "./TicketPrCard";
 import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark, sessionTitles } from "./model";
 import type { Board, BoardCard } from "./model";
@@ -81,6 +85,22 @@ function errorOf(result: ApiResult<unknown>): ReadError | undefined {
   if ("connection" in result) return { kind: "connection" };
   return { kind: "refused", status: result.status, code: printable(String(result.body.error)), message: typeof result.body.message === "string" ? printable(result.body.message) : undefined };
 }
+
+/** `value`, or the previous one when it carries the same JSON: a stable reference for memoized children. */
+function useStableJson<T>(value: T): T {
+  const kept = useRef<{ value: T; json: string } | undefined>(undefined);
+  const json = JSON.stringify(value) ?? "undefined";
+  if (kept.current === undefined || kept.current.json !== json) kept.current = { value, json };
+  return kept.current.value;
+}
+
+/** Whether two kernel answers carry the same data (they are plain JSON, so this is exact). */
+function sameJson(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** How often the parked runs are read again while a Parked run card is shown. */
+export const PAUSED_RUNS_POLL_MS = 10_000;
 
 function useNow(): [number, () => void] {
   const [now, setNow] = useState(() => Date.now());
@@ -125,16 +145,20 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   const roster = agents?.data?.agents;
   // The store's one `approvals` resource (as the Approvals screen reads it): a ticket's PR waits on the pending merge approval that names it.
   const approvalsResource = useResource("approvals", api);
-  const approvals = approvalsResource?.data?.approvals;
+  // Kept by value: a re-read with the same approvals keeps the same array, so the memoized cards do not redraw.
+  const approvals = useStableJson(approvalsResource?.data?.approvals);
   // The store's one `sessions` resource (as the Sessions screen reads it): a session card's title, matched by id.
   const sessionsResource = useResource("sessions", api);
   const sessionList = sessionsResource?.data?.sessions;
-  const titles = useMemo(() => sessionTitles(sessionList), [sessionList]);
+  // Built from the session titles only (by value), so a re-read of the sessions that changes no title keeps the map.
+  const titleSource = useStableJson(sessionList?.map((x) => [x.id, x.title ?? null]));
+  const titles = useMemo(() => sessionTitles(sessionList), [titleSource]);
   const [now, touchNow] = useNow();
 
   // A remount starts from the last board this window read (`./lastKnown.ts`); the first read still replaces it.
   const [data, setData] = useState<TasksResponse | undefined>(() => getLastBoard(api));
   const [readError, setReadError] = useState<ReadError | undefined>();
+  const [pausedRuns, setPausedRuns] = useState<readonly PausedRunView[]>([]);
   const [open, setOpen] = useState<OpenTarget | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [confirmKill, setConfirmKill] = useState(false);
@@ -155,12 +179,14 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   const refetch = useCallback(async (): Promise<void> => {
     seq.current += 1;
     const mine = seq.current;
-    const result = await readTasks(api);
+    const [result, paused] = await Promise.all([readTasks(api), readPausedRuns(api)]);
     if (!mounted.current || mine !== seq.current) return;
+    if (paused.ok) setPausedRuns((last) => sameJson(last, paused.body.runs) ? last : paused.body.runs);
     // Only an answered board is remembered for the next mount.
     if (result.ok) setLastBoard(api, result.body);
-    // A read the kernel did not answer (or refused) never replaces what is on screen.
-    setData((last) => (result.status === 0 ? last : result.ok ? result.body : last));
+    // A read the kernel did not answer (or refused) never replaces what is on screen; an answer equal to what is on
+    // screen keeps the same object, so nothing redraws (most kernel events change no card).
+    setData((last) => (result.status === 0 || !result.ok ? last : last !== undefined && sameJson(last, result.body) ? last : result.body));
     setReadError(errorOf(result));
     touchNow();
   }, [api, touchNow]);
@@ -176,6 +202,33 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   const boardItem = open === null ? undefined : board === undefined ? undefined : cardOrder(board).find((c) => c.item.kind === open.kind && c.item.id === open.id)?.item;
   const card = useOpenCard(api, open, boardItem, eventLog, feedMark, refetch);
   const openItem = card.history?.item ?? boardItem;
+
+  // A parked run leaves the list through a change on disk that no kernel event reports: Loomwright rewrites the run
+  // file and takes the run lock minutes after its session started (the session's own status events came earlier), and a
+  // run started outside Studio sends none at all. So while a Parked run card is shown the runs are read again on a timer,
+  // or the card keeps the word it had at the last event (seen live: a resumed run stayed "Another run is going in this workspace" for its
+  // whole session). No card shown, no timer: a newly paused run arrives with the session-end events that pause it.
+  const pausedShown = pausedRuns.length > 0;
+  useEffect(() => {
+    if (!pausedShown) return;
+    const timer = window.setInterval(() => {
+      void readPausedRuns(api).then((paused) => {
+        if (mounted.current && paused.ok) setPausedRuns((last) => (sameJson(last, paused.body.runs) ? last : paused.body.runs));
+      });
+    }, PAUSED_RUNS_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [api, pausedShown]);
+
+  // A Parked run card's Resume: sent, then the board (and the runs) read again whenever the kernel answered (queued,
+  // or refused because the run moved on), so the card shows the kernel's current word.
+  const resumeRun = useCallback(
+    async (run: PausedRunView): Promise<ApiResult<unknown>> => {
+      const result = await resumePausedRun(api, run);
+      if (result.status !== 0 && mounted.current) void refetch();
+      return result;
+    },
+    [api, refetch],
+  );
 
   // ---- opening and closing a card -----------------------------------------------------------------
 
@@ -379,7 +432,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
     );
   }
 
-  if (board.total === 0) return <TasksEmpty />;
+  if (board.total === 0 && pausedRuns.length === 0) return <TasksEmpty />;
 
   return (
     <TasksFrame state="populated" rootRef={rootRef}>
@@ -396,7 +449,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           Showing the newest {TASKS_LIMIT} cards; older ones are not shown.
         </p>
       )}
-      <BoardView board={board} roster={roster} approvals={approvals} titles={titles} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
+      <BoardView board={board} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
     </TasksFrame>
   );
 }

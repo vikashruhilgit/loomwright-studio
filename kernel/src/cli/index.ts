@@ -519,7 +519,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         // Only now: a failed start keeps the previous version's copy.
         for (const left of removeOldKernelApps(r.dataDir, r.version)) stderr.write(`studio service: warning: could not remove ${left}\n`);
         stdout.write(
-          `studio: service ${r.label} installed and loaded: kernel ${check.version} (pid ${check.pid}) running from ${r.appDir} (${r.plistPath})\n`,
+          `studio: service ${r.label} installed and loaded: kernel ${check.version} (pid ${check.pid}) running from ${r.appDir} (${r.plistPath}); its runs use ${serviceToolsText(r.tools)}\n`,
         );
       } else {
         const r = uninstallService(options, service.deps);
@@ -729,4 +729,11 @@ if (isEntryPoint()) {
   void runCli(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });
+}
+
+/** 23h: where install found each tool a kernel-started run uses, as `gh <path>, git <path>` (`not found` for a missing one). */
+export function serviceToolsText(tools: Readonly<Record<string, string | null>>): string {
+  return Object.entries(tools)
+    .map(([tool, at]) => `${tool} ${at ?? "not found"}`)
+    .join(", ");
 }

@@ -9,7 +9,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { AVATAR_STATES, Avatar, WRIGHT_ID, creatureFor } from "./Avatar";
+import { AVATAR_STATES, Avatar, WRIGHT_ID, avatarIsStill, creatureFor, originOf } from "./Avatar";
 import type { AvatarAgent, AvatarState } from "./Avatar";
 import { CREW_CREATURES, CREW_HUES, SHAPES, seedOf } from "./creatures";
 
@@ -74,9 +74,9 @@ function threadClasses(root: HTMLElement): string[] {
 
 /** The rendered body parts (everything in the rig but the crown and the tail), as tag + attributes. */
 function renderedParts(root: HTMLElement): string[] {
-  const rig = root.querySelector("g.rig");
-  if (rig === null) throw new Error("no g.rig");
-  return [...rig.children].filter((el) => !el.matches(".crown, .tail")).map(describeElement);
+  const rig = root.querySelector(".rig > svg");
+  if (rig === null) throw new Error("no .rig > svg");
+  return [...rig.children].filter((el) => !el.matches(".crown")).map(describeElement);
 }
 
 function describeElement(el: Element): string {
@@ -90,13 +90,14 @@ describe("construction and labels", () => {
     expect(root.tagName).toBe("SPAN");
     expect(root.getAttribute("role")).toBe("img");
     expect(root.querySelector(":scope > span.ring")?.getAttribute("aria-hidden")).toBe("true");
-    const svg = root.querySelector(":scope > svg");
-    expect(svg?.getAttribute("viewBox")).toBe("-2 -2 36 36");
-    const stitch = svg?.querySelector(":scope > circle.stitch");
+    // Every layer is an HTML span drawing the design's viewBox, nested as the design's groups were.
+    const stitch = root.querySelector(":scope > span.layer.spin > svg > circle.stitch");
     expect([stitch?.getAttribute("cx"), stitch?.getAttribute("cy"), stitch?.getAttribute("r")]).toEqual(["16", "16", "16.5"]);
-    expect(svg?.querySelector(":scope > g.drift > g.rig > g.tail")).not.toBeNull();
-    // The loose thread swings from the creature's own tail anchor (the shark's is 2,25).
-    expect(root.querySelector<SVGGElement>("g.tail")?.style.transformOrigin).toBe("2px 25px");
+    expect(root.querySelector(":scope > span.layer.drift > span.layer.rig > svg")).not.toBeNull();
+    expect(root.querySelector(":scope > span.layer.drift > span.layer.rig > span.layer.tail > svg .t")).not.toBeNull();
+    for (const svg of root.querySelectorAll("svg")) expect(svg.getAttribute("viewBox")).toBe("-2 -2 36 36");
+    // The loose thread swings from the creature's own tail anchor (the shark's is 2,25: (2+2)/36, (25+2)/36).
+    expect(root.querySelector<HTMLElement>(".tail")?.style.transformOrigin).toBe("11.1111% 75%");
   });
 
   for (const agent of [WRIGHT, MASON]) {
@@ -397,7 +398,7 @@ describe("no hard-coded colour (Avatar.tsx, Avatar.css, creatures.ts)", () => {
   // component sets --s, --bot and --seed inline), so nothing can re-point --bot or smuggle a colour through one.
   const NON_COLOUR_PROPS = new Set([
     "display", "place-items", "width", "height", "flex", "position", "overflow", "inset", "border-radius",
-    "pointer-events", "opacity", "transform", "transform-origin", "animation", "animation-delay",
+    "pointer-events", "opacity", "transform", "transform-origin", "animation", "animation-delay", "animation-play-state",
     "stroke-width", "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin",
   ]);
   // The only var()s a non-colour declaration may read: the size and the clock the component sets inline.
@@ -515,10 +516,10 @@ describe("no hard-coded colour (Avatar.tsx, Avatar.css, creatures.ts)", () => {
           "--bot": (v) => (agent === WRIGHT ? v === "var(--accent)" : crewTokens.includes(v)),
           "--seed": (v) => /^-\d+(\.\d+)?s$/.test(v),
         };
-        const tailStyle: Record<string, (v: string) => boolean> = { "transform-origin": (v) => /^\d+(\.\d+)?px \d+(\.\d+)?px$/.test(v) };
+        const tailStyle: Record<string, (v: string) => boolean> = { "transform-origin": (v) => /^\d+(\.\d+)?% \d+(\.\d+)?%$/.test(v) };
         for (const el of [root, ...root.querySelectorAll("*")]) {
           for (const attr of colourAttrs) expect(el.getAttribute(attr), `${state} ${el.tagName} ${attr}`).toBeNull();
-          const allowed = el === root ? rootStyle : el.matches("g.tail") ? tailStyle : {};
+          const allowed = el === root ? rootStyle : el.matches("span.tail") ? tailStyle : {};
           const declarations = (el.getAttribute("style") ?? "")
             .split(";")
             .filter((d) => d.trim() !== "")
@@ -555,3 +556,75 @@ function designParts(name: string): string[] {
   const doc = new DOMParser().parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${shape.body}</svg>`, "image/svg+xml");
   return [...doc.documentElement.children].map(describeElement);
 }
+
+// ---- motion that follows what is happening (2026-11-17: ~69% renderer CPU on Tasks, ~0.7% with reduced motion) ----
+
+describe("idle motion is opt-in: only an avatar showing a live agent sways", () => {
+  const MASON: AvatarAgent = { id: "mason", name: "Mason", shape: "crab", hue: "crew-teal" };
+  const span = (c: HTMLElement): HTMLElement => c.querySelector(".bot") as HTMLElement;
+
+  it("an idle avatar is still unless live; every other state keeps its motion wherever it is drawn", () => {
+    for (const state of AVATAR_STATES) {
+      expect(avatarIsStill(state, undefined), state).toBe(state === "idle");
+      expect(avatarIsStill(state, true), state).toBe(false);
+    }
+    const { container: plain } = render(<Avatar agent={MASON} state="idle" />);
+    expect(span(plain).classList.contains("still")).toBe(true);
+    cleanup();
+    const { container: live } = render(<Avatar agent={MASON} state="idle" live />);
+    expect(span(live).classList.contains("still")).toBe(false);
+    cleanup();
+    const { container: working } = render(<Avatar agent={MASON} state="working" />);
+    expect(span(working).classList.contains("still")).toBe(false);
+  });
+
+  it("the still rule stops every part the reduced-motion block stops, hover nod included", () => {
+    const css = read("./Avatar.css");
+    const reduced = /@media \(prefers-reduced-motion: reduce\) \{\s*([^{]+)\{/.exec(css)?.[1] ?? "";
+    const parts = [...reduced.matchAll(/\.bot (\.[a-z]+)/g)].map((m) => m[1]);
+    expect(parts.length).toBeGreaterThan(5);
+    const still = /((?:\.bot\.still[^{]+))\{\s*animation: none !important;/.exec(css)?.[1] ?? "";
+    for (const part of parts) expect(still, part).toContain(`.bot.still ${part}`);
+    expect(still).toContain(".bot.still:hover .rig");
+  });
+
+  it("every transform animation targets an HTML layer, never an element inside an SVG (2026-11-18, measured)", () => {
+    // An animation inside an SVG runs a full main-thread frame at display rate: two moving avatars held Tasks at ~38%
+    // CPU. A transform animation on an HTML layer runs on the compositor (~3% measured with the ring alone moving).
+    const css = read("./Avatar.css").replace(/\/\*[\s\S]*?\*\//g, "");
+    const transforming = new Set(
+      [...css.matchAll(/@keyframes ([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g)].filter((m) => /transform\s*:/.test(m[2] ?? "")).map((m) => m[1]),
+    );
+    expect([...transforming].sort()).toEqual(["beckon", "flutter", "hop", "lean", "nod", "orbit", "ring", "sink", "spin", "stitch-run", "sway", "swirl", "tip"]);
+    const uses = [...css.matchAll(/([^{}]+)\{[^{}]*?animation:\s*([\w-]+)/g)].filter((m) => transforming.has(m[2] ?? ""));
+    expect(uses.length).toBeGreaterThan(10);
+    for (const use of uses) {
+      for (const selector of (use[1] ?? "").split(",").map((x) => x.trim())) {
+        expect(selector, `${use[2]} on ${selector}`).toMatch(/\.(drift|rig|tail|spin|ring)$/);
+      }
+    }
+    // And those classes are the HTML layers (the ring is a span of its own).
+    const root = renderAvatar(MASON, "working");
+    for (const cls of ["drift", "rig", "tail", "spin", "ring"]) expect(root.querySelector(`.${cls}`)?.tagName, cls).toBe("SPAN");
+    // Every animation is one of these compositor-run transform/opacity keyframes: none animates a paint property such
+    // as a stroke's dash offset, which has no compositor path (the working outline dashes cost ~34% alone, measured).
+    const animated = [...css.matchAll(/animation:\s*([\w-]+)/g)].map((m) => m[1]).filter((n) => n !== "none");
+    for (const name of animated) expect(transforming.has(name ?? ""), name).toBe(true);
+    for (const m of css.matchAll(/@keyframes ([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g)) {
+      const props = [...(m[2] ?? "").matchAll(/([\w-]+)\s*:/g)].map((p) => p[1]);
+      expect(props.every((p) => p === "transform" || p === "opacity"), `${m[1]}: ${props.join(",")}`).toBe(true);
+    }
+    // A translation is a percentage of the layer, so it scales with the avatar as the design's viewBox units did.
+    expect(css).not.toMatch(/translate[XY]?\([^)]*px/);
+  });
+
+  it("the tail origin is the creature's anchor as a percentage of the viewBox", () => {
+    expect(originOf(16, 16)).toBe("50% 50%");
+    expect(originOf(16, 29)).toBe("50% 86.1111%");
+    expect(originOf(-2, 34)).toBe("0% 100%");
+  });
+
+  it("an avatar scrolled out of view pauses: data-offscreen pauses its animations", () => {
+    expect(read("./Avatar.css")).toMatch(/\.bot\[data-offscreen\] \*[^{]*\{\s*animation-play-state: paused !important;/);
+  });
+});

@@ -127,3 +127,12 @@
   gap: var(--space-1);
   margin-top: var(--space-1);
 }
+
+/* The Parked run card (item 23j, `./ParkedRunCard.tsx`): the ticket card's frame and footer, with a face that is not a button. */
+.ticket-card .parked-run-face {
+  cursor: default;
+}
+.parked-run-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

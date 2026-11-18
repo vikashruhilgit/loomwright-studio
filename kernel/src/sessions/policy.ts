@@ -21,6 +21,12 @@ export type ToolDecisionReason =
   /** A Bash command longer than `MAX_RAIL_COMMAND_LENGTH`, or naming more path text than `MAX_RAIL_PATH_TEXT`: the rail does not read it, so it is denied. */
   | "bash_command_too_large"
   /**
+   * A run session's `release-refold.sh` call while the project has a `scripts/bump-version.sh` where the script
+   * would run it (repo code past the rail), or with arguments other than none or `--root <absolute dir>` (23q,
+   * `loomwright/release-refold-gate.ts`). Decided in the session gate, which reads the checkout.
+   */
+  | "loomwright_repo_code"
+  /**
    * An outward call in one of the session policy's `never` categories
    * (`boundaryDecision`): denied whatever the policy, never held, never
    * covered by a grant. The hook's reason is `boundaryDenyReason`'s text.

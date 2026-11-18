@@ -248,6 +248,7 @@ function TeamCard({ agent, role, task, idShown, selected, onOpen, cardRef }: Tea
             state={avatar.state}
             size={36}
             action={avatar.action}
+            live={agent.status !== "off"}
           />
         </span>
         <div className="card-heading">

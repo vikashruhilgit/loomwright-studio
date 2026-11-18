@@ -53,6 +53,7 @@ export type RouteOrigin =
   | "p8-item-08"
   | "p8-item-17"
   | "p8-item-18"
+  | "p8-item-23"
   | "github-app";
 
 export interface ContractRoute {
@@ -90,7 +91,8 @@ export interface ContractRoute {
  * Phase 8's routes are `p8-item-NN`, each served by its item: the App upgrade
  * (item 03), the MCP connectors (item 06), the repo merge policy (item 08),
  * thread summarize, summary, start-fresh and rename (item 17) and the saved
- * workspaces' list or lookup, add and remove (item 18). Owner routes too.
+ * workspaces' list or lookup, add and remove (item 18) and a paused Loomwright
+ * run's list and Resume (item 23j, origin `p8-item-23`). Owner routes too.
  */
 export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -165,6 +167,8 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/workspaces", origin: "p8-item-18" },
   { method: "POST", path: "/workspaces", origin: "p8-item-18" },
   { method: "POST", path: "/workspaces/:id/remove", origin: "p8-item-18" },
+  { method: "GET", path: "/automate/paused-runs", origin: "p8-item-23" },
+  { method: "POST", path: "/automate/paused-runs/:run_id/resume", origin: "p8-item-23" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -1744,6 +1748,8 @@ export interface ContractRouteMap {
   "GET /workspaces": Route<SavedWorkspacesQuery, undefined, SavedWorkspacesResponse>;
   "POST /workspaces": Route<NoQuery, SaveWorkspaceBody, SaveWorkspaceResponse>;
   "POST /workspaces/:id/remove": Route<NoQuery, undefined, RemoveWorkspaceResponse>;
+  "GET /automate/paused-runs": Route<NoQuery, undefined, PausedRunsResponse>;
+  "POST /automate/paused-runs/:run_id/resume": Route<NoQuery, PausedRunResumeBody, PausedRunResumeResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;
@@ -1855,6 +1861,69 @@ export interface SaveWorkspaceResponse {
 /** `POST /workspaces/:id/remove`: that row only (404 `not_found` otherwise). No crew member's settings file is read or written. */
 export interface RemoveWorkspaceResponse {
   readonly removed: number;
+}
+
+// ---- Phase 8 item 23j: a paused Loomwright run and its Resume ----------------------------
+// `kernel/src/gui/paused-runs.ts`. A run that parks (for example `pause_reason: trail_pr_open`
+// before it picked an item, so with no PR) is listed from each crew member's workspaces; Resume
+// queues the kernel's own resume run for it. A stranded run (23l: its file still reads `running`
+// while its run lock has no live holder) is listed the same way, with `stranded: true`.
+// Run-file text (title, pause reason, item, PR) is
+// untrusted data: render it as text only.
+
+/** Why a listed paused run can't be resumed now; `null` when Resume is allowed. The same words are the 409 `error`. */
+export type PausedRunBlock = "no_kernel_run" | "run_live" | "resume_queued" | "playbook_not_live" | "agent_not_active" | "kill_switch_engaged" | "lock_settling";
+
+/** One paused run in a crew member's workspace. */
+export interface PausedRunView {
+  readonly agent: string;
+  /** The workspace folder (absolute) the run file is in. */
+  readonly checkout: string;
+  /** The repo of the kernel run that last drained the checkout; `null` without one. */
+  readonly repo: string | null;
+  readonly run_id: string;
+  readonly title: string;
+  readonly pause_reason: string | null;
+  readonly item: string | null;
+  /** The current item's PR URL, as the run file wrote it (untrusted). */
+  readonly pr: string | null;
+  /** 23l: the run file still reads `running` but no lock holder is alive (its session ended mid-item). */
+  readonly stranded: boolean;
+  readonly blocked: PausedRunBlock | null;
+  /**
+   * D46: with `blocked: "lock_settling"`, when Loomwright takes back the stopped holder's run lock (ISO 8601), or
+   * `null` when the lock's age cannot be read. A lock one of the kernel's own ended sessions left never blocks.
+   */
+  readonly resume_at: string | null;
+}
+
+/** A workspace whose run state could not be read. */
+export interface PausedRunUnreadable {
+  readonly agent: string;
+  readonly checkout: string;
+  readonly reason: string;
+}
+
+/** `GET /automate/paused-runs`. */
+export interface PausedRunsResponse {
+  readonly runs: readonly PausedRunView[];
+  readonly unreadable: readonly PausedRunUnreadable[];
+}
+
+/**
+ * `POST /automate/paused-runs/:run_id/resume`: exactly these two keys. Refused with 400 `invalid_run_id` /
+ * `invalid_body`, 404 `not_found` (no such paused run for that agent and checkout), or 409 with a `PausedRunBlock`.
+ */
+export interface PausedRunResumeBody {
+  readonly agent: string;
+  readonly checkout: string;
+}
+
+export interface PausedRunResumeResponse {
+  readonly queue_id: number;
+  readonly run_id: string;
+  readonly agent: string;
+  readonly checkout: string;
 }
 
 // ---- The bridge: what the preload exposes as `window.api` -------------------------------

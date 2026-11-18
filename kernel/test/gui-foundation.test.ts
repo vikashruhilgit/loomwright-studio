@@ -9,7 +9,8 @@ import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../s
 import { GUI_NAME, GUI_PARTS, guiContribution, guiContributionOf } from "../src/gui/index.js";
 import type { GuiPart } from "../src/gui/index.js";
 
-const PART_NAMES = ["tasks", "playbook-history", "schedules", "memory", "budget-audit", "settings"];
+// Phase 8 item 23j added `paused-runs` (the owner's Resume), last.
+const PART_NAMES = ["tasks", "playbook-history", "schedules", "memory", "budget-audit", "settings", "paused-runs"];
 
 describe("the gui feature (phase 7 foundation)", () => {
   it("is tenth in the registry, after integrations and before automate (last), and merges with no conflict", () => {
@@ -22,7 +23,7 @@ describe("the gui feature (phase 7 foundation)", () => {
     expect(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).contributors.at(-2)).toBe("gui");
   });
 
-  it("names its six parts in a fixed order: tasks, playbook-history, schedules, memory, budget-audit, settings", () => {
+  it("names its seven parts in a fixed order: tasks, playbook-history, schedules, memory, budget-audit, settings, paused-runs", () => {
     expect(GUI_NAME).toBe("gui");
     expect(GUI_PARTS.map((p) => p.name)).toEqual(PART_NAMES);
     expect(Object.isFrozen(GUI_PARTS)).toBe(true);

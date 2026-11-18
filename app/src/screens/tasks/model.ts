@@ -23,6 +23,7 @@ import type { EventFrame, PlaybookRun, SessionSummary, TaskBoardGroup, TaskBoard
 import type { BadgeTone } from "../../components/Badge/Badge";
 import { printable } from "../approvals/printable";
 import { sessionTitle } from "../sessions/model";
+import { countText, dateText, timeText } from "../../components/format";
 
 // ---- columns -----------------------------------------------------------------------------
 
@@ -266,7 +267,7 @@ export function clockText(iso: string | null): string {
   if (iso === null) return "";
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return "";
-  return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return timeText(at, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 /** `today 14:10`, or the date and time for an earlier day; `-` when not a time. */
@@ -275,7 +276,7 @@ export function whenText(iso: string | null, now: number): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return printable(iso);
   if (isToday(iso, now)) return `today ${clockText(iso)}`;
-  return `${at.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${clockText(iso)}`;
+  return `${dateText(at, { month: "short", day: "numeric" })} ${clockText(iso)}`;
 }
 
 /** The card's last line after the agent: `since 14:10` while it works, else the time it last changed. */
@@ -296,7 +297,7 @@ export function reasonText(item: Pick<TaskBoardItem, "kind" | "state">): string 
 
 /** `14,208 tokens`, or `-` when the kernel has no count. */
 export function tokensText(tokens: number | null): string {
-  return tokens === null ? "-" : `${tokens.toLocaleString("en-US")} tokens`;
+  return tokens === null ? "-" : `${countText(tokens)} tokens`;
 }
 
 // ---- the open card's facts ------------------------------------------------------------------------

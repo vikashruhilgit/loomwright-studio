@@ -172,7 +172,7 @@ test("AC1: Wright and two crew members are three cards, Wright first as the whal
   expect(whaleBody?.tag).toBe("path");
   const wright = card(page, "Wright");
   await expect(wright.locator(".bot.lead .crown")).toHaveCount(1);
-  await expect(wright.locator("g.rig > path").first()).toHaveAttribute("d", whaleBody?.tag === "path" ? whaleBody.d : "");
+  await expect(wright.locator(".rig > svg > path").first()).toHaveAttribute("d", whaleBody?.tag === "path" ? whaleBody.d : "");
   await expect(card(page, "Mason").locator(".crown")).toHaveCount(0);
   await expect(card(page, "Ada").locator(".crown")).toHaveCount(0);
 

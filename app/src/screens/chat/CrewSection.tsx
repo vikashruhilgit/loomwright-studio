@@ -125,7 +125,7 @@ export function CrewSection({ api: apiProp, registry = commandRegistry }: CrewSe
                     requestComposerFocus(agent.id);
                   }}
                 >
-                  <Avatar agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }} state={state} size={24} />
+                  <Avatar agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }} state={state} size={24} live={!off} />
                   <span className="chat-crew-text">
                     <span className="chat-crew-top">
                       <span className={unread ? "chat-crew-name unread" : "chat-crew-name"}>{agent.display_name}</span>

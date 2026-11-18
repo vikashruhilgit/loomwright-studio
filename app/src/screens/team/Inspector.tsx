@@ -429,7 +429,7 @@ export function Inspector({ api, agent, avatar, detail, wrightSet, connectors, o
   return (
     <aside className="team-insp" aria-labelledby={headingId} data-testid="team-inspector" onKeyDown={onKeyDown}>
       <div className="team-insp-head">
-        <Avatar agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }} state={avatar.state} size={36} action={avatar.action} />
+        <Avatar agent={{ id: agent.id, name: agent.display_name, shape: agent.avatar.shape, hue: agent.avatar.hue }} state={avatar.state} size={36} action={avatar.action} live={agent.status !== "off"} />
         <div className="team-insp-title">
           <h2 className="team-insp-name" id={headingId} ref={headingRef} tabIndex={-1}>
             {agent.display_name}

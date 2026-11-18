@@ -4,9 +4,9 @@
 // `TasksScreen.tsx`'s, and so is the count line, which the shell's title bar draws
 // (`./subtitle.ts`). Every string a card carries (a title, an agent, a state
 // word) is untrusted and passes through `./model.ts`'s escaping.
-import { useCallback, useId } from "react";
+import { memo, useCallback, useId } from "react";
 import type { ReactNode, Ref } from "react";
-import type { Approval, RosterEntry, TaskBoardItem } from "../../api/contract";
+import type { ApiResult, Approval, PausedRunView, RosterEntry, TaskBoardItem } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarAgent, AvatarState } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
@@ -16,6 +16,7 @@ import type { IconName } from "../../components/icons";
 import { printable } from "../approvals/printable";
 import { KIND_LABEL, NO_AGENT, cardAgent, cardLabel, cardOrder, cardTitle, metaText, reasonText, stateText, toneOf } from "./model";
 import type { Board, BoardCard, ColumnId, SessionTitles } from "./model";
+import { ParkedRunCard, parkedRunKey } from "./ParkedRunCard";
 import { TicketPrCard, ticketAvatarState, waitingApprovalOf } from "./TicketPrCard";
 import "./tasks.css";
 
@@ -170,7 +171,35 @@ interface CardViewProps {
   readonly onFocusLost: (key: string) => void;
 }
 
-function CardView({ card, agent, approvals, titles, offline, tabbable, onOpen, onFocused, onFocusLost }: CardViewProps) {
+/**
+ * A card redraws only when what it shows changed (2026-11-17, measured): the board reads `GET /tasks` again on every
+ * kernel event and rebuilds every card object, so without this a busy run session (a tool decision every few
+ * seconds) redrew all of a 200-card board each time and held the renderer at 100%. Compared by value: the item, its
+ * column and key, the avatar's identity, the focus and offline flags; by reference: the approvals, the titles and the
+ * handlers, which the screen keeps stable between reads.
+ */
+function sameCard(a: CardViewProps, b: CardViewProps): boolean {
+  return (
+    a.card.key === b.card.key &&
+    a.card.column === b.card.column &&
+    (a.card.item === b.card.item || JSON.stringify(a.card.item) === JSON.stringify(b.card.item)) &&
+    a.agent.id === b.agent.id &&
+    a.agent.name === b.agent.name &&
+    a.agent.shape === b.agent.shape &&
+    a.agent.hue === b.agent.hue &&
+    a.approvals === b.approvals &&
+    a.titles === b.titles &&
+    a.offline === b.offline &&
+    a.tabbable === b.tabbable &&
+    a.onOpen === b.onOpen &&
+    a.onFocused === b.onFocused &&
+    a.onFocusLost === b.onFocusLost
+  );
+}
+
+const CardView = memo(CardViewInner, sameCard);
+
+function CardViewInner({ card, agent, approvals, titles, offline, tabbable, onOpen, onFocused, onFocusLost }: CardViewProps) {
   const { item, key, column } = card;
   const why = reasonText(item);
   // Reports the card leaving the DOM while it holds focus (a card that moves column is a new element), so the screen hands focus to its new one.
@@ -246,6 +275,10 @@ interface BoardViewProps {
   readonly approvals: readonly Approval[] | undefined;
   /** The kernel's session titles by id (`GET /sessions`, `sessionTitles`): a session card's title, else `Session #<id>`. */
   readonly titles: SessionTitles;
+  /** The kernel's paused Loomwright runs (`GET /automate/paused-runs`): each a Parked run card after the Parked column's cards. */
+  readonly pausedRuns?: readonly PausedRunView[];
+  /** A Parked run card's Resume (`TasksScreen.tsx` sends it and reads the board again). */
+  readonly onResume?: (run: PausedRunView) => Promise<ApiResult<unknown>>;
   readonly offline: boolean;
   readonly activeKey: string | null;
   readonly onOpen: (card: BoardCard) => void;
@@ -253,7 +286,9 @@ interface BoardViewProps {
   readonly onFocusLost: (key: string) => void;
 }
 
-export function BoardView({ board, roster, approvals, titles, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
+const NO_RESUME = async (): Promise<ApiResult<unknown>> => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } });
+
+export function BoardView({ board, roster, approvals, titles, pausedRuns = [], onResume = NO_RESUME, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
   const idBase = useId();
   const order = cardOrder(board);
   const tabKey = order.some((c) => c.key === activeKey) ? activeKey : (order[0]?.key ?? null);
@@ -262,6 +297,7 @@ export function BoardView({ board, roster, approvals, titles, offline, activeKey
       <div className="tasks-board" data-testid="tasks-board">
         {board.columns.map(({ column, cards }) => {
           const labelId = `${idBase}-${column.id}`;
+          const runs = column.id === "park" ? pausedRuns : [];
           return (
             <section
               key={column.id}
@@ -275,9 +311,9 @@ export function BoardView({ board, roster, approvals, titles, offline, activeKey
                 <h2 className="tasks-col-label" id={labelId}>
                   {column.label}
                 </h2>
-                <Badge>{String(cards.length)}</Badge>
+                <Badge>{String(cards.length + runs.length)}</Badge>
               </div>
-              {cards.length === 0 ? (
+              {cards.length + runs.length === 0 ? (
                 <p className="tasks-none">{column.none}</p>
               ) : (
                 <ul className="tasks-cards">
@@ -294,6 +330,9 @@ export function BoardView({ board, roster, approvals, titles, offline, activeKey
                       onFocused={onFocused}
                       onFocusLost={onFocusLost}
                     />
+                  ))}
+                  {runs.map((run) => (
+                    <ParkedRunCard key={parkedRunKey(run)} run={run} agent={avatarAgent(run.agent, roster)} offline={offline} onResume={onResume} />
                   ))}
                 </ul>
               )}

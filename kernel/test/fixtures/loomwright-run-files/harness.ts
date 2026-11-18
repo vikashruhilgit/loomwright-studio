@@ -47,10 +47,14 @@ export function installRunFiles(checkout: string, ...scenarios: readonly Scenari
 }
 
 /** Writes `.supervisor/run.lock/meta` as `run-lock.sh` does (tab-separated), naming `pid` as the holder. */
-export function writeRunLock(checkout: string, pid: number): void {
+/**
+ * A run lock's `meta` as Loomwright 17.38.0 `run-lock.sh` writes it: `ts` in epoch seconds. The default `ts`
+ * (2026-11-14) is far past Loomwright's reclaim age, so a dead `pid` reads as a lock Loomwright takes back (D46).
+ */
+export function writeRunLock(checkout: string, pid: number, ts = 1_794_700_800, sessionId = "s1"): void {
   const dir = join(checkout, ".supervisor", "run.lock");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "meta"), `pid\t${pid}\nowner\tautomate\nsession_id\ts1\nts\t2026-11-09T10:00:00Z\npid_source\tclaude_pid\n`);
+  writeFileSync(join(dir, "meta"), `pid\t${pid}\nowner\tautomate\nsession_id\t${sessionId}\nts\t${ts}\npid_source\tclaude_pid\n`);
 }
 
 /** A crew member's settings file (`config/agents/<id>.json`): the GitHub write grant and `workspaces`. */
@@ -129,7 +133,7 @@ export function toolEnv(prefix = "studio-automate-"): ToolEnv {
       const slug = `pb${++playbooks}`;
       return Number(
         store
-          .prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, version, mode, merge_requirement) VALUES (?, ?, 'mason', 'Hand tickets over', 1, ?, ?)")
+          .prepare("INSERT INTO playbooks (slug, name, owning_agent, intent, version, mode, merge_requirement, status) VALUES (?, ?, 'mason', 'Hand tickets over', 1, ?, ?, 'enabled')")
           .run(slug, slug, mode, mergeRequirement).lastInsertRowid,
       );
     },

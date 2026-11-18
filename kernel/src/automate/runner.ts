@@ -191,6 +191,7 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
         backlog: prepared.backlog,
         invocation: prepared.invocation,
         items: prepared.items,
+        carried: prepared.carried,
         run: "started_by_kernel",
         event: queued.id,
         note: "The kernel starts the run: do not run /automate yourself, and end your turn. `invocation` is what the kernel starts, safe mode: a ready PR parks awaiting_merge and the kernel never merges. It starts nothing while a run is live.",

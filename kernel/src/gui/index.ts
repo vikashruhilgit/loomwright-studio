@@ -2,7 +2,8 @@
 // screens. One contribution built from one part per sub-file, so each phase 7
 // screen item edits only the sub-file it owns: item 03 `tasks.ts`, item 04
 // `playbook-history.ts`, item 05 `schedules.ts`, item 06 `memory.ts`, item 07
-// `budget-audit.ts`, item 08 `settings.ts`. A part is empty until its item
+// `budget-audit.ts`, item 08 `settings.ts`; phase 8 item 23j added
+// `paused-runs.ts` (the owner's Resume). A part is empty until its item
 // fills it in. Every gui route is an owner route that needs the API token:
 // none sets `unauthenticated`. Mechanism only (invariant 1). `startKernel`
 // and `runCli` merge it through `SHIPPED_CONTRIBUTIONS`
@@ -16,6 +17,7 @@ import { consoleContributionOf } from "../console/index.js";
 import type { FeatureContribution } from "../features/contribution.js";
 import { budgetAuditPart } from "./budget-audit.js";
 import { memoryPart } from "./memory.js";
+import { pausedRunsPart } from "./paused-runs.js";
 import { playbookHistoryPart } from "./playbook-history.js";
 import { schedulesPart } from "./schedules.js";
 import { settingsPart } from "./settings.js";
@@ -26,7 +28,7 @@ import type { GuiPart } from "./types.js";
 export const GUI_NAME = "gui";
 
 /** Every part, in merge order: tools, routes, subcommands and due work keep this order. */
-export const GUI_PARTS: readonly GuiPart[] = Object.freeze([tasksPart, playbookHistoryPart, schedulesPart, memoryPart, budgetAuditPart, settingsPart]);
+export const GUI_PARTS: readonly GuiPart[] = Object.freeze([tasksPart, playbookHistoryPart, schedulesPart, memoryPart, budgetAuditPart, settingsPart, pausedRunsPart]);
 
 /**
  * The contribution `parts` make: `name` always, and only the non-empty keys

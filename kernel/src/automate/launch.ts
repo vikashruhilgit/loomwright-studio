@@ -1,19 +1,24 @@
 // The `automate` feature's launch (phase 8 item 20b, D44, which supersedes D43's
 // "the playbook's own run session runs `/automate`; no kernel tool or approval
 // starts a session"): the KERNEL starts Loomwright's commands for a live
-// playbook's crew member, as ordinary kernel-owned SDK sessions. Three kinds
+// playbook's crew member, as ordinary kernel-owned SDK sessions. Four kinds
 // (D44, extended by D45 to `review_pr` and `merge_parked`; phase 8
-// item 22g), one path, one payload key and one work step:
+// item 22g; `resume`, item 23j), one path, one payload key and one work step:
 //   - `backlog`: `/automate` over the tickets `kernel_automate_prepare` wrote
 //     (the default when the payload names no `kind`, so an event queued before
 //     the kinds existed still launches);
 //   - `review_pr`: `/loomwright:review-pr <pr url>`, queued by `kernel_pr_route`
 //     on an `automate_fix` or `review_pr` answer (`./routing.ts`);
 //   - `merge_parked`: `/loomwright:automate --merge-parked <run_id>`, queued by
-//     `kernel_automate_merge_check` on a `go` (`./runner.ts`).
+//     `kernel_automate_merge_check` on a `go` (`./runner.ts`);
+//   - `resume`: `/loomwright:automate --resume <run_id> --inline-phases`, queued
+//     by the owner's Resume on a paused or stranded run (`../gui/paused-runs.ts`),
+//     attributed to the kernel run that last drained the checkout; it starts only
+//     while that run is still `paused`, or `running` with no live lock holder
+//     (23l, `run_not_paused`), and no other run is live (`run_live`).
 //
 // The path, end to end:
-//   1. a crew session's kernel tool queues ONE `message` event whose payload is
+//   1. a crew session's kernel tool (for `resume`, the owner's route) queues ONE `message` event whose payload is
 //      `{agent, automate_run: KernelRunPayload}`: the kind, the repo, the
 //      checkout, the attribution and, per kind, the backlog path, the PR number
 //      or the run id. Nothing from a ticket, a comment or a PR is in it;
@@ -90,16 +95,19 @@ import { isRepoName, loomwrightMergeFlags, TRUST_UNPROTECTED_FLAG } from "../int
 import { isPositiveId, messageOf } from "../loop/internal.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
 import { resolvedPath } from "../protected-paths.js";
-import { SessionError, TERMINAL_STATUSES, isTerminalStatus } from "../sessions/types.js";
+import { SessionError, TERMINAL_STATUSES, isContinuableStatus, isTerminalStatus } from "../sessions/types.js";
 import type { SessionHandle, ToolPolicy } from "../sessions/types.js";
-import { isRunId, readRunState, summarizeRuns } from "./run-state.js";
+import { isRunId, pausedRuns, readRunState, resumeWouldDoubleDrain, summarizeRuns } from "./run-state.js";
+import { deadLockOf, releaseKernelLock } from "../loomwright/run-lock.js";
 import { automateInvocation } from "./tickets-to-items.js";
 
-/** The payload key that marks a `message` event as a kernel-started Loomwright run (any kind). */
-export const AUTOMATE_RUN_KEY = "automate_run";
+// The payload key that marks a `message` event as a kernel-started Loomwright run (any kind); it lives in the
+// SQL-only leaf `./run-sessions.ts` so the approvals store can name it without importing this module.
+import { AUTOMATE_RUN_KEY } from "./run-sessions.js";
+export { AUTOMATE_RUN_KEY };
 
 /** The kinds of kernel-started run, closed in code. An `automate_run` payload with no `kind` is a `backlog` run. */
-export const AUTOMATE_RUN_KINDS = Object.freeze(["backlog", "review_pr", "merge_parked"] as const);
+export const AUTOMATE_RUN_KINDS = Object.freeze(["backlog", "review_pr", "merge_parked", "resume"] as const);
 
 /** One of `AUTOMATE_RUN_KINDS`. */
 export type AutomateRunKind = (typeof AUTOMATE_RUN_KINDS)[number];
@@ -137,14 +145,26 @@ export interface MergeParkedRunPayload extends RunAttribution {
   readonly run_id: string;
 }
 
+/**
+ * What the owner's Resume queues (phase 8 item 23j): one paused run by its id
+ * (`isRunId`), attributed to the crew member, playbook and source session of the
+ * kernel run that last drained the checkout (`./resume.ts`). The run continues
+ * with `/loomwright:automate --resume <run_id> --inline-phases`, safe mode.
+ */
+export interface ResumeRunPayload extends RunAttribution {
+  readonly kind: "resume";
+  readonly run_id: string;
+}
+
 /** Any `automate_run` payload. */
-export type KernelRunPayload = AutomateRunPayload | ReviewPrRunPayload | MergeParkedRunPayload;
+export type KernelRunPayload = AutomateRunPayload | ReviewPrRunPayload | MergeParkedRunPayload | ResumeRunPayload;
 
 /** A checked payload: its kind always set, and the event's agent. */
 type Run =
   | (Omit<AutomateRunPayload, "kind"> & { readonly kind: "backlog"; readonly agent: string })
   | (ReviewPrRunPayload & { readonly agent: string })
-  | (MergeParkedRunPayload & { readonly agent: string });
+  | (MergeParkedRunPayload & { readonly agent: string })
+  | (ResumeRunPayload & { readonly agent: string });
 
 /** The web URL of a pull request, built from a checked repo name and number (never taken from GitHub's answer or a comment). */
 export function pullUrlOf(repo: string, pr: number): string {
@@ -185,11 +205,56 @@ const RUN_TOOLS: readonly string[] = Object.freeze(["Skill", "Read", "Write", "E
  * A script the run calls by another path, or that is not listed, stays denied (a
  * live-run finding, never a wider grant).
  */
-const AUTOMATE_RUN_SCRIPTS: readonly string[] = Object.freeze([
+const AUTOMATE_SCRIPTS: readonly string[] = Object.freeze([
   "automate-dismissed.sh", "automate-helpers.sh", "automate-next-step.sh", "classify-risk.sh", "fix-floor.sh",
   "guard-lane-wait-armed.sh", "lane-policy.sh", "meta-sync.sh", "progress-line-match.sh", "read-token-ledger.sh",
   "resolve-base-branch.sh", "review-heal-next-step.sh", "rules-gate-verdict.sh", "run-lock.sh",
 ]);
+
+/**
+ * The scripts the inline phases call (phase 8 item 23k, owner-approved 2026-11-17).
+ * Under `--inline-phases` the run executes `/autonomous --single-iteration`, which
+ * runs `/launch-pad` and `/supervisor` in the same session; the first live resume
+ * was denied `supervisor-next-step.sh` and `launch-pad-phase.sh`. Derived from the
+ * 17.38.0 install with the same grep over `commands/{autonomous,launch-pad,supervisor}.md`,
+ * `agents/{supervisor,launch-pad,execute-manager,worker,context-keeper,code-reviewer,plan-reviewer,orchestrator,rubric-grader}.md`,
+ * `skills/{autonomous-loop,async-orchestration,supervisor-readiness,state-management,workflow-management,supervisor-config,qa-gates}/`,
+ * `scripts/supervisor-next-step.sh` and `scripts/launch-pad-phase.sh` (44 names
+ * beyond `AUTOMATE_SCRIPTS`), each read one by one. Admitted: local bookkeeping
+ * under `.supervisor/`, readers, local checks, and the Supervisor driver, which
+ * only checks out branches locally and hands `git push` / `gh pr create` back to
+ * the session, where the rail and the approval gate see them. Left out, each for
+ * its reason (a kernel-owned path for each is 23m):
+ * - start a `claude` process the kernel does not own (invariant 2):
+ *   `dispatch-pr-review.sh`, `hook-dispatch-on-pr-create.sh`, `automate-lanes.sh`, `gate-auto.sh`;
+ * - post outward past the approval gate (invariant 3): `send-webhook.sh`;
+ * - run shell command lines read from files the session can write (the brief, the
+ *   rules), which the per-command rail never sees (invariant 3): `run-ground-truth.sh`,
+ *   `rules-check.sh`, `worker-rule-selfcheck.sh`, `run-pin-mutations.sh`, `run-benchmark.sh`;
+ * - persistent memory and contract writes Loomwright keeps for a human-approved
+ *   fact (invariant 3): `write-project-memory.sh`, `write-agent-memory.sh`, `write-system-contract.sh`;
+ * - a hook the harness fires, never the session: `reproject-state-on-terminal.sh`;
+ * - repo-only, or not in the install: `bump-version.sh`, `check-doc-currency.sh`, `ci-local.sh`, `validate-version.sh`.
+ * `release-refold.sh` was left out here until 23q on the belief that the driver runs it; it does not: FINALIZE
+ * tells the session to run it before any push (seen live in session 224, `release_refold_refused`). It is admitted
+ * now, and the session gate refuses it while the project has a `scripts/bump-version.sh` for it to run
+ * (`loomwright/release-refold-gate.ts`).
+ * A session's own `--skip-children-check` or `--skip-preflight-sync` is refused
+ * (`LOOMWRIGHT_DENIED_SUBCOMMANDS`): those are the owner's flags, never the run's.
+ */
+const INLINE_PHASE_SCRIPTS: readonly string[] = Object.freeze([
+  "supervisor-next-step.sh", "launch-pad-phase.sh",
+  "build-state.sh", "emit-progress-event.sh", "check-children-settled.sh", "guard-finalize-publish.sh",
+  "reconcile-resume-state.sh", "heal-review-scope.sh", "checkpoint.sh", "worktree-audit.sh", "worktree-salvage.sh",
+  // 23q: FINALIZE runs it before any push; the session gate admits it only while the project has no bump script.
+  "release-refold.sh",
+  "verify-provides.sh", "exec-acceptance-hash.sh", "module-shape-facts.sh",
+  "read-lessons.sh", "read-orientation.sh", "read-postmortem.sh", "read-project-memory.sh", "read-rules.sh", "read-system-contract.sh",
+  "twin-graph.sh", "build-repo-map.sh", "build-context-digest.sh", "build-insights.sh",
+]);
+
+/** A `/automate --inline-phases` run's scripts: the engine's and its inline phases' (23k). */
+const AUTOMATE_RUN_SCRIPTS: readonly string[] = Object.freeze([...AUTOMATE_SCRIPTS, ...INLINE_PHASE_SCRIPTS]);
 
 /**
  * The run session's policy: what `/automate --inline-phases` is allowed to ask for.
@@ -225,6 +290,8 @@ const REVIEW_PR_RUN_SCRIPTS: readonly string[] = Object.freeze([
   "automate-helpers.sh", "ci-run-probe.sh", "classify-bot-review.sh", "drain-gh-read.sh", "drain-rounds.sh",
   "drain-subfloor-decision.sh", "fix-floor.sh", "guard-arm.sh", "notify-desktop.sh", "pr-postmortem-gather.sh",
   "review-heal-next-step.sh", "rules-gate-verdict.sh", "wait-for-checks.sh", "wrap-external-text.sh",
+  // 23q: the drain runs it before each push; the session gate admits it only while the project has no bump script.
+  "release-refold.sh",
 ]);
 
 /**
@@ -241,13 +308,14 @@ export const REVIEW_PR_RUN_POLICY: ToolPolicy = Object.freeze({
 
 /**
  * The scripts `/loomwright:automate --merge-parked <run_id>` calls, by basename
- * (AC15). `AUTOMATE_RUN_SCRIPTS` (the same command file, skill and driver, and the
- * same exclusions) without `review-heal-next-step.sh` (a merge runs no drain). The
+ * (AC15). `AUTOMATE_SCRIPTS` (the same command file, skill and driver, and the
+ * same exclusions) without `review-heal-next-step.sh` (a merge runs no drain) and
+ * without the inline phases' scripts (a merge runs no phase). The
  * merge itself is Loomwright's `gate-eval` inside the driver; the session's own
  * `automate-helpers.sh gate-eval` is refused (`LOOMWRIGHT_DENIED_SUBCOMMANDS`).
  */
 const MERGE_PARKED_RUN_SCRIPTS: readonly string[] = Object.freeze(
-  AUTOMATE_RUN_SCRIPTS.filter((name) => name !== "review-heal-next-step.sh"),
+  AUTOMATE_SCRIPTS.filter((name) => name !== "review-heal-next-step.sh"),
 );
 
 /**
@@ -282,6 +350,8 @@ const RUN_POLICIES: Readonly<Record<AutomateRunKind, ToolPolicy>> = Object.freez
   backlog: AUTOMATE_RUN_POLICY,
   review_pr: REVIEW_PR_RUN_POLICY,
   merge_parked: MERGE_PARKED_RUN_POLICY,
+  // The same `/automate` command, scripts and safe-mode driver profile as a backlog run: only the entry differs.
+  resume: AUTOMATE_RUN_POLICY,
 });
 
 /** The command the run starts with: Loomwright's `/automate` over the backlog, inline phases, safe mode. */
@@ -300,8 +370,28 @@ export function mergeParkedRunPrompt(runId: string, flags: readonly string[]): s
   return [AUTOMATE_RUN_COMMAND, "--merge-parked", runId, ...flags].join(" ");
 }
 
+/**
+ * 23o: a continuation of a run session, queued when the owner decides an
+ * approval that session asked for (`approvals/store.ts`): the payload is the
+ * session's own launch with `kind: "continue"`, `of` (the kind it was launched
+ * as, whose policy it keeps), `session` (the run session to continue) and
+ * `prompt` (the kernel's decision text). It starts that session's SDK
+ * conversation again (`StartSessionParams.continueFrom`), so the Supervisor
+ * carries on from the held step instead of the item restarting.
+ */
+interface Continuation {
+  readonly session: number;
+  readonly prompt: string;
+}
+
+/** The longest decision text a continuation carries (the kernel writes it; a longer one is refused, never cut). */
+const CONTINUE_PROMPT_MAX = 8000;
+
 /** What the `automate-run` step stores: the run session's id, or no session and why. */
-export type AutomateRunResult = { readonly session_id: number } | { readonly session_id: null; readonly skipped: string };
+export type AutomateRunResult =
+  /** `released_lock_of`: the ended kernel session whose run lock the launch released first (D46). */
+  | { readonly session_id: number; readonly released_lock_of?: number }
+  | { readonly session_id: null; readonly skipped: string };
 
 /** The event's `automate_run` payload, checked; a `TypeError` names what is wrong (the loop fails the event, one notify). */
 function automateRunOf(eventId: number, payload: Readonly<Record<string, unknown>>): Run {
@@ -334,10 +424,20 @@ function automateRunOf(eventId: number, payload: Readonly<Record<string, unknown
   }
   // The PR's repo and number go into a prompt: a checked `<owner>/<name>` and a positive integer, nothing else.
   if (!isRepoName(r.repo)) throw bad("repo, <owner>/<name>");
+  // A resume names the run, never a PR.
+  if (kind === "resume") {
+    if (!isRunId(r.run_id)) throw bad("run_id, a Loomwright run id");
+    return { kind, ...common, run_id: r.run_id };
+  }
   if (!isPositiveId(r.pr)) throw bad("pr, a positive integer");
   if (kind === "review_pr") return { kind, ...common, pr: r.pr };
   if (!isRunId(r.run_id)) throw bad("run_id, a Loomwright run id");
   return { kind: "merge_parked", ...common, pr: r.pr, run_id: r.run_id };
+}
+
+/** The prompt a `resume` run starts with: `/loomwright:automate --resume <run_id> --inline-phases`, and nothing else (safe mode). */
+export function resumeRunPrompt(runId: string): string {
+  return [AUTOMATE_RUN_COMMAND, "--resume", runId, "--inline-phases"].join(" ");
 }
 
 /** The prompt the run starts with: `/loomwright:automate --backlog <path> --inline-phases`. Throws `RangeError` for a path that cannot be quoted. */
@@ -346,7 +446,7 @@ export function automateRunPrompt(backlog: string): string {
 }
 
 /** The id of a non-terminal session this handler started (an `automate-run` step's stored `session_id`) for `agent` in `checkout`, if any. */
-function liveRunSession(store: EventContext["store"], sessions: EventSessions, agent: string, checkout: string): number | undefined {
+function liveRunSession(store: EventContext["store"], sessions: EventSessions, agent: string, checkout: string, except?: number): number | undefined {
   // `sessions.cwd` is the REALPATH of the start cwd (the manager's `resolvedPath`), so compare realpaths: a symlinked
   // workspace (or macOS /tmp, /var) never matches on `resolve()` alone. `resolvedPath` never throws (a missing path
   // resolves as far as it exists), so a deleted checkout compares lexically instead of wedging the event.
@@ -366,7 +466,7 @@ function liveRunSession(store: EventContext["store"], sessions: EventSessions, a
     .pluck()
     .all(agent, ...TERMINAL_STATUSES);
   for (const id of ids) {
-    if (!isPositiveId(id)) continue;
+    if (!isPositiveId(id) || id === except) continue;
     const row = sessions.getSession(id);
     if (row === undefined || row.agent !== agent || row.cwd === null || resolvedPath(row.cwd) !== want) continue;
     if (!isTerminalStatus(row.status)) return id;
@@ -393,6 +493,8 @@ function promptOf(store: EventContext["store"], run: Run, checkout: string): { r
       }
     case "review_pr":
       return { prompt: reviewPrRunPrompt(run.repo, run.pr), policy: RUN_POLICIES.review_pr };
+    case "resume":
+      return { prompt: resumeRunPrompt(run.run_id), policy: RUN_POLICIES.resume };
     case "merge_parked": {
       const flags = loomwrightMergeFlags(store, run.repo);
       const base = flags.includes(TRUST_UNPROTECTED_FLAG) ? MERGE_PARKED_TRUSTED_RUN_POLICY : RUN_POLICIES.merge_parked;
@@ -400,6 +502,23 @@ function promptOf(store: EventContext["store"], run: Run, checkout: string): { r
       return { prompt: mergeParkedRunPrompt(run.run_id, flags), policy: Object.freeze({ ...base, loomwrightRunId: run.run_id }) };
     }
   }
+}
+
+/**
+ * Why a live playbook may not launch a run now, or `undefined`: turned off
+ * (`disabled`), or a `draft` at a newer version than the session the launch
+ * came from, which is a change waiting for the owner's review (any change
+ * makes the playbook a draft until its version is enabled again, and a
+ * playbook's own runs skip it then, `playbooks/runs.ts`). A draft at the same
+ * version is how a playbook the owner's ask starts runs (the phase 8 exit
+ * flow), and is not refused. Seen live 2026-11-17: the owner raised playbook
+ * 18's limit, version 3 became a draft, and a Resume queued from version 2's
+ * run waited behind it. Pure.
+ */
+export function pausedPlaybook(pb: { readonly status: string; readonly version: number }, fromVersion: number | null | undefined): string | undefined {
+  if (pb.status === "disabled") return "turned off";
+  if (pb.status === "draft" && typeof fromVersion === "number" && pb.version > fromVersion) return `a draft at version ${pb.version} waiting for review`;
+  return undefined;
 }
 
 /** Whether `err` is the session manager's refusal of a Loomwright it cannot run with (`loomwright_not_found`, `loomwright_contract`, ...: no row was written). */
@@ -416,16 +535,16 @@ function isLoomwrightRefusal(err: unknown): err is SessionError {
  * (budget or cap) is not caught here: it comes out of the start call inside the
  * step, so the loop parks the event and releases the step for the redelivery.
  */
-async function startRun(ctx: EventContext, run: Run): Promise<AutomateRunResult> {
+async function startRun(ctx: EventContext, run: Run, continuation?: Continuation): Promise<AutomateRunResult> {
   const { store } = ctx;
   const skip = (why: string): AutomateRunResult => ({ session_id: null, skipped: why });
   const sessions = ctx.sessions;
   if (sessions === undefined) return skip("no_session_manager");
 
-  // The playbook is still live and the crew member still on: either may have changed since prepare queued the event.
-  const mode = store.prepare<[number], string>("SELECT mode FROM playbooks WHERE id = ?").pluck().get(run.playbook);
-  if (mode === undefined) return skip("playbook_gone");
-  if (mode !== "live") return skip(`playbook_not_live: playbook ${run.playbook} is in ${mode} mode`);
+  // The playbook is still live and the crew member still on: either may have changed since the event was queued.
+  const pb = store.prepare<[number], { mode: string; status: string; version: number }>("SELECT mode, status, version FROM playbooks WHERE id = ?").get(run.playbook);
+  if (pb === undefined) return skip("playbook_gone");
+  if (pb.mode !== "live") return skip(`playbook_not_live: playbook ${run.playbook} is in ${pb.mode} mode`);
   if (getAgent(store, run.agent)?.status !== "active") return skip(`agent_not_active: ${run.agent}`);
 
   // The calling session: its row names the model (the playbook version's), the playbook version and the task.
@@ -433,6 +552,9 @@ async function startRun(ctx: EventContext, run: Run): Promise<AutomateRunResult>
   if (caller === undefined) return skip("source_session_gone");
   if (caller.agent !== run.agent || caller.playbook !== run.playbook) return skip("source_session_mismatch");
   if (caller.model === null || caller.model === "") return skip("model_unset: the calling session has no model");
+  // Not turned off, and not a change waiting for the owner's review (`pausedPlaybook`).
+  const paused = pausedPlaybook(pb, caller.playbook_version);
+  if (paused !== undefined) return skip(`playbook_not_enabled: playbook ${run.playbook} is ${paused}`);
 
   const read = readAgentSettings(store.dataDir, run.agent);
   if (!read.ok) return skip(`${read.error}: ${read.message}`);
@@ -443,40 +565,97 @@ async function startRun(ctx: EventContext, run: Run): Promise<AutomateRunResult>
   if (!(settings.workspaces ?? []).some((w) => resolve(w) === checkout)) return skip(`workspace_not_listed: ${run.checkout}`);
   const built = promptOf(store, run, checkout);
   if ("skipped" in built) return skip(built.skipped);
-  const { prompt, policy: runPolicy } = built;
+  const { policy: runPolicy } = built;
+  // A continuation keeps its launch kind's policy (and a merge's run-id pin) and says only the owner's decision.
+  const prompt = continuation?.prompt ?? built.prompt;
+
+  // 23o: the session to continue is this crew member's, in this checkout, and has ended (a live one can repeat the
+  // held call itself: a `once` grant matches its next identical call). One the kernel's own restart ended is
+  // `interrupted`, its group confirmed dead: `continueFrom` does not take it, so it is resumed in place instead
+  // (the manager's resume, as the brain resumes an interrupted crew session). An `orphaned` one, or an `abandoned` one
+  // (the owner released an orphaned row the kernel could not verify), may still be running, so nothing continues it
+  // (PR #291 reviews). "Ended" is the manager's own list (`isContinuableStatus`), so the two cannot disagree.
+  let resumeInterrupted = false;
+  if (continuation !== undefined) {
+    const earlier = sessions.getSession(continuation.session);
+    if (earlier === undefined) return skip(`continue_session_gone: session ${continuation.session}`);
+    if (earlier.agent !== run.agent || earlier.cwd === null || earlier.cwd === undefined || resolvedPath(earlier.cwd) !== resolvedPath(checkout)) {
+      return skip(`continue_session_mismatch: session ${continuation.session}`);
+    }
+    if (earlier.status === "orphaned" || earlier.status === "abandoned") {
+      return skip(`continue_session_${earlier.status}: session ${continuation.session} may still be running; the kernel settles it before anything continues it`);
+    }
+    resumeInterrupted = earlier.status === "interrupted";
+    if (!resumeInterrupted && !isContinuableStatus(earlier.status)) return skip(`continue_session_live: session ${continuation.session} can repeat the call itself`);
+  }
+
+  // D46 (23n): a run lock whose holder is dead. The kernel's own (a run session of ours that has ended) is released
+  // here with Loomwright's `run-lock.sh` (host mode's SessionEnd close-out never releases it); any other is left to
+  // Loomwright's reclaim age, and no run starts before it, since Loomwright would only park it `run_lock_held`.
+  const dead = deadLockOf(store, checkout);
+  let releasedLockOf: number | undefined;
+  if (dead.kind === "kernel") {
+    if (!releaseKernelLock(checkout, dead)) return skip(`lock_release_failed: session ${dead.session}'s run lock`);
+    releasedLockOf = dead.session;
+  } else if (dead.kind === "foreign" && (dead.reclaimAt === null || Date.now() / 1000 < dead.reclaimAt)) {
+    return skip(`lock_settling: ${dead.reclaimAt === null ? "the lock's age cannot be read" : `Loomwright reclaims it at ${new Date(dead.reclaimAt * 1000).toISOString()}`}`);
+  }
 
   // Single drain: Loomwright's run state is the authority, and an unreadable one reads as live.
   const state = readRunState(checkout);
   if (!state.ok) return skip(`run_state_unreadable: ${state.reason}`);
-  const summary = summarizeRuns(state);
-  if (summary.state === "live") return skip(`run_live: ${summary.run_id ?? "run lock held"}`);
+  if (continuation !== undefined) {
+    // The run file still reads `running` (the session ended its turn mid-item, holding the approval): that is this
+    // run, not a second drain. Another live kernel run session for the checkout still blocks it (below).
+  } else if (run.kind === "resume") {
+    // 23j: a resume continues exactly the run the owner chose, paused or stranded (23l); one that has since
+    // finished or gone, or that a live lock holder is running, is not resumed. Its own stranded `running` status
+    // is not a second drain; a held lock or another `running` run file is.
+    if (!pausedRuns(state).some((p) => p.run_id === run.run_id)) return skip(`run_not_paused: ${run.run_id}`);
+    if (resumeWouldDoubleDrain(state, run.run_id)) {
+      const other = state.runs.find((r) => r.status === "running" && r.run_id !== run.run_id);
+      return skip(`run_live: ${state.lock.held ? "run lock held" : (other?.run_id ?? "run lock held")}`);
+    }
+  } else {
+    const summary = summarizeRuns(state);
+    if (summary.state === "live") return skip(`run_live: ${summary.run_id ?? "run lock held"}`);
+  }
 
   // Loomwright writes its lock after the session starts, so the run state lags: also refuse while a run session
   // this handler started for the same crew member and checkout is still live. The `automate-run` steps are the
   // record of those sessions (the sessions table keeps no prompt), and a session that has ended no longer blocks.
-  const live = liveRunSession(store, sessions, run.agent, checkout);
+  // The interrupted session being resumed is not another live run: its group is confirmed dead.
+  const live = liveRunSession(store, sessions, run.agent, checkout, resumeInterrupted ? continuation?.session : undefined);
   if (live !== undefined) return skip(`run_session_live: session ${live}`);
 
   // The session is the step's last effect, so an admission refusal leaves nothing to repeat. The manager's
   // Loomwright refusal (no install, or no readable `scripts/`) wrote no row, so it is stored, never retried as is.
   let handle: SessionHandle;
+  const policy = { ...runPolicy, ...(settings.never !== undefined ? { never: settings.never } : {}) };
+  const playbookVersion = caller.playbook_version === null || caller.playbook_version === undefined ? {} : { playbookVersion: caller.playbook_version };
   try {
-    handle = await sessions.startSession({
+    handle = resumeInterrupted && continuation !== undefined
+      ? await sessions.resumeSession(continuation.session, { prompt, permissionMode: settings.permissionMode, cwd: checkout, policy, playbook: run.playbook, ...playbookVersion })
+      : await sessions.startSession({
       agent: run.agent,
       prompt,
       model: caller.model,
       permissionMode: settings.permissionMode,
       cwd: checkout,
-      policy: { ...runPolicy, ...(settings.never !== undefined ? { never: settings.never } : {}) },
+      policy,
       playbook: run.playbook,
-      ...(caller.playbook_version === null || caller.playbook_version === undefined ? {} : { playbookVersion: caller.playbook_version }),
+      ...playbookVersion,
       ...(caller.task_id === null || caller.task_id === undefined ? {} : { task: caller.task_id }),
+      ...(continuation === undefined ? {} : { continueFrom: continuation.session }),
     });
   } catch (err) {
     if (isLoomwrightRefusal(err)) return skip(`loomwright_unresolved: ${err.code}: ${err.message}`);
+    // The manager re-checks a continuation's session (a status the gate above passed can still be refused, e.g. a
+    // `stopped` row whose kill was never confirmed): its refusal is the answer, stored, never a failed event.
+    if (continuation !== undefined && err instanceof SessionError && err.code === "not_resumable") return skip(`continue_session_refused: ${err.message}`);
     throw err;
   }
-  return { session_id: handle.id };
+  return releasedLockOf === undefined ? { session_id: handle.id } : { session_id: handle.id, released_lock_of: releasedLockOf };
 }
 
 /**
@@ -485,6 +664,20 @@ async function startRun(ctx: EventContext, run: Run): Promise<AutomateRunResult>
  * Resolves when the step is stored; it never awaits the session itself.
  */
 export async function handleAutomateRun(ctx: EventContext): Promise<void> {
-  const run = automateRunOf(ctx.event.id, ctx.event.payload);
-  await ctx.runStepAsync("automate-run", () => startRun(ctx, run));
+  const { run, continuation } = launchOf(ctx.event.id, ctx.event.payload);
+  await ctx.runStepAsync("automate-run", () => startRun(ctx, run, continuation));
+}
+
+/** The event's run, and for a `continue` payload (23o) the session to continue and its prompt; the run is the launch's own kind (`of`). */
+function launchOf(eventId: number, payload: Readonly<Record<string, unknown>>): { run: Run; continuation?: Continuation } {
+  const raw = payload[AUTOMATE_RUN_KEY];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw) || (raw as Record<string, unknown>).kind !== "continue") {
+    return { run: automateRunOf(eventId, payload) };
+  }
+  const r = raw as Record<string, unknown>;
+  const bad = (what: string): TypeError => new TypeError(`event ${eventId}: a run continuation needs ${what}`);
+  if (!isPositiveId(r.session)) throw bad("session, a positive integer");
+  if (typeof r.prompt !== "string" || r.prompt === "" || r.prompt.length > CONTINUE_PROMPT_MAX) throw bad(`prompt, a string of 1 to ${CONTINUE_PROMPT_MAX} characters`);
+  if (typeof r.of !== "string" || !(AUTOMATE_RUN_KINDS as readonly string[]).includes(r.of)) throw bad(`of, one of ${AUTOMATE_RUN_KINDS.join(", ")}`);
+  return { run: automateRunOf(eventId, { ...payload, [AUTOMATE_RUN_KEY]: { ...r, kind: r.of } }), continuation: { session: r.session, prompt: r.prompt } };
 }

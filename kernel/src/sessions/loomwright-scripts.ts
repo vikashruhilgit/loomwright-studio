@@ -142,27 +142,31 @@ export const LOOMWRIGHT_DENIED_SUBCOMMANDS: Readonly<Record<string, DeniedSubcom
   // and a session passing it would break `/automate`'s single-drain ownership (invariant 4). run-lock.sh reads its
   // options at any position (review iteration 3).
   "run-lock.sh": Object.freeze({ anyPosition: true, subcommands: Object.freeze(["--force-unlock"]) }),
+  // 23k: the children-settled check and the pre-flight sync are skipped only on the owner's own flag, never on the
+  // session's: both the Supervisor driver and the finalize-gate marker writer read the flags at any position.
+  "supervisor-next-step.sh": Object.freeze({ anyPosition: true, subcommands: Object.freeze(["--skip-children-check", "--skip-preflight-sync"]) }),
+  "guard-finalize-publish.sh": Object.freeze({ anyPosition: true, subcommands: Object.freeze(["--skip-children-check"]) }),
 });
-
-/**
- * An argument word bash passes on exactly as written: no quote, backslash,
- * glob (`*`, `?`, `[`), brace or tilde, so a denied subcommand cannot be
- * spelled past the check (`"gate-eval"`, `gate-ev?l`, `{gate-eval,}`).
- */
-const PLAIN_WORD = /^[A-Za-z0-9_./@%+=:,-]*$/;
 
 /**
  * True when `args` (the text after the script's path, as the session wrote it)
  * asks `script` for a subcommand `LOOMWRIGHT_DENIED_SUBCOMMANDS` refuses, or
- * when a word that must be read is not a `PLAIN_WORD` (fail closed: bash could
- * read it as a denied name). Pure: no I/O.
+ * cannot be read exactly (`shellWords`: fail closed, bash could read it as a
+ * denied name). The words are compared as bash passes them, so a quoted name
+ * (`"gate-eval"`) is still the denied name, a glob or brace (`gate-ev?l`,
+ * `{gate-eval,}`) is refused unread, and a quoted value is read as one word.
+ * That last part is why it reads words, not a plain-word pattern: the
+ * Supervisor driver is answered with `--result '<json>'`, and a rule refusing
+ * every quote or brace refused every answer (seen live in session 215, 23k
+ * follow-up). Pure: no I/O.
  */
 function asksDeniedSubcommand(script: string, args: string): boolean {
   const denied = LOOMWRIGHT_DENIED_SUBCOMMANDS[basenameOf(script)];
   if (denied === undefined) return false;
-  const words = args.split(/[ \t]+/).filter((w) => w !== "");
+  const words = shellWords(args);
+  if (words === undefined) return true;
   const read = denied.anyPosition ? words : words.slice(0, 1);
-  return read.some((w) => !PLAIN_WORD.test(w) || denied.subcommands.some((s) => w === s || w.startsWith(`${s}=`)));
+  return read.some((w) => denied.subcommands.some((s) => w === s || w.startsWith(`${s}=`)));
 }
 
 /**
