@@ -65,6 +65,12 @@ export interface RunFile {
   readonly title: string;
   readonly status: RunStatus;
   readonly current: CurrentItem | null;
+  /**
+   * `## Current`'s `pause_reason`, read whether or not the block names an item
+   * (23j): a run can pause before it picks one (`trail_pr_open` at its first
+   * step), and `current` is `null` then.
+   */
+  readonly pause_reason: string | null;
 }
 
 /** The run lock, as read. `held` is true when its recorded holder is alive. */
@@ -154,6 +160,17 @@ function currentOf(lines: readonly string[]): CurrentItem | null {
   };
 }
 
+/** `## Current`'s first `- pause_reason:` value, item or not. */
+function pauseReasonOf(lines: readonly string[]): string | null {
+  const start = lines.findIndex((l) => l.trim() === "## Current");
+  if (start < 0) return null;
+  for (const line of lines.slice(start + 1)) {
+    if (line.startsWith("## ")) break;
+    if (line.startsWith("- pause_reason:")) return valueOf(line.slice("- pause_reason:".length));
+  }
+  return null;
+}
+
 function statusOf(lines: readonly string[]): RunStatus {
   const line = lines.find((l) => l.startsWith("## Status:"));
   const word = line === undefined ? "" : (/^## Status:\s*([a-z_]+)/.exec(line)?.[1] ?? "");
@@ -177,7 +194,7 @@ export function parseRunFile(runId: string, text: string): RunFile | undefined {
   const lines = text.split(/\r?\n/);
   const first = lines[0] ?? "";
   if (!first.startsWith(RUN_FILE_TITLE)) return undefined;
-  return { run_id: runId, title: clean(first.slice(RUN_FILE_TITLE.length)), status: statusOf(lines), current: currentOf(lines) };
+  return { run_id: runId, title: clean(first.slice(RUN_FILE_TITLE.length)), status: statusOf(lines), current: currentOf(lines), pause_reason: pauseReasonOf(lines) };
 }
 
 /** Whether `pid` names a live process (`kill -0`: a process we may not signal is alive too). */
@@ -278,4 +295,76 @@ export function summarizeRuns(read: Extract<RunStateRead, { ok: true }>): RunSum
   }
   if (running !== undefined || read.lock.held) return { state: "live", run_id: running?.run_id ?? null, parked };
   return { state: parked.length > 0 ? "parked" : "idle", run_id: null, parked };
+}
+
+/**
+ * A run the owner's Resume shows and acts on (23j, 23l): a `paused` run file, or
+ * a stranded one (`stranded: true`): its file still reads `running` while the
+ * run lock has no live holder, because the session that ran it ended mid-item.
+ */
+export interface PausedRun {
+  readonly run_id: string;
+  readonly title: string;
+  readonly pause_reason: string | null;
+  /** The current item's path, or `null` when the run paused before it picked one. */
+  readonly item: string | null;
+  readonly pr: string | null;
+  readonly stranded: boolean;
+}
+
+/**
+ * Every run in `read` the owner may resume, in run-id order: each `paused` run
+ * file, whether or not it names a current item (`summarizeRuns` lists only those
+ * that do), and, only while the run lock has no live holder, each `running` one
+ * (23l: stranded). A live holder means the run is running, so it is never listed
+ * then. Whether a kernel session is still starting it is the caller's check.
+ */
+export function pausedRuns(read: Extract<RunStateRead, { ok: true }>): PausedRun[] {
+  return read.runs
+    .filter((r) => r.status === "paused" || (r.status === "running" && !read.lock.held))
+    .map((r) => ({
+      run_id: r.run_id,
+      title: r.title,
+      pause_reason: r.pause_reason,
+      item: r.current?.item ?? null,
+      pr: r.current?.pr ?? null,
+      stranded: r.status === "running",
+    }));
+}
+
+/**
+ * Whether resuming `runId` would start a second drain (23l): the run lock has a
+ * live holder, or another run file reads `running`. Unlike `summarizeRuns`, the
+ * run's own `running` status does not count: with no live holder it is stranded,
+ * and resuming it is how it continues.
+ */
+export function resumeWouldDoubleDrain(read: Extract<RunStateRead, { ok: true }>, runId: string): boolean {
+  return read.lock.held || read.runs.some((r) => r.status === "running" && r.run_id !== runId);
+}
+
+/**
+ * The text of every run file in `checkout` (found by its title, a regular file
+ * no larger than `MAX_RUN_FILE_BYTES`), for a caller that only needs to know
+ * whether a run names a path (23i). A folder that does not exist is none; any
+ * other failure throws, so a caller fails closed.
+ */
+export function runFileTexts(checkout: string): string[] {
+  const dir = join(checkout, ".supervisor", "automate");
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".md"));
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw err;
+  }
+  const texts: string[] = [];
+  for (const name of names) {
+    const path = join(dir, name);
+    const st = lstatSync(path);
+    if (!st.isFile() || !head(path, RUN_FILE_TITLE.length + 1).startsWith(RUN_FILE_TITLE)) continue;
+    if (st.size > MAX_RUN_FILE_BYTES) throw new Error(`run_file_too_large: ${name}`);
+    texts.push(readFileSync(path, "utf8"));
+  }
+  return texts;
 }

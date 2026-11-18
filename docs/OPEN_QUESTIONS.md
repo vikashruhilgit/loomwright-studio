@@ -292,3 +292,7 @@ Each of these needs a probe of the real SDK or CLI, with the finding recorded.
   - **No full-thread size before send.** The chip shows the summary's estimate in tokens with Summary, and no size with Full thread; a reference past the kernel's bound comes back from the send as `409 history_too_large {thread, size, bound}` in characters, keeping the text and the chip. Relates to DESIGN.md open point 1 (option "the refusal comes back from the send").
   - **No title on a Tasks board session card** (`kernel/src/gui/tasks.ts` selects `NULL AS title`). The board matches each session card to `GET /sessions` by id for its title, else `Session #<id>`. No numbered DESIGN.md open point covers it; it is the gap between "Session names (17b Part 5, 17c)", which commits every session card to a name, and the board's read.
 - The pricing model at commercial launch (bring your own key vs metered), deferred until after dogfooding.
+
+### Phase 8 item 23j: the owner's Resume (NEEDS VERIFICATION)
+
+- **Does `/loomwright:automate --resume <run_id> --inline-phases` continue a paused run in a kernel-started session?** Read from Loomwright 17.38.0's `commands/automate.md` only: `--resume [<run_id>]` reconciles and continues a prior incomplete run file and runs no intake. Not yet run in a kernel session, where the AUT-RESUME ask and the reconcile step may behave differently. Verify on the first live Resume (run `automate-2026-11-17-001`, paused `trail_pr_open`) and record the result here.

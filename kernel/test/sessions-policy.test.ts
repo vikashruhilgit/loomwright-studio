@@ -237,7 +237,8 @@ describe("decideToolUse: Loomwright driver scripts by exact path (AC15)", () => 
       // meta-sync.sh reads its subcommand at any position.
       `bash ${meta} push`,
       `bash ${meta} --root /w push`,
-      `bash ${meta} --root "/w" status`,
+      `bash ${meta} --root "/w" "push"`,
+      `bash ${meta} --root /w pu\\sh`,
     ]) {
       expect(bash(command), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
     }
@@ -252,6 +253,9 @@ describe("decideToolUse: Loomwright driver scripts by exact path (AC15)", () => 
       `bash ${helpers}`,
       `bash ${meta} pull --root /w`,
       `bash ${meta} status`,
+      // A quoted word is read as bash passes it (here `/w`), not refused for its quotes: the denied-name check reads
+      // words exactly (session 215's `--result '<json>'`, 23k follow-up).
+      `bash ${meta} --root "/w" status`,
     ]) {
       expect(bash(command), command).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     }
@@ -1034,6 +1038,49 @@ describe("run-lock.sh: a run session never breaks the lock (invariant 4, review 
     for (const args of ["acquire --owner automate:r1 --session-id s1", "release --owner automate:r1", "status", "liveness --pid 42"]) {
       expect(decide(args), args).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     }
+  });
+});
+
+describe("the inline phases' scripts: the owner's skip flags are never the session's (23k)", () => {
+  const install = "/Users/o/.claude/plugins/cache/atelier/loomwright/17.38.0";
+  const driver = `${install}/scripts/supervisor-next-step.sh`;
+  const guard = `${install}/scripts/guard-finalize-publish.sh`;
+  const policy: ToolPolicy = {
+    allowedTools: ["Bash"],
+    allowedBashPrefixes: [],
+    loomwrightScripts: ["supervisor-next-step.sh", "guard-finalize-publish.sh"],
+    admittedScriptPaths: [driver, guard],
+  };
+  const decide = (script: string, args: string) => decideToolUse(policy, "Bash", { command: `bash ${script} ${args}` });
+
+  it("admits the Supervisor driver's and the finalize gate's ordinary calls (the live session 214 call included)", () => {
+    expect(decide(driver, "--session-id resume-sess-001 --job .supervisor/jobs/pending/2026-11-17-add-cheer-sh.md --sequential")).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(decide(driver, "--session-id s1 --result ok")).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(decide(guard, "write-marker --expect-id a1")).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+  });
+
+  it("admits the driver's --result answers as session 215 wrote them: quoted JSON is one word, not a refusal", () => {
+    // Session 215 was refused these two exact calls (seq 108, 111) and stopped mid-item: the denied-flag check refused
+    // any word holding a quote or a brace, and every answer is JSON.
+    expect(decide(driver, `--session-id auto-2026-11-17-resume --result '{"confirmed": true}'`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(decide(driver, `--session-id auto-2026-11-17-resume --result "{\\"confirmed\\": true}"`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(decide(guard, `write-marker --result '{"ok": true}'`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    // Unquoted braces may expand: refused unread (seq 114), as is an unterminated quote.
+    expect(decide(driver, `--session-id s1 --result {\\"confirmed\\":true}`)).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    expect(decide(driver, `--session-id s1 --result '{"a": 1}`)).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+  });
+
+  it("still denies a skip flag spelled through quotes, a glob or a brace", () => {
+    for (const args of [`--session-id s1 "--skip-children-check"`, `--session-id s1 '--skip-preflight-sync'`, "--session-id s1 --skip-children-chec?", "--session-id s1 {--skip-children-check,}"]) {
+      expect(decide(driver, args), args).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+  });
+
+  it("denies --skip-children-check and --skip-preflight-sync at any position", () => {
+    for (const args of ["--skip-children-check --session-id s1 --job j.md", "--session-id s1 --job j.md --skip-preflight-sync", "--session-id s1 --skip-children-check=1"]) {
+      expect(decide(driver, args), args).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+    expect(decide(guard, "write-marker --skip-children-check")).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
   });
 });
 

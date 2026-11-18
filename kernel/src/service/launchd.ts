@@ -4,9 +4,19 @@
 //
 // It touches exactly `~/Library/LaunchAgents/com.loomwright.studio.kernel.plist`:
 // never a glob, a listing or any other file in `LaunchAgents/`. The plist holds
-// absolute paths (launchd's PATH is minimal) and at most two non-secret
+// absolute paths (launchd's PATH is minimal) and at most three non-secret
 // environment variables, never a token: the kernel reads its credentials from
 // the Keychain at start.
+//
+// `PATH` (phase 8 item 23h): every session the kernel starts inherits the
+// kernel's environment, and launchd's PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
+// holds no Homebrew `gh`, so a kernel-started Loomwright run parked at its
+// first GitHub step. Install resolves `SERVICE_TOOLS` (`gh`, `git`) through the
+// installing shell's PATH, the one the owner uses, and writes the dirs they
+// were found in (in that PATH's order) followed by launchd's default. It never
+// copies the installer's PATH: only the dirs holding those tools, so each
+// resolves in a session to the same file it does in the owner's shell. Install
+// prints what it found; a tool it can't find is a warning, not a refusal.
 //
 // One data dir: `STUDIO_DATA_DIR` in the plist is always the same absolute
 // dir its logs go under, so the daemon resolves exactly the dir the installing
@@ -29,7 +39,9 @@
 // stderr (H01), which holds no secret (the plist holds none).
 import { spawnSync } from "node:child_process";
 import {
+  accessSync,
   chmodSync,
+  constants,
   closeSync,
   cpSync,
   existsSync,
@@ -42,6 +54,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -122,6 +135,59 @@ export class ServiceError extends Error {
   }
 }
 
+/** launchd's PATH for an agent: always the tail of the plist's PATH. */
+export const LAUNCHD_DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/** The tools a kernel-started run must find as the owner's shell does (23h): Loomwright's GitHub steps run both. */
+export const SERVICE_TOOLS = ["gh", "git"] as const;
+export type ServiceTool = (typeof SERVICE_TOOLS)[number];
+
+export interface ServiceToolPath {
+  /** The plist's PATH: the dirs holding `SERVICE_TOOLS` in the installer's PATH order, then `LAUNCHD_DEFAULT_PATH`, no dir twice. */
+  readonly path: string;
+  /** Where each tool was found (the PATH entry joined with its name, never a resolved symlink, so an upgrade keeps working), or `null`. */
+  readonly found: Readonly<Record<ServiceTool, string | null>>;
+}
+
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The plist's PATH from the installing shell's `installerPath` (23h). Each tool
+ * is the first executable regular file of its name in an absolute PATH entry
+ * (an empty, relative or `..` entry is skipped, as is one with a newline or NUL,
+ * which a plist value refuses). Keeping only the found dirs, in the installer's
+ * order, means a tool resolves in a session to the very file the installer's
+ * shell resolves: any dir before its own is an installer dir that lacks it.
+ */
+export function resolveServiceToolPath(installerPath: string | undefined): ServiceToolPath {
+  const entries = (installerPath ?? "")
+    .split(":")
+    .filter((dir) => isAbsolute(dir) && !dir.split("/").includes("..") && !/[\r\n\0]/.test(dir));
+  const found = {} as Record<ServiceTool, string | null>;
+  const at = new Set<number>();
+  for (const tool of SERVICE_TOOLS) {
+    const index = entries.findIndex((dir) => isExecutableFile(join(dir, tool)));
+    found[tool] = index < 0 ? null : join(entries[index] as string, tool);
+    if (index >= 0) at.add(index);
+  }
+  const dirs = [...at].sort((a, b) => a - b).map((i) => resolve(entries[i] as string));
+  for (const dir of LAUNCHD_DEFAULT_PATH.split(":")) dirs.push(dir);
+  return { path: [...new Set(dirs)].join(":"), found };
+}
+
+/** One warning line for a tool install did not find, naming what a run then can't do. */
+export function serviceToolWarning(tool: ServiceTool): string {
+  return `studio service: warning: ${tool} is not on this shell's PATH, so a run Studio starts can't use it (Loomwright's GitHub steps park); install it, then run service install again`;
+}
+
 export interface PlistParams {
   /** Absolute path of the `node` binary. */
   readonly nodePath: string;
@@ -131,6 +197,8 @@ export interface PlistParams {
   readonly dataDir: string;
   /** Read for `STUDIO_AUTH_PROVIDER` only; any other key (`STUDIO_DATA_DIR` included) is ignored. */
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** The plist's `PATH` (`resolveServiceToolPath(...).path`); absent ⇒ no `PATH` key. Never read from `env`. */
+  readonly path?: string;
 }
 
 const XML_ESCAPES: Readonly<Record<string, string>> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
@@ -157,7 +225,8 @@ function absolute(name: string, value: string): string {
  * `EnvironmentVariables` with only `STUDIO_DATA_DIR` (always: the normalized
  * absolute `dataDir`, the same dir the logs go under, so the daemon's
  * `resolveDataDir` lands there) and `STUDIO_AUTH_PROVIDER` (when
- * `authProviderFromEnv(env)`, the kernel's own check, selects one).
+ * `authProviderFromEnv(env)`, the kernel's own check, selects one) and `PATH`
+ * (when `path` is given: install always gives `resolveServiceToolPath`'s).
  * Every string is XML-escaped; a newline or NUL in any of them is refused.
  */
 export function renderPlist(params: PlistParams): string {
@@ -167,6 +236,10 @@ export function renderPlist(params: PlistParams): string {
   const vars: [string, string][] = [[DATA_DIR_ENV, dataDir]];
   const provider = authProviderFromEnv(env);
   if (provider !== undefined) vars.push([AUTH_PROVIDER_ENV, provider]);
+  if (params.path !== undefined) {
+    if (params.path.split(":").some((dir) => !isAbsolute(dir))) throw new ServiceError("studio service: PATH must hold absolute dirs only");
+    vars.push(["PATH", params.path]);
+  }
 
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -312,6 +385,10 @@ export interface InstallResult extends ServiceResult {
   readonly appDir: string;
   /** The copied kernel's `package.json` version. */
   readonly version: string;
+  /** Where install found each of `SERVICE_TOOLS`, or `null` (23h). */
+  readonly tools: Readonly<Record<ServiceTool, string | null>>;
+  /** The plist's `PATH`, which every kernel-started session inherits. */
+  readonly path: string;
 }
 
 export interface UninstallResult extends ServiceResult {
@@ -635,9 +712,11 @@ export function installService(options: ServiceOptions = {}, deps: ServiceDeps =
   }
   const nodePath = options.nodePath ?? process.execPath;
   // Rendered (and validated) before anything is written.
-  const content = renderPlist({ nodePath, daemonPath: join(appDir, "dist", "daemon.js"), dataDir, env });
+  const tools = resolveServiceToolPath(env.PATH);
+  const content = renderPlist({ nodePath, daemonPath: join(appDir, "dist", "daemon.js"), dataDir, env, path: tools.path });
   const warning = versionManagerWarning(nodePath, r.homeDir);
   if (warning !== undefined) r.warn(warning);
+  for (const tool of SERVICE_TOOLS) if (tools.found[tool] === null) r.warn(serviceToolWarning(tool));
 
   copyKernelApp(sourceRoot, appRoot, version, r.copy);
   const logs = join(dataDir, "logs");
@@ -651,7 +730,7 @@ export function installService(options: ServiceOptions = {}, deps: ServiceDeps =
     waitUntilBootedOut(r);
   }
   bootstrap(r, path);
-  return { label: SERVICE_LABEL, plistPath: path, dataDir, appDir, version };
+  return { label: SERVICE_LABEL, plistPath: path, dataDir, appDir, version, tools: tools.found, path: tools.path };
 }
 
 /** What `verifyServiceStart` reads to tell the new kernel is answering; the CLI's own deps. */

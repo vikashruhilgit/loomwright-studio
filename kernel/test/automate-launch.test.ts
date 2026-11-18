@@ -34,7 +34,7 @@ import { createAgent } from "../src/agents/charter-files.js";
 import { readAgentSettings } from "../src/agents/settings.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
-import { AUTOMATE_RUN_COMMAND, AUTOMATE_RUN_KEY, AUTOMATE_RUN_POLICY, automateRunPrompt, handleAutomateRun } from "../src/automate/launch.js";
+import { AUTOMATE_RUN_COMMAND, AUTOMATE_RUN_KEY, AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, automateRunPrompt, handleAutomateRun } from "../src/automate/launch.js";
 import type { AutomateRunPayload } from "../src/automate/launch.js";
 import { decideApproval } from "../src/approvals/store.js";
 import { brainContribution, brainMessageHandler, defaultWrightSettingsJson, wrightSettingsPath } from "../src/brain/index.js";
@@ -115,7 +115,19 @@ describe("AUTOMATE_RUN_POLICY (AC4)", () => {
     expect(new Set(scripts).size).toBe(scripts.length);
     for (const name of scripts) expect(name, name).toMatch(/^[a-z0-9][a-z0-9-]*\.sh$/);
     for (const name of scripts) expect(name, name).not.toMatch(/^test-/);
-    for (const name of ["bump-version.sh", "release-refold.sh", "check-doc-currency.sh", "build-capabilities.sh", "ci-local.sh"]) expect(scripts, name).not.toContain(name);
+    for (const name of ["bump-version.sh", "check-doc-currency.sh", "build-capabilities.sh", "ci-local.sh"]) expect(scripts, name).not.toContain(name);
+    // 23q: FINALIZE runs release-refold.sh before any push (session 224 parked release_refold_refused without it).
+    expect(scripts).toContain("release-refold.sh");
+    // 23k: the inline phases' drivers are admitted; scripts that start an unowned claude, post outward, run command lines
+    // read from session-writable files, or write human-approved memory are not.
+    expect(scripts).toEqual(expect.arrayContaining(["supervisor-next-step.sh", "launch-pad-phase.sh", "guard-finalize-publish.sh", "build-state.sh"]));
+    for (const name of [
+      "dispatch-pr-review.sh", "hook-dispatch-on-pr-create.sh", "automate-lanes.sh", "gate-auto.sh", "send-webhook.sh",
+      "run-ground-truth.sh", "rules-check.sh", "worker-rule-selfcheck.sh", "run-pin-mutations.sh", "run-benchmark.sh",
+      "write-project-memory.sh", "write-agent-memory.sh", "write-system-contract.sh", "reproject-state-on-terminal.sh",
+    ]) expect(scripts, name).not.toContain(name);
+    // A merge runs no phase: the merge_parked policy carries none of them.
+    expect(MERGE_PARKED_RUN_POLICY.loomwrightScripts ?? []).not.toContain("supervisor-next-step.sh");
     // A name list admits nothing by itself: with no admitted paths, a driver call is still denied.
     expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command: "bash /lw/scripts/automate-next-step.sh --resume /w/.supervisor/automate" })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
   });
@@ -232,7 +244,7 @@ function unit(o: { withSessions?: boolean; never?: readonly string[]; mode?: "li
   writeCrewSettings(dataDir, "mason", { workspaces: [checkout], ...(o.never === undefined ? {} : { never: o.never }) });
   store.prepare("INSERT INTO agents (id, display_name, avatar_shape, avatar_hue, status, created_by, charter_json) VALUES ('mason', 'Mason', 'crab', 'crew-teal', ?, 'owner', '{}')").run(o.agentStatus ?? "active");
   store
-    .prepare("INSERT INTO playbooks (id, slug, name, owning_agent, intent, version, mode, merge_requirement) VALUES (5, 'pb5', 'pb5', 'mason', 'Hand tickets over', 2, ?, 'none')")
+    .prepare("INSERT INTO playbooks (id, slug, name, owning_agent, intent, version, mode, merge_requirement, status) VALUES (5, 'pb5', 'pb5', 'mason', 'Hand tickets over', 2, ?, 'none', 'enabled')")
     .run(o.mode ?? "live");
   const starts: StartSessionParams[] = [];
   // Every row set here is mirrored into the `sessions` table: the handler scopes its candidates there, then reads the row back.
@@ -726,7 +738,7 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
         { agent: id, name: `Tickets ${id}`, intent: "Hand each ticket to /automate.", trigger: { kind: "poll", spec: JSON.stringify({ source: "github.pulls", repos: [REPO], filters: { state: "open" }, interval_seconds: 300 }) }, model: PLAYBOOK_MODEL },
         new Date(START),
       );
-      store.prepare("UPDATE playbooks SET mode = 'live', mode_set_by = 'owner' WHERE id = ?").run(made.playbook.id);
+      store.prepare("UPDATE playbooks SET mode = 'live', mode_set_by = 'owner', status = 'enabled' WHERE id = ?").run(made.playbook.id);
       playbooks[id] = made.playbook.id;
     }
     return { kernel, store, fakes, prompts, workspaces, playbooks, minted, pluginDir };
@@ -1005,9 +1017,22 @@ describe("run-state-checkout.ts runs git only (review iteration 4)", () => {
     const dir = new URL("../src/loomwright/", import.meta.url);
     const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
     const importers = files.filter((f) => /from\s+["']node:child_process["']/.test(readFileSync(new URL(f, dir), "utf8")));
-    expect(importers).toEqual(["run-state-checkout.ts"]);
+    expect(importers).toEqual(["run-lock.ts", "run-state-checkout.ts"]);
     const text = readFileSync(new URL("run-state-checkout.ts", dir), "utf8");
     expect(text.match(/execFileSync\(/g)).toHaveLength(1);
     expect(text).toMatch(/execFileSync\("git", \["-C", cwd, \.\.\.args\]/);
+  });
+
+  it("run-lock.ts (D46) runs only `ps -o lstart= -p <pid>` and `bash <install>/scripts/run-lock.sh liveness|release`, never --force-unlock", () => {
+    const text = readFileSync(new URL("../src/loomwright/run-lock.ts", import.meta.url), "utf8");
+    expect(text.match(/execFileSync\(/g)).toHaveLength(2);
+    expect(text).toMatch(/execFileSync\("ps", \["-o", "lstart=", "-p", String\(pid\)\]/);
+    expect(text).toMatch(/execFileSync\("bash", \[script, \.\.\.args\]/);
+    expect(text).toMatch(/join\(lock\.loomwrightPath, "scripts", "run-lock\.sh"\)/);
+    expect(text.match(/run\(script, \[[^\]]*\]/g)).toEqual([
+      'run(script, ["liveness", "--pid", String(lock.pid), "--root", checkout]',
+      'run(script, ["release", "--session-id", lock.lockSessionId, "--root", checkout]',
+    ]);
+    expect(text).not.toMatch(/"--force-unlock"/);
   });
 });

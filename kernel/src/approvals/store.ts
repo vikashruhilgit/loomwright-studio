@@ -33,6 +33,7 @@
 import { isMcpKind, mcpRow, storedToolsOf } from "../integrations/mcp/rows.js";
 import type { McpKind } from "../integrations/mcp/rows.js";
 import { appendEvent, clip, errorMessage } from "../loop/internal.js";
+import { AUTOMATE_RUN_KEY, continuePayloadOf, runLaunchOf } from "../automate/run-sessions.js";
 import { enqueueEvent } from "../loop/queue.js";
 import { recordNotification } from "../notifications/record.js";
 import { ALWAYS_HELD_TOOLS } from "../sessions/policy.js";
@@ -672,15 +673,16 @@ export function decideApproval(store: Store, input: DecisionInput, now: Date, ap
     // The owner's tick is recorded only when the applier applied the decision (a refused apply wrote nothing, grant included).
     const granted = ownerGrant !== undefined && record !== undefined && "applied" in record ? { owner_grant: { kind: ownerGrant.kind, tools: ownerGrant.tools } } : {};
     appendEvent(store, "approval_decided", { sessionId: row.requesting_session, taskId: null }, { id, decision, by, action: row.action, ...record, ...granted }, at);
-    enqueueEvent(
-      store,
-      {
-        kind: "message",
-        payload: { text: decisionText(row, decision, source, record), agent: messageAgent(store, row), approval_id: id },
-        sourceRef: `approval:${id}`,
-      },
-      now,
-    );
+    // 23o: a decision on a kernel run session's held call continues THAT session (`../automate/launch.ts`, kind
+    // `continue`), so its Supervisor carries on from the held step; it never wakes the crew member's own thread, whose
+    // session would try the run's call itself. Any other requester gets the decision as a message, as before.
+    const text = decisionText(row, decision, source, record);
+    const launch = row.requesting_session === null ? undefined : runLaunchOf(store, row.requesting_session);
+    const payload =
+      launch !== undefined && row.requesting_session !== null
+        ? { agent: launch.agent, approval_id: id, [AUTOMATE_RUN_KEY]: continuePayloadOf(launch, row.requesting_session, text) }
+        : { text, agent: messageAgent(store, row), approval_id: id };
+    enqueueEvent(store, { kind: "message", payload, sourceRef: `approval:${id}` }, now);
     return getApproval(store, id) as ApprovalRow;
   });
   if (after !== undefined) {

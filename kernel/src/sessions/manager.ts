@@ -27,6 +27,7 @@ import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
 import { isProtectedPath, protectedLocationsText, resolvedPath } from "../protected-paths.js";
 import { loomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { refTracksRunState } from "../loomwright/run-state-checkout.js";
+import { refoldRunsRepoCode } from "../loomwright/release-refold-gate.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { hostSwitchNameProblem } from "../loomwright/contract.js";
 import type { LoomwrightHostSwitch } from "../loomwright/contract.js";
@@ -2823,6 +2824,11 @@ export class SessionManager {
             if (targets === "deny" || (targets !== undefined && targets.some((t) => refTracksRunState(input.cwd, t)))) {
               d = { decision: "deny", reason: "loomwright_run_state" };
             }
+          }
+          // `release-refold.sh` runs the project's own `scripts/bump-version.sh` when it has one: admitted only while none is
+          // where the script would look (23q, `../loomwright/release-refold-gate.ts`).
+          if (d.decision === "allow" && input.tool_name === "Bash" && command !== undefined && refoldRunsRepoCode(command, input.cwd, live.policy.admittedScriptPaths ?? [])) {
+            d = { decision: "deny", reason: "loomwright_repo_code" };
           }
           // The rail applies only after the policy allowed: it never widens a policy.
           const rail: ToolCallClass =

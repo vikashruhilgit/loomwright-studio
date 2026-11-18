@@ -210,11 +210,14 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
     const merge = MERGE_PARKED_RUN_POLICY.loomwrightScripts ?? [];
     expect(review).toEqual(expect.arrayContaining(["automate-helpers.sh", "review-heal-next-step.sh", "drain-rounds.sh", "ci-run-probe.sh"]));
     expect(merge).toEqual(expect.arrayContaining(["automate-helpers.sh", "automate-next-step.sh"]));
+    // 23q: the review drain runs release-refold.sh before each push (gated on the project having no bump script); a merge runs no push.
+    expect(review).toContain("release-refold.sh");
+    expect(merge).not.toContain("release-refold.sh");
     for (const [name, list] of [["review", review], ["merge", merge]] as const) {
       expect(new Set(list).size, name).toBe(list.length);
       for (const s of list) expect(s, `${name} ${s}`).toMatch(/^[a-z0-9][a-z0-9-]*\.sh$/);
       for (const s of list) expect(s, `${name} ${s}`).not.toMatch(/^test-/);
-      for (const s of ["bump-version.sh", "release-refold.sh", "check-doc-currency.sh", "build-capabilities.sh", "ci-local.sh"]) expect(list, `${name} ${s}`).not.toContain(s);
+      for (const s of ["bump-version.sh", "check-doc-currency.sh", "build-capabilities.sh", "ci-local.sh"]) expect(list, `${name} ${s}`).not.toContain(s);
       // Each starts a detached headless `claude` (a session the kernel does not own) or posts outward past the gate.
       for (const s of ["dispatch-pr-review.sh", "dispatch-pr-postmortem.sh", "send-webhook.sh", "automate-lanes.sh"]) expect(list, `${name} ${s}`).not.toContain(s);
     }
@@ -295,7 +298,7 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
   });
 
   it("build the prompts from checked fields only", () => {
-    expect(AUTOMATE_RUN_KINDS).toEqual(["backlog", "review_pr", "merge_parked"]);
+    expect(AUTOMATE_RUN_KINDS).toEqual(["backlog", "review_pr", "merge_parked", "resume"]);
     expect(reviewPrRunPrompt(REPO, PR)).toBe(FIX_PROMPT);
     expect(mergeParkedRunPrompt(PARKED_RUN_ID, [])).toBe(MERGE_PROMPT);
     expect(mergeParkedRunPrompt(PARKED_RUN_ID, ["--trust-unprotected"])).toBe(`${MERGE_PROMPT} --trust-unprotected`);

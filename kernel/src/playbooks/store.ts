@@ -748,6 +748,28 @@ export function updatePlaybook(store: Store, params: UpdatePlaybookParams, now: 
   });
 }
 
+/**
+ * Wake the work playbook `id`'s daily limit held: each `pending` event for it (a playbook run's `playbook`, or a
+ * kernel run launch's `automate_run.playbook`) whose latest `event_parked` reason is `playbook_daily_limit` and whose
+ * `not_before` is later than `at` gets `not_before = at`, so it runs on the next tick, where admission asks the budget
+ * again and parks it again if it is still over. Called when the owner changes the playbook's `token_limit` and when
+ * the playbook is enabled. Seen 2026-11-17: the owner raised the limit and the queued Resume still waited for
+ * midnight. Returns how many it woke. The caller's transaction holds it.
+ */
+export function wakeLimitHeld(store: Store, id: number, at: string): number {
+  return store
+    .prepare<[string, number, number, string]>(
+      `UPDATE event_queue SET not_before = ?
+        WHERE status = 'pending' AND not_before IS NOT NULL AND json_valid(payload_json)
+          AND (json_extract(payload_json, '$.playbook') = ? OR json_extract(payload_json, '$.automate_run.playbook') = ?)
+          AND not_before > ?
+          AND (SELECT json_extract(e.payload_json, '$.reason') FROM events e
+                WHERE e.kind = 'event_parked' AND json_valid(e.payload_json) AND json_extract(e.payload_json, '$.queue_id') = event_queue.id
+                ORDER BY e.id DESC LIMIT 1) = 'playbook_daily_limit'`,
+    )
+    .run(at, id, id, at).changes;
+}
+
 export interface SetPlaybookPolicyParams {
   readonly id: number;
   readonly field: string;
@@ -783,7 +805,10 @@ export function setPlaybookPolicy(store: Store, params: SetPlaybookPolicyParams,
       [column, value],
       [setBy, OWNER],
     ]);
-    return writeVersion(store, row, unchanged ? new Map() : sets, unchanged ? [] : [field], OWNER, null, at);
+    const change = writeVersion(store, row, unchanged ? new Map() : sets, unchanged ? [] : [field], OWNER, null, at);
+    // The owner's new daily limit takes effect now for work the old one held (`wakeLimitHeld`).
+    if (field === "token_limit" && !unchanged) wakeLimitHeld(store, row.id, at);
+    return change;
   });
 }
 
@@ -819,7 +844,9 @@ export function enablePlaybook(store: Store, params: EnablePlaybookParams, now: 
     // A draft, or a playbook that was turned off (item 23g: the owner's own once-approval turns it back on).
     if (row.status !== "draft" && row.status !== "disabled") throw invalid(`playbook ${row.id} is ${row.status}: only a draft or a turned-off playbook is enabled`);
     store.prepare("UPDATE playbooks SET status = 'enabled', updated_at = ? WHERE id = ? AND version = ? AND status IN ('draft', 'disabled')").run(at, row.id, params.version);
-    appendEvent(store, "playbook_enabled", refOf(params.sessionId), { playbook_id: row.id, version: params.version, approval_id: params.approvalId, by: OWNER }, at);
+    // A changed limit takes effect at an enable too (an owner `set` makes a draft that an enable puts back).
+    const woken = wakeLimitHeld(store, row.id, at);
+    appendEvent(store, "playbook_enabled", refOf(params.sessionId), { playbook_id: row.id, version: params.version, approval_id: params.approvalId, by: OWNER, ...(woken > 0 ? { woke_limit_held: woken } : {}) }, at);
     const after = readRow(store, row.id) as PlaybookRow;
     return { playbook: after, trigger: linkedTriggerOf(store, after), changed: true };
   });

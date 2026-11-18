@@ -17,6 +17,7 @@ import {
   BOOTSTRAP_RETRY_DELAY_MS,
   KEYCHAIN_PROMPT_HINT,
   LAUNCHCTL_PATH,
+  LAUNCHD_DEFAULT_PATH,
   SERVICE_LABEL,
   START_CHECK_POLL_MS,
   START_CHECK_TIMEOUT_MS,
@@ -33,6 +34,8 @@ import {
   productionModules,
   removeOldKernelApps,
   renderPlist,
+  resolveServiceToolPath,
+  serviceToolWarning,
   uninstallService,
   verifyServiceStart,
   versionManagerWarning,
@@ -294,12 +297,80 @@ describe("renderPlist", () => {
     expect(xml).not.toMatch(/sk-ant|ANTHROPIC|OAUTH|<key>PATH<\/key>|<key>HOME<\/key>/);
   });
 
+  it("23h: PATH is the given path, never env's, and must hold absolute dirs only", () => {
+    const xml = renderPlist({ ...params, env: { PATH: "/installer/only:/usr/bin" }, path: `/opt/homebrew/bin:${LAUNCHD_DEFAULT_PATH}` });
+    expect(plistString(xml, "PATH")).toBe("/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+    expect(xml).not.toContain("/installer/only");
+    expect(() => renderPlist({ ...params, path: "bin:/usr/bin" })).toThrow(/absolute/);
+    expect(() => renderPlist({ ...params, path: ":/usr/bin" })).toThrow(/absolute/);
+  });
+
   it("XML-escapes every string and refuses a newline, NUL or relative path", () => {
     const xml = renderPlist({ ...params, daemonPath: "/opt/a&b<c>/'d\"/daemon.js" });
     expect(xml).toContain("<string>/opt/a&amp;b&lt;c&gt;/&apos;d&quot;/daemon.js</string>");
     expect(() => renderPlist({ ...params, daemonPath: "/opt/x\n<key>evil</key>/daemon.js" })).toThrow(/newline or NUL/);
     expect(() => renderPlist({ ...params, dataDir: "/data\0x" })).toThrow(/newline or NUL/);
     expect(() => renderPlist({ ...params, nodePath: "node" })).toThrow(/absolute/);
+  });
+});
+
+/** A dir holding an executable `gh` and `git`: an installer PATH on which both resolve. */
+function toolsBin(): string {
+  const dir = join(tmp, "tools-bin");
+  mkdirSync(dir, { recursive: true });
+  for (const tool of ["gh", "git"]) {
+    writeFileSync(join(dir, tool), "#!/bin/sh\n");
+    chmodSync(join(dir, tool), 0o755);
+  }
+  return dir;
+}
+
+describe("resolveServiceToolPath (23h)", () => {
+  function binDir(name: string, tools: Record<string, number>): string {
+    const dir = join(tmp, name);
+    mkdirSync(dir, { recursive: true });
+    for (const [tool, mode] of Object.entries(tools)) {
+      writeFileSync(join(dir, tool), "#!/bin/sh\n");
+      chmodSync(join(dir, tool), mode);
+    }
+    return dir;
+  }
+
+  it("keeps only the dirs holding gh and git, in the installer's order, then launchd's default", () => {
+    const brew = binDir("brew", { gh: 0o755, git: 0o755, python3: 0o755 });
+    const other = binDir("other", { node: 0o755 });
+    const r = resolveServiceToolPath(`${other}:${brew}:/usr/bin:/bin`);
+    expect(r.found).toEqual({ gh: join(brew, "gh"), git: join(brew, "git") });
+    expect(r.path).toBe(`${brew}:${LAUNCHD_DEFAULT_PATH}`);
+    expect(r.path).not.toContain(other);
+  });
+
+  it("each tool resolves in the written PATH to the file the installer's PATH resolves it to", () => {
+    // git in a, gh only in b, a second git in b: ordering by tool (b, a) would let b's git win.
+    const a = binDir("a", { git: 0o755 });
+    const b = binDir("b", { gh: 0o755, git: 0o755 });
+    const installer = `${a}:${b}`;
+    const r = resolveServiceToolPath(installer);
+    expect(r.path).toBe(`${a}:${b}:${LAUNCHD_DEFAULT_PATH}`);
+    for (const tool of ["gh", "git"] as const) {
+      expect(resolveServiceToolPath(r.path).found[tool]).toBe(resolveServiceToolPath(installer).found[tool]);
+    }
+  });
+
+  it("skips a non-executable file, a dir of the tool's name, and empty, relative or .. entries", () => {
+    const noexec = binDir("noexec", { gh: 0o644 });
+    const asDir = join(tmp, "asdir");
+    mkdirSync(join(asDir, "gh"), { recursive: true });
+    const rel = binDir("rel", { gh: 0o755 });
+    const r = resolveServiceToolPath(`:${noexec}:${asDir}:rel:./x:${rel}/../rel`);
+    expect(r.found.gh).toBeNull();
+    expect(r.path).not.toContain(tmp);
+  });
+
+  it("a tool found nowhere (or no PATH at all) leaves launchd's default alone", () => {
+    expect(resolveServiceToolPath(undefined).path).toBe(LAUNCHD_DEFAULT_PATH);
+    // A tool found in a default dir adds nothing twice.
+    expect(resolveServiceToolPath("/usr/bin").path.split(":").filter((d) => d === "/usr/bin")).toHaveLength(1);
   });
 });
 
@@ -310,10 +381,20 @@ describe("installService", () => {
 
     const path = plistPath(homeDir);
     expect(path).toBe(join(homeDir, "Library", "LaunchAgents", "com.loomwright.studio.kernel.plist"));
-    expect(result).toEqual({ label: SERVICE_LABEL, plistPath: path, dataDir, appDir: join(dataDir, "app", VERSION), version: VERSION });
+    expect(result).toEqual({
+      label: SERVICE_LABEL,
+      plistPath: path,
+      dataDir,
+      appDir: join(dataDir, "app", VERSION),
+      version: VERSION,
+      tools: { gh: null, git: null },
+      path: LAUNCHD_DEFAULT_PATH,
+    });
     expect(readdirSync(agents).sort()).toEqual([SIBLING, `${SERVICE_LABEL}.plist`].sort());
     siblingUnchanged();
-    expect(readFileSync(path, "utf8")).toBe(renderPlist({ nodePath: "/usr/local/bin/node", daemonPath: installedDaemon, dataDir, env: {} }));
+    expect(readFileSync(path, "utf8")).toBe(
+      renderPlist({ nodePath: "/usr/local/bin/node", daemonPath: installedDaemon, dataDir, env: {}, path: LAUNCHD_DEFAULT_PATH }),
+    );
     expect(statSync(path).mode & 0o777).toBe(0o644);
     expect(statSync(join(dataDir, "logs")).mode & 0o777).toBe(0o700);
 
@@ -322,6 +403,24 @@ describe("installService", () => {
       { file: LAUNCHCTL_PATH, args: ["bootstrap", `gui/${UID}`, path] },
     ]);
     expect(LAUNCHCTL_PATH).toBe("/bin/launchctl");
+  });
+
+  it("23h: the plist's PATH holds the dir gh and git resolve to on the installer's PATH, and the result names them", () => {
+    const l = launchctl();
+    const bin = toolsBin();
+    const result = installService({ dataDir, sourceRoot, env: { PATH: `/nowhere:${bin}:/usr/bin` } }, l.deps);
+    expect(result.tools).toEqual({ gh: join(bin, "gh"), git: join(bin, "git") });
+    expect(result.path).toBe(`${bin}:${LAUNCHD_DEFAULT_PATH}`);
+    expect(plistString(readFileSync(plistPath(homeDir), "utf8"), "PATH")).toBe(result.path);
+    expect(l.warnings).toEqual([]);
+  });
+
+  it("23h: a tool not on the installer's PATH is one warning line each, and the install goes on", () => {
+    const l = launchctl();
+    const result = installService({ dataDir, sourceRoot, env: {} }, l.deps);
+    expect(l.warnings).toEqual([serviceToolWarning("gh"), serviceToolWarning("git")]);
+    expect(result.path).toBe(LAUNCHD_DEFAULT_PATH);
+    expect(l.verbs()).toContain("bootstrap");
   });
 
   it("boots the loaded agent out and checks it is gone before bootstrapping it again", () => {
@@ -654,10 +753,11 @@ describe("a protected install target (D31, A2)", () => {
 
 describe("a version-manager node (A4)", () => {
   it("prints one warning line and still installs", () => {
+    const env = { PATH: toolsBin() };
     for (const dir of VERSION_MANAGER_DIRS) {
       const l = launchctl();
       const nodePath = join(homeDir, dir, "versions", "node", "v22.14.0", "bin", "node");
-      installService({ dataDir, sourceRoot, nodePath, env: {} }, l.deps);
+      installService({ dataDir, sourceRoot, nodePath, env }, l.deps);
       expect(l.warnings).toEqual([
         `studio service: warning: node ${nodePath} is under ~/${dir}; the agent stops working if that Node version is removed (then run service install again with another node)`,
       ]);
@@ -665,7 +765,7 @@ describe("a version-manager node (A4)", () => {
     }
     expect(VERSION_MANAGER_DIRS).toEqual([".nvm", ".volta", ".asdf", ".fnm", ".nodenv", join(".local", "share", "fnm")]);
     const other = launchctl();
-    installService({ dataDir, sourceRoot, nodePath: "/usr/local/bin/node", env: {} }, other.deps);
+    installService({ dataDir, sourceRoot, nodePath: "/usr/local/bin/node", env }, other.deps);
     expect(other.warnings).toEqual([]);
     expect(versionManagerWarning(join(homeDir, ".nvmrc-not-a-dir", "node"), homeDir)).toBeUndefined();
   });

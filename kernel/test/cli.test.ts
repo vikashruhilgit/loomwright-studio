@@ -2,7 +2,7 @@
 // 127.0.0.1 and an OS-assigned port, with an in-memory Keychain. Never the
 // real Keychain, the real daemon or a model.
 import { subscribe, unsubscribe } from "node:diagnostics_channel";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -534,12 +534,23 @@ describe("studio service (item 09, AC1; H07)", () => {
     writeFileSync(join(dir, "api.json"), JSON.stringify({ port: server.port, host: "127.0.0.1", pid: SERVICE_PID, started_at: NOW.toISOString() }));
   }
 
-  function serviceCli(o: { fail?: string; stderr?: string; platform?: NodeJS.Platform; pid?: number; nodePath?: string; version?: string } = {}) {
+  /** 23h: a dir holding an executable `gh` and `git`, the installer PATH every install test runs with unless it says otherwise. */
+  function toolsBin(): string {
+    const dir = join(tmp, "tools-bin");
+    mkdirSync(dir, { recursive: true });
+    for (const tool of ["gh", "git"]) {
+      writeFileSync(join(dir, tool), "#!/bin/sh\n");
+      chmodSync(join(dir, tool), 0o755);
+    }
+    return dir;
+  }
+
+  function serviceCli(o: { fail?: string; stderr?: string; platform?: NodeJS.Platform; pid?: number; nodePath?: string; version?: string; env?: Record<string, string> } = {}) {
     const sourceRoot = sourceKernel(o.version);
     const { homeDir, launchctl, deps } = serviceDeps(o);
     const serviceData = join(tmp, "service-data");
     newKernelApiInfo(serviceData);
-    const options = { sourceRoot, env: {}, ...(o.nodePath === undefined ? {} : { nodePath: o.nodePath }) };
+    const options = { sourceRoot, env: o.env ?? { PATH: toolsBin() }, ...(o.nodePath === undefined ? {} : { nodePath: o.nodePath }) };
     const c = cli({ dataDir: serviceData, service: { options, deps } });
     return { ...c, homeDir, launchctl, serviceData };
   }
@@ -550,7 +561,7 @@ describe("studio service (item 09, AC1; H07)", () => {
     oneLine(c.stdout.text());
     const appDir = join(c.serviceData, "app", VERSION);
     expect(c.stdout.text()).toBe(
-      `studio: service ${SERVICE_LABEL} installed and loaded: kernel ${kernelVersion()} (pid ${SERVICE_PID}) running from ${appDir} (${plistPath(c.homeDir)})\n`,
+      `studio: service ${SERVICE_LABEL} installed and loaded: kernel ${kernelVersion()} (pid ${SERVICE_PID}) running from ${appDir} (${plistPath(c.homeDir)}); its runs use gh ${join(tmp, "tools-bin", "gh")}, git ${join(tmp, "tools-bin", "git")}\n`,
     );
     expect(existsSync(plistPath(c.homeDir))).toBe(true);
     expect(existsSync(join(appDir, "dist", "daemon.js"))).toBe(true);
@@ -632,8 +643,22 @@ describe("studio service (item 09, AC1; H07)", () => {
     expect(existsSync(protectedDir)).toBe(false);
   });
 
+  it("23h: no gh on the installer's PATH: one warning line on stderr, the install goes on, and its line says gh was not found", async () => {
+    const bin = join(tmp, "git-only");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "git"), "#!/bin/sh\n");
+    chmodSync(join(bin, "git"), 0o755);
+    const c = serviceCli({ env: { PATH: bin } });
+    expect(await c.run("service", "install")).toBe(0);
+    oneLine(c.stderr.text());
+    expect(c.stderr.text()).toContain("warning: gh is not on this shell's PATH");
+    oneLine(c.stdout.text());
+    expect(c.stdout.text()).toContain(`; its runs use gh not found, git ${join(bin, "git")}\n`);
+    expect(readFileSync(plistPath(c.homeDir), "utf8")).toContain(`<key>PATH</key>\n    <string>${bin}:/usr/bin:/bin:/usr/sbin:/sbin</string>`);
+  });
+
   it("install with CliDeps.dataDir and an empty env: the plist's logs and STUDIO_DATA_DIR are that dir", async () => {
-    const c = serviceCli();
+    const c = serviceCli({ env: {} });
     expect(await c.run("service", "install")).toBe(0);
     const xml = readFileSync(plistPath(c.homeDir), "utf8");
     const dataDir = join(tmp, "service-data");
@@ -665,9 +690,10 @@ describe("studio service (item 09, AC1; H07)", () => {
   it("install with no CliDeps.dataDir (production): the data dir is STUDIO_DATA_DIR, else ~/.loomwright-studio under homeDir", async () => {
     const sourceRoot = sourceKernel();
     const envDir = join(tmp, "env-data");
+    const PATH = toolsBin();
     for (const [env, expected] of [
-      [{ STUDIO_DATA_DIR: envDir }, envDir],
-      [{}, join(tmp, "home", ".loomwright-studio")],
+      [{ STUDIO_DATA_DIR: envDir, PATH }, envDir],
+      [{ PATH }, join(tmp, "home", ".loomwright-studio")],
     ] as const) {
       const { homeDir, deps } = serviceDeps();
       const stdout = out();

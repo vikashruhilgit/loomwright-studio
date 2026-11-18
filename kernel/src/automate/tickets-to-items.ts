@@ -18,11 +18,25 @@
 // kernel sets no dedupe policy beyond that (invariant 1); the playbook decides
 // which tickets to hand over.
 //
+// The backlog keeps what earlier handovers listed (phase 8 item 23i). Several
+// crew sessions can hand over tickets for one checkout before any run starts, and
+// each used to replace the checklist with its own tickets only: the run that
+// started read the last one, and the others were dropped without a trace. Now an
+// earlier checklist line is kept when the kernel wrote it (`KEPT_LINE`, the exact
+// `renderBacklog` shape; anything else in the file is not ours and is dropped), its
+// item file is still a regular file in the folder, Loomwright has not stamped that
+// item finished (`isFinished`), and no run file in the checkout names it yet: an
+// item a run already queued is that run's (it may be parked awaiting a merge), and
+// listing it again would build it twice. So only what no run has taken is carried.
+// Earlier lines come first, in their order, then this handover's new ones; a
+// ticket handed over again keeps its place.
+//
 // The `studio` CLI loads this module through the feature registry, so it imports
 // only `node:` builtins: never the Agent SDK, the session manager or `kernel.ts`.
 import { createHash, randomBytes } from "node:crypto";
-import { linkSync, lstatSync, mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
+import { runFileTexts } from "./run-state.js";
 import { UNSAFE_BODY_CHARS, UNSAFE_TEXT_CHAR, oneLine } from "./text-rules.js";
 
 /** Where the items go, relative to the checkout (Loomwright's `.supervisor/requirements/` convention). */
@@ -30,6 +44,18 @@ export const STUDIO_ITEMS_DIR = ".supervisor/requirements/studio";
 
 /** The plan-doc name `/automate --backlog` reads. */
 export const BACKLOG_FILE = "_BACKLOG.md";
+
+/** A backlog larger than this is not read for earlier items (the kernel never writes one near it). */
+export const MAX_BACKLOG_BYTES = 256 * 1024;
+
+/** At most this many items in one backlog, earlier ones included: a handover past it is refused. */
+export const MAX_BACKLOG_ITEMS = 200;
+
+/** A checklist line `renderBacklog` wrote: an unchecked item under `STUDIO_ITEMS_DIR`, named as `itemFileName` names one. */
+const KEPT_LINE = /^- \[ \] \.supervisor\/requirements\/studio\/(ticket-[a-z0-9-]{1,40}-[0-9a-f]{8}\.md)$/;
+
+/** Loomwright's finished stamps: the item's first `## Status:` line opening with one of these is not carried. */
+const FINISHED_STATUS = /^## Status:\s*(done|done_with_escalation|abandoned)\b/i;
 
 /** The bounds on one handover. */
 export const MAX_TICKETS = 20;
@@ -64,6 +90,8 @@ export interface PreparedTickets {
   /** The invocation for it (`automateInvocation`): the one thing the session runs. */
   readonly invocation: string;
   readonly items: readonly PreparedItem[];
+  /** Repo-root-relative items an earlier handover listed that the backlog still lists, ahead of this one's (23i). */
+  readonly carried: readonly string[];
 }
 
 /** A dedupe ref is a plain token: no space, no control character, no markdown beyond `._:/#@-`. */
@@ -198,6 +226,51 @@ function replaceFile(path: string, text: string): void {
   }
 }
 
+/** Whether the item at `path` carries one of Loomwright's finished stamps on its first `## Status:` line. */
+function isFinished(path: string): boolean {
+  const line = readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .find((l) => l.startsWith("## Status:"));
+  return line !== undefined && FINISHED_STATUS.test(line);
+}
+
+/**
+ * The item file names the backlog in `dir` lists that no run has taken yet (23i):
+ * `KEPT_LINE`s, in order and without repeats, whose item is a regular file in
+ * `dir`, not `isFinished`, and named by no run file in `checkout`. No backlog, or
+ * one that is not a regular file or is over `MAX_BACKLOG_BYTES`, keeps nothing (it
+ * is replaced as before). A run file that can't be read throws: nothing is written.
+ */
+function earlierItems(dir: string, checkout: string): string[] {
+  const backlog = join(dir, BACKLOG_FILE);
+  let st;
+  try {
+    st = lstatSync(backlog);
+  } catch (err) {
+    if ((err as { code?: unknown }).code === "ENOENT") return [];
+    throw err;
+  }
+  if (!st.isFile() || st.size > MAX_BACKLOG_BYTES) return [];
+  const runs = runFileTexts(checkout);
+  const names: string[] = [];
+  for (const line of readFileSync(backlog, "utf8").split(/\r?\n/)) {
+    const name = KEPT_LINE.exec(line)?.[1];
+    if (name === undefined || names.includes(name)) continue;
+    if (runs.some((text) => text.includes(`${STUDIO_ITEMS_DIR}/${name}`))) continue;
+    const path = join(dir, name);
+    let item;
+    try {
+      item = lstatSync(path);
+    } catch (err) {
+      if ((err as { code?: unknown }).code === "ENOENT") continue;
+      throw err;
+    }
+    if (!item.isFile() || isFinished(path)) continue;
+    names.push(name);
+  }
+  return names;
+}
+
 /**
  * `checkout/.supervisor/requirements/studio`, created one level at a time: a level
  * that exists must be a real directory (never a symlink, which could lead out of the
@@ -244,17 +317,24 @@ export function writeTicketItems(checkout: string, repo: string, tickets: readon
   // The invocation first: a path that cannot be put in one is refused before any item is written.
   const backlog = join(dir, BACKLOG_FILE);
   const invocation = automateInvocation(backlog);
+  // 23i: what earlier handovers listed stays, ahead of this one; read before anything is written.
+  const earlier = earlierItems(dir, checkout);
+  const names = [...new Set([...earlier, ...tickets.map((t) => itemFileName(t.ref))])];
+  if (names.length > MAX_BACKLOG_ITEMS) {
+    throw new RangeError(`invalid_input: the backlog would list ${names.length} items, over ${MAX_BACKLOG_ITEMS}; let the run drain it first`);
+  }
   const items: PreparedItem[] = tickets.map((t) => {
     const path = join(dir, itemFileName(t.ref));
     return { ref: t.ref, path, existing: !writeNew(path, renderItem(t, repo)) };
   });
+  const handed = new Set(tickets.map((t) => itemFileName(t.ref)));
   replaceFile(
     backlog,
     renderBacklog(
       repo,
-      tickets.map((t) => `${STUDIO_ITEMS_DIR}/${itemFileName(t.ref)}`),
+      names.map((n) => `${STUDIO_ITEMS_DIR}/${n}`),
       invocation,
     ),
   );
-  return { backlog, invocation, items };
+  return { backlog, invocation, items, carried: earlier.filter((n) => !handed.has(n)).map((n) => `${STUDIO_ITEMS_DIR}/${n}`) };
 }
