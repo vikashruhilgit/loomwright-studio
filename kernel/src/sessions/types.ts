@@ -50,6 +50,17 @@ export function isTerminalStatus(status: string): boolean {
 }
 
 /**
+ * The ended statuses a continuation (`StartSessionParams.continueFrom`) may resume the conversation of. Never
+ * `abandoned` (its group may be alive), and never `interrupted`/`orphaned`, which only `resumeSession` takes. The
+ * manager enforces it; D47's run continuation (`automate/launch.ts`) reads the same list, so the two cannot drift.
+ */
+export const CONTINUABLE_STATUSES: readonly SessionStatus[] = ["completed", "failed", "failed:auth", "stopped"];
+
+export function isContinuableStatus(status: string): boolean {
+  return (CONTINUABLE_STATUSES as readonly string[]).includes(status);
+}
+
+/**
  * The per-session tool policy the kernel's `PreToolUse` gate enforces. Deny by
  * default: a tool runs only when this policy allows it.
  *

@@ -95,7 +95,7 @@ import { isRepoName, loomwrightMergeFlags, TRUST_UNPROTECTED_FLAG } from "../int
 import { isPositiveId, messageOf } from "../loop/internal.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
 import { resolvedPath } from "../protected-paths.js";
-import { SessionError, TERMINAL_STATUSES, isTerminalStatus } from "../sessions/types.js";
+import { SessionError, TERMINAL_STATUSES, isContinuableStatus, isTerminalStatus } from "../sessions/types.js";
 import type { SessionHandle, ToolPolicy } from "../sessions/types.js";
 import { isRunId, pausedRuns, readRunState, resumeWouldDoubleDrain, summarizeRuns } from "./run-state.js";
 import { deadLockOf, releaseKernelLock } from "../loomwright/run-lock.js";
@@ -572,8 +572,9 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   // 23o: the session to continue is this crew member's, in this checkout, and has ended (a live one can repeat the
   // held call itself: a `once` grant matches its next identical call). One the kernel's own restart ended is
   // `interrupted`, its group confirmed dead: `continueFrom` does not take it, so it is resumed in place instead
-  // (the manager's resume, as the brain resumes an interrupted crew session). An `orphaned` one may still be running,
-  // so nothing continues it until the kernel's reaper settles it (PR #291 review).
+  // (the manager's resume, as the brain resumes an interrupted crew session). An `orphaned` one, or an `abandoned` one
+  // (the owner released an orphaned row the kernel could not verify), may still be running, so nothing continues it
+  // (PR #291 reviews). "Ended" is the manager's own list (`isContinuableStatus`), so the two cannot disagree.
   let resumeInterrupted = false;
   if (continuation !== undefined) {
     const earlier = sessions.getSession(continuation.session);
@@ -581,11 +582,11 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
     if (earlier.agent !== run.agent || earlier.cwd === null || earlier.cwd === undefined || resolvedPath(earlier.cwd) !== resolvedPath(checkout)) {
       return skip(`continue_session_mismatch: session ${continuation.session}`);
     }
-    if (earlier.status === "orphaned") {
-      return skip(`continue_session_orphaned: session ${continuation.session} may still be running; the kernel settles it before anything continues it`);
+    if (earlier.status === "orphaned" || earlier.status === "abandoned") {
+      return skip(`continue_session_${earlier.status}: session ${continuation.session} may still be running; the kernel settles it before anything continues it`);
     }
     resumeInterrupted = earlier.status === "interrupted";
-    if (!resumeInterrupted && !isTerminalStatus(earlier.status)) return skip(`continue_session_live: session ${continuation.session} can repeat the call itself`);
+    if (!resumeInterrupted && !isContinuableStatus(earlier.status)) return skip(`continue_session_live: session ${continuation.session} can repeat the call itself`);
   }
 
   // D46 (23n): a run lock whose holder is dead. The kernel's own (a run session of ours that has ended) is released
@@ -649,6 +650,9 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
     });
   } catch (err) {
     if (isLoomwrightRefusal(err)) return skip(`loomwright_unresolved: ${err.code}: ${err.message}`);
+    // The manager re-checks a continuation's session (a status the gate above passed can still be refused, e.g. a
+    // `stopped` row whose kill was never confirmed): its refusal is the answer, stored, never a failed event.
+    if (continuation !== undefined && err instanceof SessionError && err.code === "not_resumable") return skip(`continue_session_refused: ${err.message}`);
     throw err;
   }
   return releasedLockOf === undefined ? { session_id: handle.id } : { session_id: handle.id, released_lock_of: releasedLockOf };

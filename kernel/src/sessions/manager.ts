@@ -64,6 +64,7 @@ import {
   MAX_RESUME_ATTEMPTS,
   SessionError,
   TERMINAL_STATUSES,
+  isContinuableStatus,
   isTerminalStatus,
 } from "./types.js";
 import type {
@@ -682,8 +683,6 @@ function resultErrorText(result: SDKResultMessage): string {
   return `result ${result.subtype}${result.is_error ? " (is_error)" : ""}${errors === "" ? "" : `: ${errors}`}`;
 }
 
-/** The ended statuses a continuation (`StartSessionParams.continueFrom`) may resume the conversation of. Never `abandoned` (its group may be alive). */
-const CONTINUABLE_STATUSES: readonly string[] = ["completed", "failed", "failed:auth", "stopped"];
 
 /** The CLI's error when a resume names an SDK conversation it has no transcript for (docs/evidence/p17-resume-completed-session.md, case d). */
 const CONVERSATION_GONE_PREFIX = "No conversation found with session ID:";
@@ -2602,7 +2601,7 @@ export class SessionManager {
    */
   #continuationBlocker(row: SessionRow): string | undefined {
     if (!isNonEmptyString(row.sdk_session_id)) return `session ${row.id} has no SDK session id`;
-    if (this.#live.has(row.id) || !CONTINUABLE_STATUSES.includes(row.status) || row.kill_incomplete_at !== null) {
+    if (this.#live.has(row.id) || !isContinuableStatus(row.status) || row.kill_incomplete_at !== null) {
       return `session ${row.id} is ${row.status}${row.kill_incomplete_at === null ? "" : " with a kill left incomplete"}; a continuation needs an ended session`;
     }
     // One CLI per SDK conversation: another session on it that this kernel still runs, or a row that is live, resumable or may have a live group, refuses.

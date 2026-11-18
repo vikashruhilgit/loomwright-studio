@@ -22,6 +22,7 @@ import { decideApproval, holdOrUseGrant } from "../src/approvals/store.js";
 import type { ContributedRouteRequest, ContributedRouteResponse } from "../src/features/contribution.js";
 import { EventLoop, enqueueEvent, getQueueRow, getWorkStep } from "../src/loop/index.js";
 import type { EventSessions } from "../src/loop/types.js";
+import { SessionError } from "../src/sessions/index.js";
 import type { ResumeSessionParams, SessionHandle, SessionRow, StartSessionParams } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { appendEvent } from "../src/loop/internal.js";
@@ -625,20 +626,46 @@ describe("an approval held by a run session continues that session (23o)", () =>
     expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({ session_id: 301 });
   });
 
-  it("an orphaned run session (its group may still be alive) is neither resumed nor reported as able to repeat the call", async () => {
+  it("the manager's own refusal of a continuation (a stopped row whose kill was never confirmed) is a stored skip, not a failed event", async () => {
     const starts: StartSessionParams[] = [];
-    const resumes: { id: number; params: ResumeSessionParams }[] = [];
-    const loop = loopWith(starts, resumes);
-    const id = await heldRunSession(loop, "orphaned");
+    const loop = loopWith(starts);
+    const id = await heldRunSession(loop);
     decideApproval(store, { id, decision: "once", by: "owner" }, NOW);
     const event = store.prepare<[string], { id: number }>("SELECT id FROM event_queue WHERE source_ref = ?").get(`approval:${id}`);
-    await loop.tick();
-    expect([starts.length, resumes.length]).toEqual([1, 0]);
+    const refusing = new EventLoop({
+      store,
+      handlers: { message: handleAutomateRun },
+      sessions: {
+        startSession: () => Promise.reject(new SessionError("not_resumable", "session 301 is stopped but its kill was never confirmed")),
+        resumeSession: () => Promise.reject(new Error("unexpected resume")),
+        getSession: (sid) => (sid === CALLER.id ? ({ ...CALLER } as unknown as SessionRow) : (store.prepare("SELECT * FROM sessions WHERE id = ?").get(sid) as SessionRow | undefined)),
+      },
+    });
+    expect(await refusing.tick()).toMatchObject({ done: 1, failed: 0 });
     expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({
       session_id: null,
-      skipped: "continue_session_orphaned: session 301 may still be running; the kernel settles it before anything continues it",
+      skipped: "continue_session_refused: session 301 is stopped but its kill was never confirmed",
     });
   });
+
+  // `orphaned`: the reaper could not confirm its group dead. `abandoned`: the owner released an orphaned row the kernel
+  // could not verify (second PR #291 review), so its group may be alive too, and the manager refuses to continue it.
+  for (const status of ["orphaned", "abandoned"]) {
+    it(`an ${status} run session (its group may still be alive) is neither continued nor reported as able to repeat the call`, async () => {
+      const starts: StartSessionParams[] = [];
+      const resumes: { id: number; params: ResumeSessionParams }[] = [];
+      const loop = loopWith(starts, resumes);
+      const id = await heldRunSession(loop, status);
+      decideApproval(store, { id, decision: "once", by: "owner" }, NOW);
+      const event = store.prepare<[string], { id: number }>("SELECT id FROM event_queue WHERE source_ref = ?").get(`approval:${id}`);
+      expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+      expect([starts.length, resumes.length]).toEqual([1, 0]);
+      expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({
+        session_id: null,
+        skipped: `continue_session_${status}: session 301 may still be running; the kernel settles it before anything continues it`,
+      });
+    });
+  }
 
   it("a session no kernel run started (a crew session) still gets the decision as a message", () => {
     store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (400, 'mason', 'completed', ?)").run(checkout);
