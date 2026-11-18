@@ -176,6 +176,15 @@ describe("POST /automate/paused-runs/:run_id/resume (23j)", () => {
     expect(listPausedRuns(store).runs[0]?.blocked).toBe("resume_queued");
   });
 
+  // PR #291 review: run ids are a date and a sequence per checkout, so another checkout's run can share this one's id.
+  it("a resume queued for the same run id in another checkout does not block this one", async () => {
+    queueSourceLaunch();
+    enqueueEvent(store, { kind: "message", payload: { agent: "mason", [AUTOMATE_RUN_KEY]: { kind: "resume", run_id: RUN_ID, checkout: "/elsewhere/repo" } } }, new Date());
+    expect(listPausedRuns(store).runs[0]?.blocked).toBeNull();
+    expect((await resume()).status).toBe(200);
+    expect(listPausedRuns(store).runs[0]?.blocked).toBe("resume_queued");
+  });
+
   it("refuses what the list would not offer: a blocked run 409, another run, agent or checkout 404, a bad id or body 400", async () => {
     expect(await resume()).toMatchObject({ status: 409, body: { error: "no_kernel_run" } });
     queueSourceLaunch();
@@ -625,6 +634,27 @@ describe("an approval held by a run session continues that session (23o)", () =>
     expect(resumes[0]).toMatchObject({ id: 301, params: { cwd: checkout, prompt, policy: starts[0]?.policy, playbook: starts[0]?.playbook } });
     expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({ session_id: 301 });
   });
+
+  // PR #291 review: these are the checks that keep a decision on one session from continuing a different one.
+  for (const c of [
+    { name: "is gone", change: "UPDATE event_queue SET payload_json = json_set(payload_json, '$.automate_run.session', 999) WHERE source_ref LIKE 'approval:%'", skipped: "continue_session_gone: session 999" },
+    { name: "is another crew member's", change: "UPDATE sessions SET agent = 'ada' WHERE id = 301", skipped: "continue_session_mismatch: session 301" },
+    { name: "ran in another checkout", change: "UPDATE sessions SET cwd = '/elsewhere/repo' WHERE id = 301", skipped: "continue_session_mismatch: session 301" },
+    { name: "has no recorded checkout", change: "UPDATE sessions SET cwd = NULL WHERE id = 301", skipped: "continue_session_mismatch: session 301" },
+  ]) {
+    it(`a decision whose session ${c.name} continues nothing`, async () => {
+      const starts: StartSessionParams[] = [];
+      const resumes: { id: number; params: ResumeSessionParams }[] = [];
+      const loop = loopWith(starts, resumes);
+      const id = await heldRunSession(loop);
+      decideApproval(store, { id, decision: "once", by: "owner" }, NOW);
+      store.prepare(c.change).run();
+      const event = store.prepare<[string], { id: number }>("SELECT id FROM event_queue WHERE source_ref = ?").get(`approval:${id}`);
+      expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+      expect([starts.length, resumes.length]).toEqual([1, 0]);
+      expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({ session_id: null, skipped: c.skipped });
+    });
+  }
 
   it("the manager's own refusal of a continuation (a stopped row whose kill was never confirmed) is a stored skip, not a failed event", async () => {
     const starts: StartSessionParams[] = [];

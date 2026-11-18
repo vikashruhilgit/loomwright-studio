@@ -103,18 +103,22 @@ function sourceOf(store: Store, agent: string, checkout: string): { source: Sour
   return undefined;
 }
 
-/** Whether a resume for `runId` is already queued and not yet handled. */
-function resumeQueued(store: Store, runId: string): boolean {
-  return (
-    store
-      .prepare<[string], number>(
-        `SELECT 1 FROM event_queue WHERE status = 'pending' AND json_valid(payload_json)
-           AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.kind') = 'resume'
-           AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.run_id') = ? LIMIT 1`,
-      )
-      .pluck()
-      .get(runId) !== undefined
-  );
+/**
+ * Whether a resume for `runId` in `checkout` is already queued and not yet handled. A run id is a date and a
+ * sequence per checkout, so another checkout's run can share it: the checkout is compared too, as `sourceOf`
+ * compares it (`resolve`). PR #291 review.
+ */
+function resumeQueued(store: Store, runId: string, checkout: string): boolean {
+  const want = resolve(checkout);
+  return store
+    .prepare<[string], string | null>(
+      `SELECT json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.checkout') FROM event_queue WHERE status = 'pending' AND json_valid(payload_json)
+         AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.kind') = 'resume'
+         AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.run_id') = ?`,
+    )
+    .pluck()
+    .all(runId)
+    .some((queued) => typeof queued === "string" && resolve(queued) === want);
 }
 
 /**
@@ -140,7 +144,7 @@ function runSessionLive(store: Store, agent: string, checkout: string): boolean 
 }
 
 /** Why `run_id` in `checkout` can't be resumed now (the launch checks it all again), or `null`. */
-function blockOf(store: Store, agentStatus: string, live: boolean, settling: boolean, runId: string, source: Source | undefined): ResumeBlock {
+function blockOf(store: Store, agentStatus: string, live: boolean, settling: boolean, runId: string, checkout: string, source: Source | undefined): ResumeBlock {
   if (source === undefined) return "no_kernel_run";
   if (isKillSwitchEngaged(store)) return "kill_switch_engaged";
   if (agentStatus !== "active") return "agent_not_active";
@@ -148,7 +152,7 @@ function blockOf(store: Store, agentStatus: string, live: boolean, settling: boo
   const pb = store.prepare<[number], { mode: string; status: string; version: number }>("SELECT mode, status, version FROM playbooks WHERE id = ?").get(source.playbook);
   if (pb === undefined || pb.mode !== "live" || pausedPlaybook(pb, source.playbook_version) !== undefined) return "playbook_not_live";
   if (live) return "run_live";
-  if (resumeQueued(store, runId)) return "resume_queued";
+  if (resumeQueued(store, runId, checkout)) return "resume_queued";
   if (settling) return "lock_settling";
   return null;
 }
@@ -193,7 +197,7 @@ export function listPausedRuns(store: Store): { runs: PausedRunView[]; unreadabl
     const resumeAt = dead.kind === "foreign" && dead.reclaimAt !== null ? new Date(dead.reclaimAt * 1000).toISOString() : null;
     for (const run of listed) {
       const live = sessionLive || resumeWouldDoubleDrain(read, run.run_id);
-      const blocked = blockOf(store, status, live, settling, run.run_id, owner.source);
+      const blocked = blockOf(store, status, live, settling, run.run_id, checkout, owner.source);
       runs.push({ agent, checkout, repo: owner.source?.repo ?? null, ...run, blocked, resume_at: blocked === "lock_settling" ? resumeAt : null });
     }
   }

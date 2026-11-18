@@ -109,6 +109,15 @@ export function holderAlive(pid: number, pidStart: string | null): boolean {
  * The checkout's run lock when its holder is dead: the kernel's own (a kernel
  * session in this checkout whose process group is the lock's pid and that no
  * longer runs) or another's, with Loomwright's reclaim time.
+ *
+ * Honest limit (PR #291 review): "the kernel's own" is the pid and checkout
+ * match alone. The lock's `session_id` is the id Loomwright mints for its own
+ * run (`automate:`/`supervisor:<session_id>`), which no kernel session row
+ * records, so it cannot be cross-checked without reading Loomwright's state.
+ * A foreign holder whose pid happens to equal an ended kernel session's process
+ * group in the same checkout would be released before Loomwright's reclaim age.
+ * Its holder is dead either way (`liveness` confirms it first), so that is an
+ * early release of a dead lock, never a second drain.
  */
 export function deadLockOf(store: Store, checkout: string, alive: (pid: number, pidStart: string | null) => boolean = holderAlive): DeadLock {
   const meta = readMeta(checkout);
