@@ -18,6 +18,7 @@
 import type { AppPreferences, SettingsResponse } from "../../api/contract";
 import { printable } from "../approvals/printable";
 import type { Reply } from "../schedules/model";
+import { countText } from "../../components/format";
 
 /** The ids the unit tests and the e2e spec target. */
 export const SETTINGS_TEST_IDS = {
@@ -383,7 +384,7 @@ export const HINT_SET_BY = "set by you";
  */
 export function hintWords(hint: number | undefined, refused?: { readonly error: string; readonly message: string }): HintWords {
   if (hint === undefined) return { value: HINT_NOT_SET, tokens: undefined, set: false, note: undefined };
-  const tokens = `${hint.toLocaleString("en-US")} tokens`;
+  const tokens = `${countText(hint)} tokens`;
   const value = `${tokens} · ${HINT_SET_BY}`;
   if (refused === undefined || refused.error === "model_unset") return { value, tokens, set: true, note: undefined };
   return { value, tokens, set: true, note: `Not applied: the kernel refuses this file (${safe(refused.message)}), so Summarize is never highlighted.` };

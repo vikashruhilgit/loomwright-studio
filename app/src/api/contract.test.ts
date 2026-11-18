@@ -13,7 +13,8 @@ describe("CONTRACT_ROUTES", () => {
   it("holds only GET, POST and PUT routes on absolute paths, with `:param` segments", () => {
     for (const route of CONTRACT_ROUTES) {
       expect(["GET", "POST", "PUT"]).toContain(route.method);
-      expect(route.path).toMatch(/^(\/(:?[a-z][a-z0-9-]*))+$/);
+      // A static segment is kebab-case; a `:param` may use `_` (the kernel declares `:run_id`).
+      expect(route.path).toMatch(/^(\/(:[a-z][a-z0-9_]*|[a-z][a-z0-9-]*))+$/);
     }
   });
 

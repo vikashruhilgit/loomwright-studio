@@ -20,6 +20,7 @@
 // Plain TypeScript: no React.
 import type { EventFrame, SessionSummary, TaskBoardItem } from "../../api/contract";
 import { printable } from "../approvals/printable";
+import { timeText } from "../../components/format";
 
 /** One event as a history line. */
 export interface HistoryLine {
@@ -47,7 +48,7 @@ const SENTENCE_LIMIT = 240;
 function secondsText(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return "";
-  return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+  return timeText(at, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
 }
 
 function fieldOf(payload: unknown, name: string): unknown {

@@ -21,6 +21,7 @@
 import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { formatEstimate } from "../formatEstimate";
 import "./StreamingLog.css";
+import { countText } from "../format";
 
 /** The README's line kinds. Mapping kernel `SessionOutputKind` rows onto these is the Sessions screen's job. */
 export type StreamingLogLineKind = "tool" | "output" | "prose" | "error" | "ok";
@@ -83,7 +84,7 @@ const KIND_WORD: Readonly<Partial<Record<StreamingLogLineKind, string>>> = {
 };
 
 function formatTokens(tokens: number): string {
-  return `${tokens.toLocaleString("en-US")} tokens`;
+  return `${countText(tokens)} tokens`;
 }
 
 /** The words "Read latest" announces for a line. */

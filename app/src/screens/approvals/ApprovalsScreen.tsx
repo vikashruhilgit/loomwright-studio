@@ -71,6 +71,7 @@ import { MergeApprovalCard } from "./MergeApprovalCard";
 import { payloadText, printable } from "./printable";
 import { IN_CHAT, MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, approvalSubject, charterDisplayParts, isCharterApproval, isMergeApproval, mergeApprovalOf } from "./subject";
 import "./approvals.css";
+import { timeText } from "../../components/format";
 
 export { MERGE_ALWAYS_REFUSED };
 
@@ -140,7 +141,7 @@ function clock(iso: string | null): string {
   if (iso === null) return "unknown time";
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return printable(iso);
-  return at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return timeText(at, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 function decisionWord(a: Approval): string {

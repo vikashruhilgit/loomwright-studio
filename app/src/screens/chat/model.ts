@@ -12,6 +12,7 @@ import type { StatusState } from "../../components/StatusDot/StatusDot";
 import { liveStoreFor } from "../../store/react";
 import type { ResourceName } from "../../store/resources";
 import type { ResourceError } from "../../store/store";
+import { dateTimeText, timeText } from "../../components/format";
 
 export const WRIGHT = "wright";
 
@@ -202,14 +203,14 @@ export function clock(iso: string | null | undefined): string {
   if (iso === null || iso === undefined) return "";
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return iso;
-  return at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  return timeText(at, { hour: "2-digit", minute: "2-digit", hour12: false }, []);
 }
 
 /** A date and time, for a retry or a next fire. */
 export function when(iso: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return iso;
-  return at.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+  return dateTimeText(at, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }, []);
 }
 
 // ---- writes -------------------------------------------------------------------------------

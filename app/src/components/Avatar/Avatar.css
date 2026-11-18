@@ -1,5 +1,7 @@
 /* The stitched sea-creature avatar, ported from the approved design (docs/design/avatar/avatar.css).
-   Layers: drift (whole), rig (body from its base), tail (the loose thread). Every colour is a token:
+   Layers: spin (the stitch ring), drift (whole), rig (body from its base), tail (the loose thread). They are HTML
+   spans, not the design's SVG groups, so their transform animations run on the compositor (see Avatar.tsx `VIEW_BOX`);
+   each fills the root and draws the same viewBox, so a viewBox point is a percentage of a layer: 1 unit = 100/36 %. Every colour is a token:
    the identity parts paint with --bot (the agent's own hue); only the waiting ring uses a state colour.
    Avatar.tsx renders only the active state's thread path(s), so no rule here toggles a thread's display. */
 .bot {
@@ -16,11 +18,17 @@
   overflow: visible;
   display: block;
 }
-.bot .drift {
-  transform-origin: 16px 16px;
+.bot .layer {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.bot .drift,
+.bot .spin {
+  transform-origin: 50% 50%;
 }
 .bot .rig {
-  transform-origin: 16px 29px;
+  transform-origin: 50% 86.1111%;
 }
 .bot .fill {
   fill: var(--bot, var(--accent));
@@ -45,10 +53,10 @@
 .bot .knot {
   fill: var(--bot, var(--accent));
 }
-.bot.working .st,
-.bot.working .ln {
-  animation: run 1.2s linear infinite;
-}
+/* The design also runs the outline's dashes while working (`run` on .st and .ln). Owner's call, 2026-11-18: they stay
+   still. A dash offset along a path has no compositor path, so it ran a full main-thread frame at display rate: one
+   working avatar alone held Tasks at ~34% renderer CPU (~10% even stepped to 10 updates a cycle). Working still reads
+   from the lean, the fluttering thread and the turning stitch ring. */
 .bot .t {
   stroke: var(--bot, var(--accent));
   stroke-width: 1.9;
@@ -72,10 +80,12 @@
   stroke-dasharray: 2.4 2.6;
   stroke-linecap: round;
   opacity: 0.45;
-  transform-origin: 16px 16px;
 }
-.bot.working .stitch {
-  animation: run 1.6s linear infinite;
+/* The design runs the ring's dashes along the circle (`run`, 1.6s per 10 units). A dash offset is repainted on the main
+   thread every frame, so the ring layer turns instead, at the same speed along the circle: 360deg is 2π·16.5 ≈ 103.67
+   units, so one turn takes 1.6s × 10.367 ≈ 16.59s. A full turn loops without a jump. */
+.bot.working .spin {
+  animation: stitch-run 16.59s linear infinite;
 }
 .bot.parked .stitch {
   stroke-dasharray: 1 4;
@@ -95,11 +105,6 @@
   stroke-width: 0.8;
   stroke-linejoin: round;
 }
-@keyframes run {
-  to {
-    stroke-dashoffset: -10;
-  }
-}
 
 /* Hover: a nod. */
 .bot:hover .rig {
@@ -116,7 +121,7 @@
   animation-delay: var(--seed, 0s);
 }
 
-/* Working: the creature leans into the work, the loose end flutters, the stitches run. */
+/* Working: the creature leans into the work, the loose end flutters; the stitch ring turns (above). */
 .bot.working .rig {
   animation: lean 1.2s ease-in-out infinite alternate;
 }
@@ -162,13 +167,13 @@
     transform: translate(0, 0) rotate(0);
   }
   25% {
-    transform: translate(1.4px, -1px) rotate(3deg);
+    transform: translate(3.8889%, -2.7778%) rotate(3deg);
   }
   50% {
-    transform: translate(0, -2px) rotate(0);
+    transform: translate(0, -5.5556%) rotate(0);
   }
   75% {
-    transform: translate(-1.4px, -1px) rotate(-3deg);
+    transform: translate(-3.8889%, -2.7778%) rotate(-3deg);
   }
 }
 @keyframes sway {
@@ -202,13 +207,13 @@
     transform: translateY(0) scale(1, 1);
   }
   64% {
-    transform: translateY(1.5px) scale(1.12, 0.86);
+    transform: translateY(4.1667%) scale(1.12, 0.86);
   }
   73% {
-    transform: translateY(-7px) scale(0.94, 1.1);
+    transform: translateY(-19.4444%) scale(0.94, 1.1);
   }
   80% {
-    transform: translateY(-3px) scale(0.97, 1.04);
+    transform: translateY(-8.3333%) scale(0.97, 1.04);
   }
   85% {
     transform: translateY(0) scale(1.08, 0.92);
@@ -235,7 +240,7 @@
     transform: rotate(0);
   }
   30% {
-    transform: rotate(-8deg) translateY(-2px);
+    transform: rotate(-8deg) translateY(-5.5556%);
   }
   70% {
     transform: rotate(4deg);
@@ -262,10 +267,10 @@
 @keyframes sink {
   0%,
   100% {
-    transform: translateY(1px) scale(1.04, 0.96);
+    transform: translateY(2.7778%) scale(1.04, 0.96);
   }
   50% {
-    transform: translateY(1.4px) scale(1.05, 0.95);
+    transform: translateY(3.8889%) scale(1.05, 0.95);
   }
 }
 @keyframes tip {
@@ -273,13 +278,13 @@
     transform: rotate(0);
   }
   20% {
-    transform: rotate(-6deg) translateX(-2px);
+    transform: rotate(-6deg) translateX(-5.5556%);
   }
   40% {
-    transform: rotate(6deg) translateX(2px);
+    transform: rotate(6deg) translateX(5.5556%);
   }
   100% {
-    transform: rotate(22deg) translateY(1px);
+    transform: rotate(22deg) translateY(2.7778%);
   }
 }
 @keyframes orbit {
@@ -287,13 +292,13 @@
     transform: translate(0, 0);
   }
   25% {
-    transform: translate(3px, -3px);
+    transform: translate(8.3333%, -8.3333%);
   }
   50% {
-    transform: translate(0, -5px);
+    transform: translate(0, -13.8889%);
   }
   75% {
-    transform: translate(-3px, -3px);
+    transform: translate(-8.3333%, -8.3333%);
   }
   100% {
     transform: translate(0, 0);
@@ -311,10 +316,17 @@
   }
 }
 
+@keyframes stitch-run {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Reduced motion: every avatar animation stops and the thread's shape alone carries the state.
    The hover nod is stopped explicitly: `.bot:hover .rig` above out-specifies `.bot .rig`, so it needs its own
    rule here, after it in source order. The waiting ring stays visible, still. */
 @media (prefers-reduced-motion: reduce) {
+  .bot .spin,
   .bot .drift,
   .bot .rig,
   .bot .tail,
@@ -330,4 +342,25 @@
   .bot.waiting .ring {
     opacity: 0.7;
   }
+}
+
+/* Still: an idle avatar that does not show a live agent (`Avatar`'s `live`) runs no animation, as under reduced
+   motion, so the number of moving avatars follows what is happening, never the length of a list. */
+.bot.still .spin,
+.bot.still .drift,
+.bot.still .rig,
+.bot.still .tail,
+.bot.still .ring,
+.bot.still .st,
+.bot.still .ln,
+.bot.still .stitch,
+.bot.still:hover .rig {
+  animation: none !important;
+}
+
+/* Off screen: a moving avatar scrolled out of view pauses (`data-offscreen`, set by one shared IntersectionObserver)
+   and picks up again where it was when it comes back. */
+.bot[data-offscreen] *,
+.bot[data-offscreen] .ring {
+  animation-play-state: paused !important;
 }

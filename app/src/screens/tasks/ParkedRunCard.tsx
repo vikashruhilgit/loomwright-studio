@@ -1,0 +1,183 @@
+// A paused Loomwright run on the Tasks board (phase 8 item 23j): the "Parked run" card in the Parked column, and its
+// Resume. A run that parks before it picked an item (for example `pause_reason: trail_pr_open`) has no task and no PR,
+// so no other card shows it; this one is the owner's only way to continue it. A stranded run (23l: its session ended
+// mid-item, so its file still reads `running` with no live lock holder) is drawn the same way, badged `stranded`.
+//
+// - The data is the kernel's `GET /automate/paused-runs` (`kernel/src/gui/paused-runs.ts`), read by `./TasksScreen.tsx`
+//   on the board's own cadence (every refetch of `GET /tasks`).
+// - Resume is `POST /automate/paused-runs/:run_id/resume` with the body exactly `{agent, checkout}`. It is enabled only
+//   when the kernel says nothing blocks it (`blocked === null`); otherwise the card says why in plain words, and the
+//   kernel checks it all again on the POST (a 409 or 404 is shown in the card). Off while the kernel is away.
+// - Mechanism only: the kernel queues its own resume run; when to resume is the owner's click.
+//
+// Every string from the run file (the title, the pause reason, the item, the PR URL) and the checkout path is
+// untrusted: it passes through `printable` and is a text child only. The PR URL is shown as text, never an `href`
+// (the window opens no links, as `../chat/integrationCards.tsx` does it).
+import { useState } from "react";
+import type { ApiResult, PausedRunBlock, PausedRunResumeResponse, PausedRunView, PausedRunsResponse, StudioBridge } from "../../api/contract";
+import { Avatar } from "../../components/Avatar/Avatar";
+import type { AvatarAgent } from "../../components/Avatar/Avatar";
+import { Badge } from "../../components/Badge/Badge";
+import { Button } from "../../components/Button/Button";
+import { Icon } from "../../components/icons";
+import { printable } from "../approvals/printable";
+import { clockText, table } from "./model";
+import "./ticket-pr.css";
+
+// ---- the calls ---------------------------------------------------------------------------------
+
+const NO_ANSWER = { ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } } as const;
+
+/** One read of `GET /automate/paused-runs`. A throw, or a body that is not the response, is a failed read, never data. */
+export async function readPausedRuns(api: StudioBridge): Promise<ApiResult<PausedRunsResponse>> {
+  let result: ApiResult<PausedRunsResponse>;
+  try {
+    result = await api.request<PausedRunsResponse>({ method: "GET", path: "/automate/paused-runs" });
+  } catch {
+    return NO_ANSWER;
+  }
+  if (result.ok && !Array.isArray((result.body as Partial<PausedRunsResponse> | null)?.runs)) {
+    return { ok: false, status: result.status, body: { error: "invalid_response" } };
+  }
+  return result;
+}
+
+/** Resume one paused run: the body is exactly `{agent, checkout}`, the run id a path param. */
+export async function resumePausedRun(api: StudioBridge, run: Pick<PausedRunView, "agent" | "checkout" | "run_id">): Promise<ApiResult<PausedRunResumeResponse>> {
+  try {
+    return await api.request<PausedRunResumeResponse>({
+      method: "POST",
+      path: "/automate/paused-runs/:run_id/resume",
+      params: { run_id: run.run_id },
+      body: { agent: run.agent, checkout: run.checkout },
+    });
+  } catch {
+    return NO_ANSWER;
+  }
+}
+
+// ---- the words -----------------------------------------------------------------------------------
+
+/** Why Resume is off, in the owner's words. */
+const BLOCK_WORDS = table<string>({
+  no_kernel_run: "Studio didn't start this run",
+  run_live: "A run is going in this workspace",
+  resume_queued: "Resume queued",
+  playbook_not_live: "Its playbook isn't live",
+  agent_not_active: "Its crew member is off",
+  kill_switch_engaged: "Studio is stopped",
+  lock_settling: "Waiting for the stopped run's lock to clear",
+} satisfies Record<PausedRunBlock, string>);
+
+/** The plain words for a block (or a 409's `error`); an unknown word is shown escaped, never guessed. */
+export function blockText(block: string): string {
+  return BLOCK_WORDS[block] ?? printable(block);
+}
+
+/** What a refused or failed Resume says in the card. */
+export function resumeErrorText(result: ApiResult<unknown>): string {
+  if (result.ok) return "";
+  if ("connection" in result) return "Couldn't reach the kernel; nothing was resumed.";
+  const code = String(result.body.error);
+  if (result.status === 409) return `Couldn't resume: ${blockText(code)}.`;
+  if (result.status === 404) return "Couldn't resume: this run is no longer paused here.";
+  const message = typeof result.body.message === "string" ? `: ${printable(result.body.message)}` : "";
+  return `The kernel refused (${result.status} ${printable(code)})${message}.`;
+}
+
+/** The card's React key: a run id is unique only within its agent's checkout. */
+export function parkedRunKey(run: Pick<PausedRunView, "agent" | "checkout" | "run_id">): string {
+  return `paused:${run.agent}:${run.checkout}:${run.run_id}`;
+}
+
+// ---- drawing -------------------------------------------------------------------------------------
+
+export interface ParkedRunCardProps {
+  readonly run: PausedRunView;
+  readonly agent: AvatarAgent;
+  /** The kernel is not answering: Resume is off. */
+  readonly offline: boolean;
+  /** Sends the Resume (`resumePausedRun`) and, when it was queued, reads the board again. */
+  readonly onResume: (run: PausedRunView) => Promise<ApiResult<unknown>>;
+}
+
+/** The Parked run card: what the run is, whose and where, why it paused, and Resume (or why not). */
+export function ParkedRunCard({ run, agent, offline, onResume }: ParkedRunCardProps) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const title = run.title.trim() === "" ? `Run ${printable(run.run_id)}` : printable(run.title);
+  const where = printable(run.repo ?? run.checkout);
+  const blocked = run.blocked;
+
+  const resume = async (): Promise<void> => {
+    if (offline || blocked !== null || pending) return;
+    setPending(true);
+    setError(undefined);
+    const result = await onResume(run);
+    setPending(false);
+    if (!result.ok) setError(resumeErrorText(result));
+  };
+
+  return (
+    <li className="ticket-card" data-testid={`parked-run-${run.run_id}`}>
+      <div className="tasks-card ticket-face parked-run-face">
+        <span className="tasks-card-kind">
+          <span className="tasks-card-label">
+            <Icon name="run" className="tasks-glyph" />
+            Parked run
+          </span>
+          <span className="tasks-card-state">
+            <Badge tone="parked">{run.stranded ? "stranded" : "paused"}</Badge>
+          </span>
+        </span>
+        <span className="tasks-card-title" data-testid="parked-run-title">
+          {title}
+        </span>
+        <span className="tasks-card-why" data-testid="parked-run-reason">
+          {run.stranded
+            ? "Stopped mid-item: its session ended while the run was going"
+            : run.pause_reason === null
+              ? "Paused"
+              : `Paused: ${printable(run.pause_reason)}`}
+        </span>
+        {run.item === null ? null : (
+          <span className="tasks-card-meta parked-run-text" data-testid="parked-run-item">
+            {`Item: ${printable(run.item)}`}
+          </span>
+        )}
+        {run.pr === null ? null : (
+          <span className="tasks-card-meta parked-run-text" data-testid="parked-run-pr">
+            {`PR: ${printable(run.pr)}`}
+          </span>
+        )}
+        <span className="tasks-card-meta">
+          <Avatar agent={agent} state="parked" size={20} />
+          <span className="parked-run-text" data-testid="parked-run-where">{`${agent.name} · ${where}`}</span>
+        </span>
+      </div>
+      <div className="ticket-foot" data-testid="parked-run-foot">
+        {blocked === null ? null : (
+          <span className="ticket-foot-note" data-testid="parked-run-blocked">
+            {blocked === "lock_settling" && clockText(run.resume_at) !== "" ? `Can resume at ${clockText(run.resume_at)}` : blockText(blocked)}
+          </span>
+        )}
+        <Button
+          variant={blocked === null ? "primary" : "secondary"}
+          size="row"
+          disabled={blocked !== null}
+          loading={pending}
+          aria-disabled={offline && blocked === null ? true : undefined}
+          data-testid="parked-run-resume"
+          onClick={() => void resume()}
+        >
+          Resume
+        </Button>
+        {error === undefined ? null : (
+          <span className="ticket-foot-note ticket-foot-full" role="status" data-testid="parked-run-error">
+            {error}
+          </span>
+        )}
+      </div>
+    </li>
+  );
+}

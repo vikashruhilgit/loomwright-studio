@@ -44,6 +44,7 @@ import type { KernelAction, MenubarActions, NavigateQueue } from "./MenubarHost"
 import { CAP_REJECTED_STATUS, MENUBAR_DOTS, MENUBAR_WORDS, menubarState, notificationRoute } from "./state";
 import type { MenubarState } from "./state";
 import "./menubar.css";
+import { timeText } from "../../components/format";
 
 /** The panel's one line about the items only the menu-bar icon has. */
 export const TRAY_ONLY_NOTE = "Open and Quit are in the menu-bar icon's menu; quitting the app leaves the kernel running.";
@@ -134,7 +135,7 @@ export function MenubarPanel({ actions = menubarActions, queue = navigateQueue }
 function clock(iso: string | null): string | undefined {
   if (iso === null) return undefined;
   const at = new Date(iso);
-  return Number.isNaN(at.getTime()) ? undefined : at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return Number.isNaN(at.getTime()) ? undefined : timeText(at, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
 /** The earliest reset among the limits at their cap, as `HH:MM`. */

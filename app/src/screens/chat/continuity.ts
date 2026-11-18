@@ -10,6 +10,7 @@
 // untrusted data (invariant 3): nothing here builds markup or an `href` from one.
 import type { AskBody, AskReference, StudioBridge, ThreadFigures, ThreadItem } from "../../api/contract";
 import { hintValue } from "../settings/model";
+import { countText } from "../../components/format";
 
 export type MessageItem = Extract<ThreadItem, { readonly type: "message" }>;
 
@@ -76,7 +77,7 @@ export function parseReference(text: string): ThreadRef | undefined {
 
 /** A whole number with thousands separators; never a currency. */
 export function count(n: number): string {
-  return Math.round(n).toLocaleString("en-US");
+  return countText(Math.round(n));
 }
 
 /** `n messages` (`1 message`). */

@@ -10,11 +10,19 @@ import { fileURLToPath } from "node:url";
 import type { ComponentType } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { metaText } from "./model";
+
+// `metaText` runs once per card render: a pass-through spy counts card renders (the redraw test at the end).
+vi.mock("./model", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./model")>();
+  return { ...actual, metaText: vi.fn(actual.metaText) };
+});
 import { App } from "../../App";
 import type {
   ApiRequest,
   ApiResult,
   EventFrame,
+  PausedRunView,
   RosterEntry,
   SessionOutputRow,
   SessionSummary,
@@ -33,7 +41,7 @@ import type { FakeBridge } from "../../store/fake-bridge";
 import { screen as tasksScreen } from "./index";
 import { resetLastBoards } from "./lastKnown";
 import { EMPTY_TITLE } from "./TasksViews";
-import { TASKS_COMMANDS, TASKS_OWNER, TasksScreen } from "./TasksScreen";
+import { PAUSED_RUNS_POLL_MS, TASKS_COMMANDS, TASKS_OWNER, TasksScreen } from "./TasksScreen";
 
 const ESC = "\u001b";
 const RLO = "‮";
@@ -1214,5 +1222,209 @@ describe("the crumb", () => {
     });
     expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
     expect(screen.queryByTestId("task-detail")).toBeNull();
+  });
+});
+
+// ---- a paused Loomwright run: the Parked run card and its Resume (phase 8 item 23j) -----------------------
+
+describe("a paused run", () => {
+  const PAUSED = "GET /automate/paused-runs";
+  const RESUME = "POST /automate/paused-runs/:run_id/resume";
+
+  function pausedRun(overrides: Partial<PausedRunView> = {}): PausedRunView {
+    return { agent: "mason", checkout: "/work/sandbox", repo: null, run_id: "run-1", title: "Tickets to PRs", pause_reason: "trail_pr_open", item: null, pr: null, stranded: false, blocked: null, resume_at: null, ...overrides };
+  }
+
+  it("is a Parked run card after the Parked column's cards, counted in its badge, and read with every board read", async () => {
+    const runs = [pausedRun()];
+    const fake = fakeBridge();
+    fake.route(TASKS, () => ok({ groups: groupsOf(board()), next_before: null }));
+    fake.route("GET /agents", () => ok({ agents: [roster("mason"), roster("ada"), roster("wright")] }));
+    fake.route("GET /status", () => ok({}));
+    fake.route("GET /sessions", () => ok({ sessions: [] }));
+    fake.route(PAUSED, () => ok({ runs, unreadable: [] }));
+    setApi(fake.bridge);
+    render(<TasksScreen api={fake.bridge} registry={createCommandRegistry()} />);
+    await waitFor(() => expect(screen.getByTestId("parked-run-run-1")).toBeTruthy());
+    const park = column("park");
+    expect(within(park).getByTestId("parked-run-run-1")).toBeTruthy();
+    expect(park.querySelector(".tasks-col-head")?.textContent).toContain("3");
+    expect(within(park).getByTestId("parked-run-where").textContent).toBe("mason · /work/sandbox");
+    const before = fake.requestsTo(PAUSED).length;
+    await act(async () => {
+      fake.emit(event("task_updated", null, 9));
+    });
+    await waitFor(() => expect(fake.requestsTo(PAUSED).length).toBeGreaterThan(before));
+  });
+
+  it("reads the runs again on a timer while a card is shown, so a run that leaves the list on disk alone leaves the board", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let runs = [pausedRun({ blocked: "run_live" })];
+      const fake = fakeBridge();
+      fake.route(TASKS, () => ok({ groups: groupsOf(board()), next_before: null }));
+      fake.route("GET /agents", () => ok({ agents: [roster("mason")] }));
+      fake.route("GET /status", () => ok({}));
+      fake.route("GET /sessions", () => ok({ sessions: [] }));
+      fake.route(PAUSED, () => ok({ runs, unreadable: [] }));
+      setApi(fake.bridge);
+      render(<TasksScreen api={fake.bridge} registry={createCommandRegistry()} />);
+      await waitFor(() => expect(screen.getByTestId("parked-run-run-1")).toBeTruthy());
+      // Let the mount's reads (first render, then the connection's state) all land before the list changes.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PAUSED_RUNS_POLL_MS / 2);
+      });
+      // The run file now reads running under a held lock: the kernel lists nothing, and no feed event says so.
+      runs = [];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PAUSED_RUNS_POLL_MS / 4);
+      });
+      expect(screen.getByTestId("parked-run-run-1")).toBeTruthy();
+      const before = fake.requestsTo(PAUSED).length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PAUSED_RUNS_POLL_MS);
+      });
+      await waitFor(() => expect(screen.queryByTestId("parked-run-run-1")).toBeNull());
+      expect(fake.requestsTo(PAUSED).length).toBeGreaterThan(before);
+      // With no card shown the timer is gone.
+      const pausedReads = fake.requestsTo(PAUSED).length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PAUSED_RUNS_POLL_MS * 3);
+      });
+      expect(fake.requestsTo(PAUSED).length).toBe(pausedReads);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the board, not the empty state, when a paused run is the only thing to show", async () => {
+    const fake = fakeBridge();
+    fake.route(TASKS, () => ok({ groups: [], next_before: null }));
+    fake.route("GET /agents", () => ok({ agents: [roster("mason")] }));
+    fake.route("GET /status", () => ok({}));
+    fake.route(PAUSED, () => ok({ runs: [pausedRun()], unreadable: [] }));
+    setApi(fake.bridge);
+    render(<TasksScreen api={fake.bridge} registry={createCommandRegistry()} />);
+    await waitFor(() => expect(screen.getByTestId("parked-run-run-1")).toBeTruthy());
+    expect(screen.queryByTestId("tasks-empty")).toBeNull();
+    expect(screen.getByTestId("screen-tasks").dataset.state).toBe("populated");
+  });
+
+  it("Resume POSTs exactly {agent, checkout} to the run's path, then reads the runs again and shows the kernel's new word", async () => {
+    let runs = [pausedRun({ repo: "o/r" })];
+    const { fake } = await mount();
+    fake.route(PAUSED, () => ok({ runs, unreadable: [] }));
+    fake.route(RESUME, (req) => {
+      runs = [pausedRun({ repo: "o/r", blocked: "resume_queued" })];
+      return ok({ queue_id: 3, run_id: req.params?.run_id, agent: "mason", checkout: "/work/sandbox" });
+    });
+    await act(async () => {
+      fake.emit(event("task_updated", null, 9));
+    });
+    await waitFor(() => expect(screen.getByTestId("parked-run-resume")).toBeTruthy());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-resume"));
+    });
+    expect(reads(fake, RESUME)).toEqual([{ method: "POST", path: "/automate/paused-runs/:run_id/resume", params: { run_id: "run-1" }, body: { agent: "mason", checkout: "/work/sandbox" } }]);
+    await waitFor(() => expect(screen.getByTestId("parked-run-blocked").textContent).toBe("Resume queued"));
+    expect((screen.getByTestId("parked-run-resume") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows a 409 in the card", async () => {
+    const { fake } = await mount();
+    fake.route(PAUSED, () => ok({ runs: [pausedRun()], unreadable: [] }));
+    fake.route(RESUME, () => ({ ok: false, status: 409, body: { error: "kill_switch_engaged" } }));
+    await act(async () => {
+      fake.emit(event("task_updated", null, 9));
+    });
+    await waitFor(() => expect(screen.getByTestId("parked-run-resume")).toBeTruthy());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-resume"));
+    });
+    await waitFor(() => expect(screen.getByTestId("parked-run-error").textContent).toBe("Couldn't resume: Studio is stopped."));
+  });
+
+  it("keeps the card when a later read fails, with Resume off while the kernel is away", async () => {
+    const { fake } = await mount();
+    fake.route(PAUSED, () => ok({ runs: [pausedRun()], unreadable: [] }));
+    await act(async () => {
+      fake.emit(event("task_updated", null, 9));
+    });
+    await waitFor(() => expect(screen.getByTestId("parked-run-run-1")).toBeTruthy());
+    fake.route(TASKS, () => NO_ANSWER);
+    fake.route(PAUSED, () => NO_ANSWER);
+    await act(async () => {
+      fake.emit(event("task_updated", null, 9));
+    });
+    await waitFor(() => expect(screen.getByTestId("tasks-subtitle").textContent).toContain("last known"));
+    expect(screen.getByTestId("parked-run-run-1")).toBeTruthy();
+    expect(screen.getByTestId("parked-run-resume").getAttribute("aria-disabled")).toBe("true");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-resume"));
+    });
+    expect(reads(fake, RESUME)).toEqual([]);
+  });
+});
+
+// ---- the number of moving avatars follows what is happening, never the number of cards (2026-11-17) ----------
+
+describe("finished cards draw still avatars", () => {
+  async function movingWith(finished: number): Promise<number> {
+    const items = [
+      ...board(),
+      ...Array.from({ length: finished }, (_, i) => card("playbook_run", 500 + i, "skipped_duplicate", { agent: "mason", playbook: 18, ended: stamp(100 + i), updated: stamp(100 + i) })),
+    ];
+    const fake = fakeBridge();
+    fake.route(TASKS, () => ok({ groups: groupsOf(items), next_before: null }));
+    fake.route("GET /agents", () => ok({ agents: [roster("mason"), roster("ada"), roster("wright")] }));
+    fake.route("GET /status", () => ok({}));
+    fake.route("GET /sessions", () => ok({ sessions: [] }));
+    setApi(fake.bridge);
+    const { unmount } = render(<TasksScreen api={fake.bridge} registry={createCommandRegistry()} />);
+    await waitFor(() => expect(screen.getAllByTestId(/^task-card-playbook_run:5/).length).toBe(finished));
+    const moving = document.querySelectorAll(".bot:not(.still)").length;
+    unmount();
+    return moving;
+  }
+
+  it("3 or 60 duplicate-skip runs in Done: the same number of moving avatars", async () => {
+    const few = await movingWith(3);
+    const many = await movingWith(60);
+    expect(many).toBe(few);
+  });
+});
+
+// ---- a re-read redraws only what changed (2026-11-17: a busy run session held a 200-card board at 100% CPU) ---------
+
+describe("a board re-read redraws only changed cards", () => {
+  it("an identical answer renders no card again; one changed card renders only that card", async () => {
+    let items = [...board(), ...Array.from({ length: 40 }, (_, i) => card("playbook_run", 700 + i, "skipped_duplicate", { agent: "mason", playbook: 18, ended: stamp(200 + i), updated: stamp(200 + i) }))];
+    const fake = fakeBridge();
+    fake.route(TASKS, () => ok({ groups: groupsOf(items), next_before: null }));
+    fake.route("GET /agents", () => ok({ agents: [roster("mason"), roster("ada"), roster("wright")] }));
+    fake.route("GET /status", () => ok({}));
+    fake.route("GET /sessions", () => ok({ sessions: [] }));
+    setApi(fake.bridge);
+    render(<TasksScreen api={fake.bridge} registry={createCommandRegistry()} />);
+    await waitFor(() => expect(screen.getAllByTestId(/^task-card-playbook_run:7/).length).toBe(40));
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    const renders = vi.mocked(metaText);
+    const settle = async (): Promise<void> => { await act(async () => { await new Promise((r) => setTimeout(r, 50)); }); };
+
+    // A kernel event with nothing new: the board is read again and no card renders.
+    renders.mockClear();
+    const reads = fake.requestsTo(TASKS).length;
+    await act(async () => { fake.emit(event("task_updated", null, 9)); });
+    await waitFor(() => expect(fake.requestsTo(TASKS).length).toBeGreaterThan(reads));
+    await settle();
+    expect(renders.mock.calls.length).toBe(0);
+
+    // One card changes: only that card renders.
+    renders.mockClear();
+    items = items.map((i) => (i.kind === "playbook_run" && i.id === 705 ? { ...i, state: "failed" } : i));
+    await act(async () => { fake.emit(event("task_updated", null, 10)); });
+    await waitFor(() => expect(within(screen.getByTestId("task-card-playbook_run:705")).getByTestId("task-card-state").textContent).not.toMatch(/skipped/i));
+    await settle();
+    expect(renders.mock.calls.map(([c]) => (c as { key: string }).key)).toEqual(["playbook_run:705"]);
   });
 });
