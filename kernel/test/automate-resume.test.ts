@@ -697,6 +697,24 @@ describe("an approval held by a run session continues that session (23o)", () =>
     });
   }
 
+  // 23s gap 3 (live 2026-11-18): approval 56 was held by run session 226, then the owner's next Resume ran the
+  // run again in session 227. Deciding 56 after that should continue nothing: 226 is superseded, its call stale.
+  // The launch skips it `continue_session_superseded`.
+  it("a decision on a superseded run session's request continues nothing once a later Resume ran the run", async () => {
+    const starts: StartSessionParams[] = [];
+    const loop = loopWith(starts);
+    const stale = await heldRunSession(loop);
+    await resume();
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(starts).toHaveLength(2);
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (302, 'mason', 'completed', ?)").run(checkout);
+    decideApproval(store, { id: stale, decision: "deny", by: "owner" }, NOW);
+    await loop.tick();
+    expect(starts).toHaveLength(2);
+    const event = store.prepare<[string], { id: number }>("SELECT id FROM event_queue WHERE source_ref = ?").get(`approval:${stale}`);
+    expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({ session_id: null, skipped: "continue_session_superseded: session 301's run went on in session 302" });
+  });
+
   it("a session no kernel run started (a crew session) still gets the decision as a message", () => {
     store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (400, 'mason', 'completed', ?)").run(checkout);
     const held = holdOrUseGrant(store, { agent: "mason", sessionId: 400, action: "git push", payload: { ...PUSH, cwd: checkout }, tool: "Bash" }, NOW);

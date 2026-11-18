@@ -103,7 +103,7 @@ import { automateInvocation } from "./tickets-to-items.js";
 
 // The payload key that marks a `message` event as a kernel-started Loomwright run (any kind); it lives in the
 // SQL-only leaf `./run-sessions.ts` so the approvals store can name it without importing this module.
-import { AUTOMATE_RUN_KEY } from "./run-sessions.js";
+import { AUTOMATE_RUN_KEY, laterRunSessionOf, runLaunchOf } from "./run-sessions.js";
 export { AUTOMATE_RUN_KEY };
 
 /** The kinds of kernel-started run, closed in code. An `automate_run` payload with no `kind` is a `backlog` run. */
@@ -587,6 +587,11 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
     }
     resumeInterrupted = earlier.status === "interrupted";
     if (!resumeInterrupted && !isContinuableStatus(earlier.status)) return skip(`continue_session_live: session ${continuation.session} can repeat the call itself`);
+    // 23s gap 3: a later run session of the same run (a later Resume, or a continuation already carrying it) means the
+    // run moved on; continuing this one again would fork it from a stale point (live: approval 56 of session 226).
+    const launch = runLaunchOf(store, continuation.session);
+    const later = launch === undefined ? undefined : laterRunSessionOf(store, continuation.session, launch);
+    if (later !== undefined) return skip(`continue_session_superseded: session ${continuation.session}'s run went on in session ${later}`);
   }
 
   // D46 (23n): a run lock whose holder is dead. The kernel's own (a run session of ours that has ended) is released

@@ -37,6 +37,47 @@ export function runLaunchOf(store: Store, sessionId: number): RunLaunch | undefi
 }
 
 /**
+ * Which run a launch is, for "the same run": a resume / merge / continuation of a
+ * known run by its `run_id`, a backlog launch by its backlog, a PR drain by its PR,
+ * each in its checkout. `undefined` when the payload names none of them.
+ */
+function runKeyOf(run: Readonly<Record<string, unknown>>): string | undefined {
+  const where = typeof run.checkout === "string" ? run.checkout : undefined;
+  if (where === undefined) return undefined;
+  if (typeof run.run_id === "string") return `${where}\0run:${run.run_id}`;
+  if (typeof run.backlog === "string") return `${where}\0backlog:${run.backlog}`;
+  if (typeof run.pr === "number" && typeof run.repo === "string") return `${where}\0pr:${run.repo}#${run.pr}`;
+  return undefined;
+}
+
+/**
+ * The first kernel run session started after `sessionId` for the same run
+ * (`runKeyOf`), or `undefined`. Its existence means the run moved on: a later
+ * Resume, or a continuation already carrying it, so a decision on one of
+ * `sessionId`'s held calls must not continue `sessionId` again (23s gap 3).
+ * Honest limit: a backlog launch names no run id, so a later Resume of the run it
+ * created (by `run_id`) is not matched to it.
+ */
+export function laterRunSessionOf(store: Store, sessionId: number, launch: RunLaunch): number | undefined {
+  const key = runKeyOf(launch.run);
+  if (key === undefined) return undefined;
+  const rows = store
+    .prepare<[number], { session_id: number; payload_json: string }>(
+      `SELECT json_extract(w.result_json, '$.session_id') AS session_id, q.payload_json
+         FROM work_steps w JOIN event_queue q ON w.key = 'event:' || q.id || ':automate-run'
+        WHERE w.status = 'done' AND json_valid(w.result_json) AND json_valid(q.payload_json)
+          AND json_type(w.result_json, '$.session_id') = 'integer' AND json_extract(w.result_json, '$.session_id') > ?
+        ORDER BY session_id`,
+    )
+    .all(sessionId);
+  for (const row of rows) {
+    const run = (JSON.parse(row.payload_json) as Record<string, unknown>)[AUTOMATE_RUN_KEY];
+    if (typeof run === "object" && run !== null && !Array.isArray(run) && runKeyOf(run as Record<string, unknown>) === key) return row.session_id;
+  }
+  return undefined;
+}
+
+/**
  * The `automate_run` payload that continues run session `sessionId` with
  * `prompt` (the owner's decision, kernel-written): the session's own launch
  * fields, `kind: "continue"`, `of` the kind it was launched as (a
