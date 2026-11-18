@@ -355,6 +355,10 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
     return `You chose ${g("to") ?? "an auth provider"} for every session${withText(g("from"), " (was ")}${g("from") === undefined ? "" : ")"}.`;
   },
   auth_api_key_set: () => "You stored an API key in the Keychain.",
+  auth_provider_restart_deferred: (p) => {
+    const g = reader(p);
+    return `The kernel did not restart for ${g("to") ?? "the new auth provider"}: a session started meanwhile, so the choice applies at the next start.`;
+  },
   stop_all_completed: (p) => {
     const sessions = fields(p).sessions;
     return Array.isArray(sessions) ? `Stop all finished for ${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}.` : "Stop all finished.";

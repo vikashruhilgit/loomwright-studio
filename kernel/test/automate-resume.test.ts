@@ -953,6 +953,31 @@ describe("a resumed run launches under the playbook version the owner enabled", 
 // ---- 23t: the repo's required checks reach the run's drain --------------------------------------------------
 
 describe("a run launch hands the repo's detected required checks to the drain", () => {
+  it("fails open: a hand-over it must skip (the config is not git-ignored) still starts the session, and records why", async () => {
+    execFileSync("git", ["init", "-q", checkout]);
+    store
+      .prepare("INSERT INTO repo_policies (repo, policy_kind, detected_json, set_by, set_at) VALUES ('o/r', 'solo', ?, 'owner', '2026-11-12T15:27:31.829Z')")
+      .run(JSON.stringify({ repo: "o/r", protection: "protected", required_checks: ["ci"] }));
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, 'mason', 'completed', ?)").run(CALLER.id, checkout);
+    const starts: StartSessionParams[] = [];
+    const sessions: EventSessions = {
+      async startSession(params) {
+        starts.push(params);
+        return { id: 301 } as unknown as SessionHandle;
+      },
+      resumeSession: () => Promise.reject(new Error("unexpected resume")),
+      getSession: (id) => (id === CALLER.id ? ({ ...CALLER } as unknown as SessionRow) : undefined),
+    };
+    const loop = new EventLoop({ store, handlers: { message: handleAutomateRun }, sessions });
+    queueSourceLaunch();
+    await resume();
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(starts).toHaveLength(1);
+    expect(existsSync(join(checkout, ".supervisor", "config.json"))).toBe(false);
+    const recorded = store.prepare<[], string>("SELECT payload_json FROM events WHERE kind = 'run_required_checks'").pluck().all();
+    expect(recorded.map((p) => JSON.parse(p))).toEqual([{ repo: "o/r", checkout, skipped: "not_ignored" }]);
+  });
+
   it("writes required_checks into the checkout's git-ignored Loomwright config before the session starts, and records it", async () => {
     execFileSync("git", ["init", "-q", checkout]);
     writeFileSync(join(checkout, ".git", "info", "exclude"), ".supervisor/\n");

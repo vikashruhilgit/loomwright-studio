@@ -92,6 +92,17 @@ describe("PUT /settings/auth-provider (D42)", () => {
     expect(events("auth_provider_chosen").map((p) => JSON.parse(p))).toEqual([{ from: "subscription-token", to: "api-key", restarting: true }]);
   });
 
+  it("a session that starts in the restart's delay keeps it from firing; the choice waits for the next start", async () => {
+    vi.useFakeTimers();
+    const restart = vi.fn();
+    expect((await put.handler(request({ provider: "api-key" }, { restart }))).status).toBe(202);
+    env.store.prepare("INSERT INTO sessions (agent, status, model, started_at, created_at, updated_at) VALUES ('wright', 'starting', 'm', ?, ?, ?)").run(NOW, NOW, NOW);
+    vi.advanceTimersByTime(RESTART_DELAY_MS);
+    expect(restart).not.toHaveBeenCalled();
+    expect(choice()).toEqual({ provider: "api-key" });
+    expect(events("auth_provider_restart_deferred").map((p) => JSON.parse(p))).toEqual([{ to: "api-key", running: 1 }]);
+  });
+
   it("with no restart wired, records the choice for the next start", async () => {
     const res = await put.handler(request({ provider: "api-key" }));
     expect(res).toEqual({ status: 202, body: { in_use: "subscription-token", chosen: "api-key", restarting: false } });

@@ -149,7 +149,20 @@ async function chooseProvider(req: ContributedRouteRequest): Promise<Contributed
   writeAuthChoice(auth.dataDir, provider);
   recordProviderChosen(req, { from: auth.inUse, to: provider, restarting: auth.restart !== undefined });
   const restart = auth.restart;
-  if (restart !== undefined) setTimeout(restart, RESTART_DELAY_MS).unref();
+  // Checked again when the restart fires: a session admitted in the delay would be stopped by it (PR #292 review), so
+  // then nothing restarts, `auth_provider_restart_deferred` is recorded, and the choice applies at the next start.
+  if (restart !== undefined) {
+    setTimeout(() => {
+      const nowRunning = runningSessions(req);
+      if (nowRunning === 0) {
+        restart();
+        return;
+      }
+      req.store
+        .prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES (?, 'auth_provider_restart_deferred', 'kernel', ?)")
+        .run(req.now().toISOString(), JSON.stringify({ to: provider, running: nowRunning }));
+    }, RESTART_DELAY_MS).unref();
+  }
   return { status: 202, body: { in_use: auth.inUse, chosen: provider, restarting: restart !== undefined } };
 }
 

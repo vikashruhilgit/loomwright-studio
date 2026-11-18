@@ -5,7 +5,7 @@
 //   node dist/daemon.js [--auth-provider <id>] [--launchd]
 //   node dist/daemon.js --version
 import { daemonKernelDeps } from "./daemon-deps.js";
-import { DAEMON_NAME, RESTART_EXIT_STATUS, parseArgs, startFailureExit, stopFailureExit, underLaunchd } from "./daemon-exit.js";
+import { DAEMON_NAME, parseArgs, restartAfterStop, startFailureExit, stopFailureExit, underLaunchd } from "./daemon-exit.js";
 import type { DaemonExit } from "./daemon-exit.js";
 import { startKernel } from "./kernel.js";
 import type { Kernel } from "./kernel.js";
@@ -28,10 +28,7 @@ async function main(args: readonly string[]): Promise<void> {
   const onRestartRequested = (): void => {
     if (restarting) return;
     restarting = true;
-    kernel.stop().then(
-      () => exitWith({ status: RESTART_EXIT_STATUS, line: `${DAEMON_NAME}: stopped to switch the auth provider; launchd starts it again` }),
-      (err: unknown) => exitWith(stopFailureExit(err, "SIGTERM", launchd)),
-    );
+    void restartAfterStop(() => kernel.stop(), exitWith);
   };
   try {
     kernel = await startKernel({ ...parseArgs(args), ...(launchd ? { onRestartRequested } : {}) }, daemonKernelDeps());

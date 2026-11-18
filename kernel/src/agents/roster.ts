@@ -52,6 +52,7 @@ import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedRo
 import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
 import type { Store } from "../store/store.js";
+import { admissionRefusalPatterns } from "../sessions/types.js";
 import {
   CHARTER_PERMISSION_MODES,
   CREW_MEMORY_FILES,
@@ -451,12 +452,13 @@ function wrightFieldReserved(dataDir: string): ContributedRouteResponse {
  * park's reason is in its `last_error` (`loop.ts`). Returns how many were released.
  */
 export function releaseDailyLimitParks(store: Store, agent: string, at: string): number {
+  const [withTime, withoutTime] = admissionRefusalPatterns("agent_daily_limit");
   return store
     .prepare(
       `UPDATE event_queue SET not_before = ? WHERE status = 'pending' AND not_before IS NOT NULL AND not_before > ?
-         AND last_error LIKE '%: agent_daily_limit until %' AND json_valid(payload_json) AND json_extract(payload_json, '$.agent') = ?`,
+         AND (last_error LIKE ? OR last_error LIKE ?) AND json_valid(payload_json) AND json_extract(payload_json, '$.agent') = ?`,
     )
-    .run(at, at, agent).changes;
+    .run(at, at, withTime, withoutTime, agent).changes;
 }
 
 async function set(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {

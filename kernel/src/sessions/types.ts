@@ -737,3 +737,17 @@ export interface McpServersContext {
   /** The session's connector grants (`ToolPolicy.connectors`): the factory offers a `requiresConnector` tool only for these. */
   readonly connectors: readonly ConnectorKind[];
 }
+
+/**
+ * The message of an admission refusal (`AdmissionRefusedError`), which the event loop keeps as a
+ * parked row's `last_error`. One builder and one matcher (`admissionRefusalPattern`), so a release by
+ * reason (a raised daily limit, `agents/roster.ts`) never drifts from the wording it matches.
+ */
+export function admissionRefusalMessage(kind: string, agent: string, account: string, reason: string, retryAt: string | null): string {
+  return `${kind} refused for agent ${agent} on account ${account}: ${reason}` + (retryAt === null ? " (retry time unknown)" : ` until ${retryAt}`);
+}
+
+/** The SQL `LIKE` patterns matching any `admissionRefusalMessage` for `reason` (with a retry time, and without). */
+export function admissionRefusalPatterns(reason: string): readonly [string, string] {
+  return [`%: ${reason} until %`, `%: ${reason} (retry time unknown)`];
+}

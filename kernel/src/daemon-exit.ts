@@ -97,6 +97,31 @@ export function startFailureExit(err: unknown, launchd: boolean): DaemonExit {
   };
 }
 
+/**
+ * The exit after the owner switched the auth provider in Settings (D42): always `RESTART_EXIT_STATUS`
+ * (non-zero), so launchd's KeepAlive starts the kernel again on the new choice. A teardown that threw
+ * exits non-zero too: unlike a requested SIGTERM stop, the owner asked for the kernel to come back,
+ * and the next start reaps whatever the failed teardown left (`reapOrphans`).
+ */
+export function restartExit(stopError?: unknown): DaemonExit {
+  if (stopError === undefined) return { status: RESTART_EXIT_STATUS, line: `${DAEMON_NAME}: stopped to switch the auth provider; launchd starts it again` };
+  return {
+    status: RESTART_EXIT_STATUS,
+    line: `${DAEMON_NAME}: error while stopping to switch the auth provider (launchd starts it again; the next start reaps what was left): ${oneLine(stopError)}`,
+  };
+}
+
+/** Stop the kernel once, then exit with `restartExit`'s answer: the D42 restart, as `daemon.ts` wires it under launchd. */
+export async function restartAfterStop(stop: () => Promise<void>, exit: (exit: DaemonExit) => void): Promise<void> {
+  try {
+    await stop();
+  } catch (err) {
+    exit(restartExit(err));
+    return;
+  }
+  exit(restartExit());
+}
+
 /** A graceful stop on `signal` whose teardown threw: 1 by hand, 0 under launchd (a requested stop never restarts). */
 export function stopFailureExit(err: unknown, signal: string, launchd: boolean): DaemonExit {
   if (!launchd) return { status: 1, line: `${DAEMON_NAME}: error while stopping on ${signal}: ${oneLine(err)}` };

@@ -205,6 +205,8 @@ describe("startKernel", () => {
     // The production entry point is the one composition no other test starts: pin that it wires the client and the minter.
     const daemonSource = readFileSync(fileURLToPath(new URL("../src/daemon.ts", import.meta.url)), "utf8");
     expect(daemonSource).toContain("startKernel({ ...parseArgs(args), ...(launchd ? { onRestartRequested } : {}) }, daemonKernelDeps())");
+    // The D42 restart is daemon-exit.ts's tested `restartAfterStop` (exit 1 after the stop, a failed one included).
+    expect(daemonSource).toContain("void restartAfterStop(() => kernel.stop(), exitWith);");
     const reads: string[] = [];
     const requests: string[] = [];
     const d = daemonKernelDeps({
