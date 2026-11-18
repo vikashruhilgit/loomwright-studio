@@ -22,7 +22,7 @@ import { decideApproval, holdOrUseGrant } from "../src/approvals/store.js";
 import type { ContributedRouteRequest, ContributedRouteResponse } from "../src/features/contribution.js";
 import { EventLoop, enqueueEvent, getQueueRow, getWorkStep } from "../src/loop/index.js";
 import type { EventSessions } from "../src/loop/types.js";
-import type { SessionHandle, SessionRow, StartSessionParams } from "../src/sessions/index.js";
+import type { ResumeSessionParams, SessionHandle, SessionRow, StartSessionParams } from "../src/sessions/index.js";
 import { Store } from "../src/store/index.js";
 import { appendEvent } from "../src/loop/internal.js";
 import { enablePlaybook, setPlaybookPolicy } from "../src/playbooks/store.js";
@@ -527,14 +527,18 @@ describe("an approval held by a run session continues that session (23o)", () =>
   const PUSH = { tool: "Bash", command: "git push -u origin feature/add-cheer-sh", cwd: "" };
   const NOW = new Date("2026-11-17T16:00:28.000Z");
 
-  function loopWith(starts: StartSessionParams[]): EventLoop {
+  function loopWith(starts: StartSessionParams[], resumes?: { id: number; params: ResumeSessionParams }[]): EventLoop {
     store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, 'mason', 'completed', ?)").run(CALLER.id, checkout);
     const sessions: EventSessions = {
       async startSession(params) {
         starts.push(params);
         return { id: 300 + starts.length } as unknown as SessionHandle;
       },
-      resumeSession: () => Promise.reject(new Error("unexpected resume")),
+      async resumeSession(id, params) {
+        if (resumes === undefined) throw new Error("unexpected resume");
+        resumes.push({ id, params });
+        return { id } as unknown as SessionHandle;
+      },
       getSession: (id) => (id === CALLER.id ? ({ ...CALLER } as unknown as SessionRow) : (store.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined)),
     };
     return new EventLoop({ store, handlers: { message: handleAutomateRun }, sessions });
@@ -602,6 +606,38 @@ describe("an approval held by a run session continues that session (23o)", () =>
     await loop.tick();
     expect(starts).toHaveLength(1);
     expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({ session_id: null, skipped: "continue_session_live: session 301 can repeat the call itself" });
+  });
+
+  // PR #291 review: a run session the kernel's own restart ended is `interrupted` (its group confirmed dead). It cannot
+  // repeat the held call and `continueFrom` does not take it, so the decision resumes it in place (`resumeSession`).
+  it("a run session a kernel restart interrupted is resumed with the decision, under its launch's policy", async () => {
+    const starts: StartSessionParams[] = [];
+    const resumes: { id: number; params: ResumeSessionParams }[] = [];
+    const loop = loopWith(starts, resumes);
+    const id = await heldRunSession(loop, "interrupted");
+    decideApproval(store, { id, decision: "once", by: "owner" }, NOW);
+    const event = store.prepare<[string], { id: number }>("SELECT id FROM event_queue WHERE source_ref = ?").get(`approval:${id}`);
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(starts).toHaveLength(1);
+    expect(resumes).toHaveLength(1);
+    const prompt = JSON.parse(queued(id)?.payload_json ?? "{}")[AUTOMATE_RUN_KEY]?.prompt;
+    expect(resumes[0]).toMatchObject({ id: 301, params: { cwd: checkout, prompt, policy: starts[0]?.policy, playbook: starts[0]?.playbook } });
+    expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({ session_id: 301 });
+  });
+
+  it("an orphaned run session (its group may still be alive) is neither resumed nor reported as able to repeat the call", async () => {
+    const starts: StartSessionParams[] = [];
+    const resumes: { id: number; params: ResumeSessionParams }[] = [];
+    const loop = loopWith(starts, resumes);
+    const id = await heldRunSession(loop, "orphaned");
+    decideApproval(store, { id, decision: "once", by: "owner" }, NOW);
+    const event = store.prepare<[string], { id: number }>("SELECT id FROM event_queue WHERE source_ref = ?").get(`approval:${id}`);
+    await loop.tick();
+    expect([starts.length, resumes.length]).toEqual([1, 0]);
+    expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({
+      session_id: null,
+      skipped: "continue_session_orphaned: session 301 may still be running; the kernel settles it before anything continues it",
+    });
   });
 
   it("a session no kernel run started (a crew session) still gets the decision as a message", () => {

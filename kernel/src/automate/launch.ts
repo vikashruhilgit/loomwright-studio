@@ -446,7 +446,7 @@ export function automateRunPrompt(backlog: string): string {
 }
 
 /** The id of a non-terminal session this handler started (an `automate-run` step's stored `session_id`) for `agent` in `checkout`, if any. */
-function liveRunSession(store: EventContext["store"], sessions: EventSessions, agent: string, checkout: string): number | undefined {
+function liveRunSession(store: EventContext["store"], sessions: EventSessions, agent: string, checkout: string, except?: number): number | undefined {
   // `sessions.cwd` is the REALPATH of the start cwd (the manager's `resolvedPath`), so compare realpaths: a symlinked
   // workspace (or macOS /tmp, /var) never matches on `resolve()` alone. `resolvedPath` never throws (a missing path
   // resolves as far as it exists), so a deleted checkout compares lexically instead of wedging the event.
@@ -466,7 +466,7 @@ function liveRunSession(store: EventContext["store"], sessions: EventSessions, a
     .pluck()
     .all(agent, ...TERMINAL_STATUSES);
   for (const id of ids) {
-    if (!isPositiveId(id)) continue;
+    if (!isPositiveId(id) || id === except) continue;
     const row = sessions.getSession(id);
     if (row === undefined || row.agent !== agent || row.cwd === null || resolvedPath(row.cwd) !== want) continue;
     if (!isTerminalStatus(row.status)) return id;
@@ -570,14 +570,22 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   const prompt = continuation?.prompt ?? built.prompt;
 
   // 23o: the session to continue is this crew member's, in this checkout, and has ended (a live one can repeat the
-  // held call itself: a `once` grant matches its next identical call).
+  // held call itself: a `once` grant matches its next identical call). One the kernel's own restart ended is
+  // `interrupted`, its group confirmed dead: `continueFrom` does not take it, so it is resumed in place instead
+  // (the manager's resume, as the brain resumes an interrupted crew session). An `orphaned` one may still be running,
+  // so nothing continues it until the kernel's reaper settles it (PR #291 review).
+  let resumeInterrupted = false;
   if (continuation !== undefined) {
     const earlier = sessions.getSession(continuation.session);
     if (earlier === undefined) return skip(`continue_session_gone: session ${continuation.session}`);
     if (earlier.agent !== run.agent || earlier.cwd === null || earlier.cwd === undefined || resolvedPath(earlier.cwd) !== resolvedPath(checkout)) {
       return skip(`continue_session_mismatch: session ${continuation.session}`);
     }
-    if (!isTerminalStatus(earlier.status)) return skip(`continue_session_live: session ${continuation.session} can repeat the call itself`);
+    if (earlier.status === "orphaned") {
+      return skip(`continue_session_orphaned: session ${continuation.session} may still be running; the kernel settles it before anything continues it`);
+    }
+    resumeInterrupted = earlier.status === "interrupted";
+    if (!resumeInterrupted && !isTerminalStatus(earlier.status)) return skip(`continue_session_live: session ${continuation.session} can repeat the call itself`);
   }
 
   // D46 (23n): a run lock whose holder is dead. The kernel's own (a run session of ours that has ended) is released
@@ -615,22 +623,27 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   // Loomwright writes its lock after the session starts, so the run state lags: also refuse while a run session
   // this handler started for the same crew member and checkout is still live. The `automate-run` steps are the
   // record of those sessions (the sessions table keeps no prompt), and a session that has ended no longer blocks.
-  const live = liveRunSession(store, sessions, run.agent, checkout);
+  // The interrupted session being resumed is not another live run: its group is confirmed dead.
+  const live = liveRunSession(store, sessions, run.agent, checkout, resumeInterrupted ? continuation?.session : undefined);
   if (live !== undefined) return skip(`run_session_live: session ${live}`);
 
   // The session is the step's last effect, so an admission refusal leaves nothing to repeat. The manager's
   // Loomwright refusal (no install, or no readable `scripts/`) wrote no row, so it is stored, never retried as is.
   let handle: SessionHandle;
+  const policy = { ...runPolicy, ...(settings.never !== undefined ? { never: settings.never } : {}) };
+  const playbookVersion = caller.playbook_version === null || caller.playbook_version === undefined ? {} : { playbookVersion: caller.playbook_version };
   try {
-    handle = await sessions.startSession({
+    handle = resumeInterrupted && continuation !== undefined
+      ? await sessions.resumeSession(continuation.session, { prompt, permissionMode: settings.permissionMode, cwd: checkout, policy, playbook: run.playbook, ...playbookVersion })
+      : await sessions.startSession({
       agent: run.agent,
       prompt,
       model: caller.model,
       permissionMode: settings.permissionMode,
       cwd: checkout,
-      policy: { ...runPolicy, ...(settings.never !== undefined ? { never: settings.never } : {}) },
+      policy,
       playbook: run.playbook,
-      ...(caller.playbook_version === null || caller.playbook_version === undefined ? {} : { playbookVersion: caller.playbook_version }),
+      ...playbookVersion,
       ...(caller.task_id === null || caller.task_id === undefined ? {} : { task: caller.task_id }),
       ...(continuation === undefined ? {} : { continueFrom: continuation.session }),
     });
