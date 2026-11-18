@@ -5,11 +5,31 @@
 // admits such a checkout, whether the target would change or add a file under `.supervisor/automate/`, where
 // Loomwright's driver keeps the run state it trusts (`checkoutTargets`, `sessions/policy.ts`). This is the one
 // place the kernel runs git for that, and it runs nothing but `git` with fixed argument shapes; it lives outside
-// `src/sessions/`, whose only process spawner is `spawner.ts`.
+// `src/sessions/`, whose only process spawner is `spawner.ts`. It also answers whether git ignores a path in a
+// checkout (`gitIgnores`, 23t: the kernel writes Loomwright's config there only when no worker could commit it).
 
 import { execFileSync } from "node:child_process";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
+
+/** `git -C <cwd> <args>`: the module's one process call, every use a fixed argument shape. */
+function runGit(cwd: string, args: readonly string[]): string {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+}
+
+/**
+ * Whether git ignores `relPath` in the checkout at absolute `cwd` (`git check-ignore -q --`): `true`, `false`, or
+ * `undefined` when git can't say (not a checkout, another error, a timeout, a relative `cwd`).
+ */
+export function gitIgnores(cwd: string, relPath: string): boolean | undefined {
+  if (!cwd.startsWith("/")) return undefined;
+  try {
+    runGit(cwd, ["check-ignore", "-q", "--", relPath]);
+    return true;
+  } catch (err) {
+    return (err as { status?: unknown }).status === 1 ? false : undefined;
+  }
+}
 
 /** Whether `path` is a regular file (`lstat`: a symlink is not). */
 function isRegularFile(path: string): boolean {
@@ -40,7 +60,7 @@ const RUN_STATE_PATH = /(^|\/)\.supervisor\/automate\//i;
  */
 export function refTracksRunState(cwd: unknown, target: string): boolean {
   if (typeof cwd !== "string" || !cwd.startsWith("/")) return true;
-  const git = (args: readonly string[]): string => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const git = (args: readonly string[]): string => runGit(cwd, args);
   let tree: string;
   try {
     tree = git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${target}^{tree}`]).trim();

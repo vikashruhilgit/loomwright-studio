@@ -11,6 +11,7 @@ import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 import { WebSocketServer } from "ws";
 import type { ApprovalApplier } from "../approvals/store.js";
+import type { AuthControl } from "../auth/choice.js";
 import type { AuthHealth, AuthProvider } from "../auth/types.js";
 import { localDay } from "../budget/index.js";
 import type { ToolCatalogue } from "../features/catalogue.js";
@@ -144,6 +145,13 @@ export interface ApiServerOptions {
    * methods of. Default none: the request then carries no `sessions`.
    */
   readonly sessionManager?: SessionManager;
+  /** The owner's auth provider controls (D48), passed on every contributed route request as `auth`. Default none. */
+  readonly authControl?: AuthControl;
+  /**
+   * The build's other providers (D48), listed after `authProviders` only in the `StatusView` the Settings route reads,
+   * never in `/status`: each `health()` is a Keychain subprocess, and `/status` is polled. Default none.
+   */
+  readonly otherAuthProviders?: readonly AuthProvider[];
 }
 
 export interface ApiServerDeps {
@@ -597,11 +605,14 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
   const catalogued = options.toolCatalogue === undefined ? {} : { catalogue: options.toolCatalogue };
   // The same: `sessions` only when the composition gave the whole manager.
   const managed = options.sessionManager === undefined ? {} : { sessions: options.sessionManager };
+  // The same: `auth` only when the composition wired the auth controls.
+  const authed = options.authControl === undefined ? {} : { auth: options.authControl };
+  const viewProviders = [...authProviders, ...(options.otherAuthProviders ?? [])];
   // Read-only: a route may read the switch, never engage or release it.
   const killSwitch: KillSwitchView = Object.freeze({ state: () => killSwitchState(store) });
   // Read-only: `/status`'s own helpers, so a provider's `health()` stays the one Keychain read.
   const statusView: StatusView = Object.freeze({
-    auth: (at: Date) => authProviders.map((p) => ({ id: p.id, account: safeAccount(p), health: healthOf(p, at) })),
+    auth: (at: Date) => viewProviders.map((p) => ({ id: p.id, account: safeAccount(p), health: healthOf(p, at) })),
     loomwright: () => (loomwrightStatus === undefined ? undefined : loomwrightOf(loomwrightStatus)),
   });
 
@@ -799,6 +810,7 @@ export async function startApiServer(options: ApiServerOptions, deps: ApiServerD
         ...managed,
         ...applier,
         ...catalogued,
+        ...authed,
       });
       // The seam's body is JSON: serialized here, so a string answers a JSON
       // string (`send` writes a string as already-serialized text, phase 1's use).

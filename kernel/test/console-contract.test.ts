@@ -160,6 +160,8 @@ const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "GET", path: "/budget/usage", origin: "p7-item-07" },
   { method: "GET", path: "/audit", origin: "p7-item-07" },
   { method: "GET", path: "/settings", origin: "p7-item-08" },
+  { method: "PUT", path: "/settings/auth-provider", origin: "d48" },
+  { method: "PUT", path: "/settings/api-key", origin: "d48" },
   { method: "GET", path: "/connectors/github/app/upgrade", origin: "p8-item-03" },
   { method: "POST", path: "/connectors/mcp/:kind/connect", origin: "p8-item-06" },
   { method: "POST", path: "/connectors/mcp/:kind/connect/cancel", origin: "p8-item-06" },
@@ -176,6 +178,7 @@ const EXPECTED_ROUTES: readonly ContractEntry[] = [
   { method: "POST", path: "/workspaces/:id/remove", origin: "p8-item-18" },
   { method: "GET", path: "/automate/paused-runs", origin: "p8-item-23" },
   { method: "POST", path: "/automate/paused-runs/:run_id/resume", origin: "p8-item-23" },
+  { method: "POST", path: "/automate/paused-runs/:run_id/reply", origin: "d48" },
 ];
 
 /** A route the contract says the kernel already serves: any origin but a phase 5 item's (`item-NN`), a phase 6 item's (`p6-item-NN`), a phase 7 item's (`p7-item-NN`) or a phase 8 item's (`p8-item-NN`). */
@@ -202,8 +205,8 @@ describe("the app contract's routes (app/src/api/contract.ts, read as text)", ()
     const merged = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED);
     const served = new Set([...PHASE1_ROUTES.map(key), ...merged.routes.map(key)]);
     const existing = routes.filter(isExisting);
-    // 31 existing routes: 4 phase 1, then brain, notifications, approvals, triggers, playbooks, agents, and the GitHub App's two owner routes (served by the setup flow).
-    expect(existing).toHaveLength(31);
+    // 34 existing routes: 4 phase 1, then brain, notifications, approvals, triggers, playbooks, agents, the GitHub App's two owner routes (served by the setup flow), D48's two Settings auth writes, and the reply to a run's last message.
+    expect(existing).toHaveLength(34);
     const unserved = existing.filter((r) => !served.has(key(r))).map(key);
     expect(unserved).toEqual([]);
   });

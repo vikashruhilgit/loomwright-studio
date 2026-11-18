@@ -55,10 +55,31 @@ describe("parseSettings: the contract's known fields, nothing else", () => {
   it("reads the provider, the data dir, the notifier and the Loomwright install", () => {
     expect(parseSettings(body())).toEqual({
       provider: { id: "subscription-token", account: "personal subscription", health: { status: "ok" }, tokenCreatedAt: daysAgo(100) },
+      // An older kernel names no providers (D48): the choice is not drawn.
+      providers: [],
+      providerSource: null,
       dataDir: "/Users/o/.loomwright-studio",
       notifier: "osascript",
       loomwright: { ok: true, installPath: "/Users/o/.claude/plugins/loomwright" },
     });
+  });
+
+  it("reads D48's provider list and source, leaving out an entry that is not the contract's shape", () => {
+    const parsed = parseSettings({
+      ...body(),
+      providers: [
+        { id: "subscription-token", account: "a", health: { status: "error", reason: "x" }, in_use: true },
+        { id: "api-key", account: null, health: { status: "missing" }, in_use: false },
+        { id: "broken", health: { status: "ok" } },
+      ],
+      provider_source: "choice",
+    });
+    expect(parsed?.providers).toEqual([
+      { id: "subscription-token", account: "a", health: { status: "error", reason: "x" }, inUse: true },
+      { id: "api-key", account: null, health: { status: "missing" }, inUse: false },
+    ]);
+    expect(parsed?.providerSource).toBe("choice");
+    expect(parseSettings({ ...body(), provider_source: "sneaky" })?.providerSource).toBeNull();
   });
 
   it("drops a field the contract does not declare, at every level", () => {

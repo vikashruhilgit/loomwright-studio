@@ -45,7 +45,7 @@ import { useKernelReach, withLastKnown } from "../../shell/last-known";
 import { useLiveStore, useResource } from "../../store/react";
 import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
-import { readPausedRuns, resumePausedRun } from "./ParkedRunCard";
+import { readPausedRuns, replyToRun, resumePausedRun } from "./ParkedRunCard";
 import { ticketColumnOf, waitingApprovalOf } from "./TicketPrCard";
 import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark, sessionTitles } from "./model";
 import type { Board, BoardCard } from "./model";
@@ -224,6 +224,15 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   const resumeRun = useCallback(
     async (run: PausedRunView): Promise<ApiResult<unknown>> => {
       const result = await resumePausedRun(api, run);
+      if (result.status !== 0 && mounted.current) void refetch();
+      return result;
+    },
+    [api, refetch],
+  );
+
+  const replyRun = useCallback(
+    async (run: PausedRunView, text: string): Promise<ApiResult<unknown>> => {
+      const result = await replyToRun(api, run, text);
       if (result.status !== 0 && mounted.current) void refetch();
       return result;
     },
@@ -449,7 +458,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           Showing the newest {TASKS_LIMIT} cards; older ones are not shown.
         </p>
       )}
-      <BoardView board={board} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
+      <BoardView board={board} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} onReply={replyRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
     </TasksFrame>
   );
 }

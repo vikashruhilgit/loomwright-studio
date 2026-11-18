@@ -136,3 +136,30 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* A parked run's last message and the owner's reply to it. */
+/* Two classes, so it wins over `.tasks-card-meta`'s row layout whatever order the sheets load in. */
+.tasks-card-meta.parked-run-last {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.parked-run-last-head {
+  font-weight: 600;
+}
+.parked-run-last-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 12em;
+  overflow-y: auto;
+}
+.parked-run-reply {
+  display: grid;
+  gap: 6px;
+}
+.parked-run-reply-text {
+  resize: vertical;
+  min-height: 3em;
+  width: 100%;
+}

@@ -602,9 +602,9 @@ describe("a contribution composed from outside (AC4)", () => {
       body: JSON.stringify({ a: 1 }),
     });
     expect(res.status).toBe(200);
-    // The kernel passes the kill switch's and the status's read-only views, the API server's POST queue, its session manager, its kernel-applied actions' applier and its tool catalogue on every contributed route request.
+    // The kernel passes the kill switch's and the status's read-only views, the API server's POST queue, its session manager, its kernel-applied actions' applier, its tool catalogue and (D48) its auth controls on every contributed route request.
     expect(await res.json()).toEqual({
-      keys: ["params", "query", "body", "store", "now", "killSwitch", "status", "serialized", "origin", "sessions", "approvalApplier", "catalogue"],
+      keys: ["params", "query", "body", "store", "now", "killSwitch", "status", "serialized", "origin", "sessions", "approvalApplier", "catalogue", "auth"],
       applier: "function",
       at: "2026-10-15T08:00:00.000Z",
       notifications: 0,

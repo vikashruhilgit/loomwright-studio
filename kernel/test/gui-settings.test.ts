@@ -72,12 +72,12 @@ async function get(api: ApiServer, auth = true): Promise<{ status: number; text:
 }
 
 describe("the settings part (phase 7 item 08)", () => {
-  it("is the sixth gui part, holds exactly the one owner route, and it is not unauthenticated", () => {
+  it("is the sixth gui part, holds the read route and the two auth routes (D48), none unauthenticated", () => {
     expect(GUI_PARTS[5]).toBe(settingsPart);
     expect(settingsPart.name).toBe("settings");
     expect(settingsPart.routes).toBe(settingsRoutes);
     expect(Object.isFrozen(settingsRoutes)).toBe(true);
-    expect(settingsRoutes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /settings"]);
+    expect(settingsRoutes.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /settings", "PUT /settings/auth-provider", "PUT /settings/api-key"]);
     expect(settingsRoutes.filter((r) => r.unauthenticated === true)).toEqual([]);
   });
 
@@ -93,7 +93,7 @@ describe("GET /settings", () => {
     recordTokenCreated(env.store, "stub-provider", "owner@example.test", "2026-09-01T00:00:00.000Z", env.now());
     const res = await get(await serve());
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body).sort()).toEqual(["data_dir", "loomwright", "notifier", "provider"]);
+    expect(Object.keys(res.body).sort()).toEqual(["data_dir", "loomwright", "notifier", "provider", "provider_source", "providers"]);
     expect(Object.keys(res.body.provider).sort()).toEqual(["account", "health", "id", "token_created_at"]);
     expect(res.body.provider).toEqual({ id: "stub-provider", account: "owner@example.test", health: { status: "ok" }, token_created_at: "2026-09-01T00:00:00.000Z" });
     expect(res.body.data_dir).toBe(env.store.dataDir);

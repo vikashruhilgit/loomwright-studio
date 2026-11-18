@@ -10,6 +10,8 @@
 // - 23l: a run whose file still reads `running` while its lock has no live holder
 //   (the live case: session 214 ended mid-item, lock pid 32853 dead) is listed as
 //   stranded and resumable the same way; a live holder or session keeps it live.
+import { runContinuationPrompt } from "../src/automate/run-sessions.js";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -109,7 +111,7 @@ describe("GET /automate/paused-runs (23j)", () => {
     const res = await call("GET");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      runs: [{ agent: "mason", checkout, repo: "o/r", run_id: RUN_ID, title: "Studio tickets — cheer.sh", pause_reason: "trail_pr_open", item: null, pr: null, stranded: false, blocked: null, resume_at: null }],
+      runs: [{ agent: "mason", checkout, repo: "o/r", run_id: RUN_ID, title: "Studio tickets — cheer.sh", pause_reason: "trail_pr_open", item: null, pr: null, stranded: false, blocked: null, resume_at: null, last_session: null }],
       unreadable: [],
     });
   });
@@ -326,6 +328,7 @@ describe("a stranded run is visible and resumable (23l)", () => {
         stranded: true,
         blocked: null,
         resume_at: null,
+        last_session: null,
       },
     ]);
   });
@@ -578,6 +581,8 @@ describe("an approval held by a run session continues that session (23o)", () =>
     expect(payload.text).toBeUndefined();
     expect(payload[AUTOMATE_RUN_KEY]).toMatchObject({ kind: "continue", of: "resume", session: 301, run_id: RUN_ID, checkout });
     expect(payload[AUTOMATE_RUN_KEY]?.prompt).toMatch(new RegExp(`^approved approval ${id}: git push\\. Repeat exactly this call once, unchanged: tool Bash`));
+    // The run goes on past the one call (live: session 233 stopped at the next phase when told only to repeat it).
+    expect(payload[AUTOMATE_RUN_KEY]?.prompt).toMatch(/Then carry on with this run from where it stopped\. Keep going .* until the run ends or another call is held for the owner; do not end your turn between steps\.$/);
     expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
     expect(starts).toHaveLength(2);
     expect(starts[1]).toMatchObject({ agent: "mason", cwd: checkout, continueFrom: 301, prompt: payload[AUTOMATE_RUN_KEY]?.prompt, policy: starts[0]?.policy });
@@ -589,7 +594,8 @@ describe("an approval held by a run session continues that session (23o)", () =>
     const id = await heldRunSession(loop);
     decideApproval(store, { id, decision: "deny", by: "owner" }, NOW);
     await loop.tick();
-    expect(starts[1]).toMatchObject({ continueFrom: 301, prompt: `denied approval ${id}: git push. Nothing was done; do not repeat the call.` });
+    expect(starts[1]).toMatchObject({ continueFrom: 301, prompt: runContinuationPrompt(`denied approval ${id}: git push. Nothing was done; do not repeat the call.`, true) });
+    expect(starts[1]?.prompt).toContain("without that call");
   });
 
   it("the continuation is itself a run session: its own held call continues it in turn, with the first launch's kind", async () => {
@@ -826,5 +832,149 @@ describe("a run launches only while its playbook is not turned off or waiting fo
     queueSourceLaunch();
     store.prepare("UPDATE playbooks SET status = 'disabled' WHERE id = 5").run();
     expect(listPausedRuns(store).runs[0]?.blocked).toBe("playbook_not_live");
+  });
+});
+
+// ---- Reply to a run: the owner answers the question a run session ended its turn on -------------------------
+//
+// The live case (2026-11-18): run session 235 saw the item's PR closed by the owner and ended its turn asking
+// "redo, reopen or drop?". A Resume starts a new session that sees the same facts and asks again, so nothing in
+// Studio could answer it. The list now carries the run's newest session and its last message, and a reply
+// continues THAT session (the same `continue` event an approval decision queues).
+
+describe("the owner replies to a run's last message", () => {
+  function loopWith(starts: StartSessionParams[]): EventLoop {
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, 'mason', 'completed', ?)").run(CALLER.id, checkout);
+    const sessions: EventSessions = {
+      async startSession(params) {
+        starts.push(params);
+        return { id: 300 + starts.length } as unknown as SessionHandle;
+      },
+      resumeSession: () => Promise.reject(new Error("unexpected resume")),
+      getSession: (id) => (id === CALLER.id ? ({ ...CALLER } as unknown as SessionRow) : (store.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined)),
+    };
+    return new EventLoop({ store, handlers: { message: handleAutomateRun }, sessions });
+  }
+
+  const reply = (body: unknown, runId = RUN_ID) => {
+    const route = resumeRoutes.find((r) => r.path.endsWith("/reply"));
+    if (route === undefined) throw new Error("no reply route");
+    return route.handler(req("POST", { run_id: runId }, body));
+  };
+
+  /** Session 301, a resume run that ended its turn on a question. */
+  async function askingRunSession(loop: EventLoop): Promise<void> {
+    writeRun(RUN_ID, STRANDED);
+    writeRunLock(checkout, DEAD_PID);
+    queueSourceLaunch();
+    await resume();
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (301, 'mason', 'completed', ?)").run(checkout);
+    store.prepare("INSERT INTO session_output (session_id, seq, kind, payload_json) VALUES (301, 1, 'assistant_text', ?)").run(JSON.stringify({ text: "PR #19 was closed. Redo it, reopen it, or drop the item?" }));
+  }
+
+  it("lists the run's newest session and its last message, and a reply continues that session under its launch's policy", async () => {
+    const starts: StartSessionParams[] = [];
+    const loop = loopWith(starts);
+    await askingRunSession(loop);
+    expect(listPausedRuns(store).runs[0]?.last_session).toEqual({ id: 301, status: "completed", message: "PR #19 was closed. Redo it, reopen it, or drop the item?" });
+    const res = await reply({ agent: "mason", checkout, text: "  Redo it.  " });
+    expect(res).toMatchObject({ status: 200, body: { session: 301, run_id: RUN_ID } });
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(starts).toHaveLength(2);
+    expect(starts[1]).toMatchObject({ agent: "mason", cwd: checkout, continueFrom: 301, policy: starts[0]?.policy });
+    expect(starts[1]?.prompt).toMatch(/^The owner replied to your last message: "Redo it\.". Act on that reply only through this run's own steps: ask the run's driver for its next step/);
+    // Live: "Act on that reply" alone let session 236 build, commit and push the item with no driver call.
+    expect(starts[1]?.prompt).toContain("never done directly in this session");
+    expect(starts[1]?.prompt).toMatch(/do not end your turn between steps\.$/);
+    const recorded = store.prepare<[], string>("SELECT payload_json FROM events WHERE kind = 'run_reply_sent'").pluck().all();
+    expect(recorded.map((p) => JSON.parse(p))).toEqual([{ run_id: RUN_ID, checkout, queue_id: (res.body as { queue_id: number }).queue_id, chars: 8 }]);
+  });
+
+  it("refuses an empty or too long reply, a run with no kernel session, and a run whose session is live", async () => {
+    const starts: StartSessionParams[] = [];
+    const loop = loopWith(starts);
+    writeRun(RUN_ID, STRANDED);
+    writeRunLock(checkout, DEAD_PID);
+    queueSourceLaunch();
+    expect(listPausedRuns(store).runs[0]?.last_session).toBeNull();
+    expect(await reply({ agent: "mason", checkout, text: "Redo" })).toMatchObject({ status: 409, body: { error: "no_run_session" } });
+    await askingRunSession(loop);
+    expect(await reply({ agent: "mason", checkout, text: "   " })).toMatchObject({ status: 400, body: { error: "invalid_body" } });
+    expect(await reply({ agent: "mason", checkout, text: "x".repeat(4001) })).toMatchObject({ status: 400, body: { error: "invalid_body" } });
+    expect(await reply({ agent: "mason", checkout })).toMatchObject({ status: 400, body: { error: "invalid_body" } });
+    store.prepare("UPDATE sessions SET status = 'running' WHERE id = 301").run();
+    expect(await reply({ agent: "mason", checkout, text: "Redo" })).toMatchObject({ status: 409, body: { error: "run_live" } });
+  });
+
+  it("after a later Resume the list points the next reply at the newer session (the launch refuses a superseded one, 23s gap 3)", async () => {
+    const starts: StartSessionParams[] = [];
+    const loop = loopWith(starts);
+    await askingRunSession(loop);
+    const res = await reply({ agent: "mason", checkout, text: "Redo" });
+    // A later Resume ran the run before the reply's event was handled.
+    store.prepare("UPDATE event_queue SET status = 'done' WHERE id = ?").run((res.body as { queue_id: number }).queue_id);
+    await resume();
+    expect(await loop.tick()).toMatchObject({ done: 1 });
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (302, 'mason', 'completed', ?)").run(checkout);
+    // The list now points the next reply at the newer session.
+    expect(listPausedRuns(store).runs[0]?.last_session?.id).toBe(302);
+  });
+});
+
+// ---- The run's playbook version: the one the owner enabled -------------------------------------------------
+//
+// Live 2026-11-18: the run was first prepared under playbook 18 v2; the owner re-enabled the playbook at v3, and every
+// later resume, reply and continuation still launched as v2 (copied from the source session), so "always" on its
+// held push (approval 62) was refused as not the playbook's current version.
+
+describe("a resumed run launches under the playbook version the owner enabled", () => {
+  it("the playbook is enabled at v3 while the run was prepared under v2: the session starts as v3", async () => {
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, 'mason', 'completed', ?)").run(CALLER.id, checkout);
+    store.prepare("UPDATE playbooks SET version = 3 WHERE id = 5").run();
+    const starts: StartSessionParams[] = [];
+    const sessions: EventSessions = {
+      async startSession(params) {
+        starts.push(params);
+        return { id: 300 + starts.length } as unknown as SessionHandle;
+      },
+      resumeSession: () => Promise.reject(new Error("unexpected resume")),
+      getSession: (id) => (id === CALLER.id ? ({ ...CALLER } as unknown as SessionRow) : undefined),
+    };
+    const loop = new EventLoop({ store, handlers: { message: handleAutomateRun }, sessions });
+    queueSourceLaunch();
+    await resume();
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(CALLER.playbook_version).toBe(2);
+    expect(starts[0]).toMatchObject({ playbook: 5, playbookVersion: 3 });
+  });
+});
+
+// ---- 23t: the repo's required checks reach the run's drain --------------------------------------------------
+
+describe("a run launch hands the repo's detected required checks to the drain", () => {
+  it("writes required_checks into the checkout's git-ignored Loomwright config before the session starts, and records it", async () => {
+    execFileSync("git", ["init", "-q", checkout]);
+    writeFileSync(join(checkout, ".git", "info", "exclude"), ".supervisor/\n");
+    store
+      .prepare("INSERT INTO repo_policies (repo, policy_kind, detected_json, set_by, set_at) VALUES ('o/r', 'solo', ?, 'owner', '2026-11-12T15:27:31.829Z')")
+      .run(JSON.stringify({ repo: "o/r", protection: "protected", required_checks: ["ci"], read_at: "2026-11-12T15:27:13.350Z" }));
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, 'mason', 'completed', ?)").run(CALLER.id, checkout);
+    let configAtStart: unknown;
+    const sessions: EventSessions = {
+      async startSession() {
+        configAtStart = JSON.parse(readFileSync(join(checkout, ".supervisor", "config.json"), "utf8"));
+        return { id: 301 } as unknown as SessionHandle;
+      },
+      resumeSession: () => Promise.reject(new Error("unexpected resume")),
+      getSession: (id) => (id === CALLER.id ? ({ ...CALLER } as unknown as SessionRow) : undefined),
+    };
+    const loop = new EventLoop({ store, handlers: { message: handleAutomateRun }, sessions });
+    queueSourceLaunch();
+    await resume();
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(configAtStart).toEqual({ required_checks: ["ci"] });
+    const recorded = store.prepare<[], string>("SELECT payload_json FROM events WHERE kind = 'run_required_checks'").pluck().all();
+    expect(recorded.map((p) => JSON.parse(p))).toEqual([{ repo: "o/r", checkout, written: ["ci"] }]);
   });
 });

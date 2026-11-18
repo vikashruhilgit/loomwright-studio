@@ -3,7 +3,16 @@
 // is set up and sets no policy. Every gui route is an owner route that needs the
 // API token: none sets `unauthenticated`. The route is read-only: nothing is written.
 //
-//   GET /settings   {provider, data_dir, notifier, loomwright}
+//   GET /settings                {provider, providers, provider_source, data_dir, notifier, loomwright}
+//   PUT /settings/auth-provider  {provider}  the owner's choice of provider (D48)
+//   PUT /settings/api-key        {key}       store the owner's API key in the Keychain (D48)
+//
+// The two PUTs are the owner's own settings, made in the app: the key is
+// written to the Keychain and never echoed, logged or put in an event. A switch
+// is refused while a session runs (it restarts the kernel), while a flag or env
+// var overrides the choice, or while the chosen provider has no usable
+// credential; otherwise it is recorded in `config/auth.json` and the kernel
+// restarts on it (launchd), or it applies at the next start.
 //
 // The shape mirrors `app/src/api/contract.ts` (`SettingsResponse`, `NotifierKind`).
 //   - `provider`: the first auth provider as `/status` reports it (`id`,
@@ -20,7 +29,11 @@
 // with reason `no_status_view` (the request carries no `StatusView`),
 // `no_auth_provider` or `no_loomwright_reader`.
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
+import { API_KEY_KEYCHAIN_SERVICE, API_KEY_PROVIDER_ID } from "../auth/api-key.js";
+import { writeAuthChoice } from "../auth/choice.js";
+import { WRITE_ARG } from "../auth/keychain.js";
 import { readProviderMetadata } from "../auth/metadata.js";
+import { isPlausibleApiKey } from "../auth/token-shape.js";
 import { chooseNotifier } from "../notifications/notifier.js";
 import type { NotifierChoice } from "../notifications/notifier.js";
 import type { GuiPart } from "./types.js";
@@ -58,7 +71,9 @@ function tokenCreatedAt(req: ContributedRouteRequest, providerId: string): strin
 async function settings(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
   const view = req.status;
   if (view === undefined) return unavailable("no_status_view");
-  const provider = view.auth(req.now())[0];
+  // One read of every provider's health: the in-use one first.
+  const all = view.auth(req.now());
+  const provider = all[0];
   if (provider === undefined) return unavailable("no_auth_provider");
   const loomwright = view.loomwright();
   if (loomwright === undefined) return unavailable("no_loomwright_reader");
@@ -71,6 +86,9 @@ async function settings(req: ContributedRouteRequest): Promise<ContributedRouteR
         health: provider.health,
         token_created_at: tokenCreatedAt(req, provider.id),
       },
+      // Every provider this build has, the in-use one first (D48); `chosen` is the recorded choice.
+      providers: all.map((p) => ({ id: p.id, account: p.account, health: p.health, in_use: p.id === provider.id })),
+      provider_source: req.auth?.source ?? null,
       data_dir: req.store.dataDir,
       notifier: notifierKindOf(chooseNotifier()),
       loomwright,
@@ -78,8 +96,97 @@ async function settings(req: ContributedRouteRequest): Promise<ContributedRouteR
   };
 }
 
+/** How long after the answer the restart runs, so the answer reaches the app first. */
+export const RESTART_DELAY_MS = 250;
+
+function bodyField(body: unknown, field: string): string | undefined {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  const value = (body as Record<string, unknown>)[field];
+  return typeof value === "string" ? value : undefined;
+}
+
+function runningSessions(req: ContributedRouteRequest): number {
+  return req.store.prepare<[], { n: number }>("SELECT count(*) AS n FROM sessions WHERE status IN ('starting', 'running')").get()?.n ?? 0;
+}
+
+// Each kind is written literally, so the app's audit sentence table can check it covers every kind the kernel writes.
+function recordProviderChosen(req: ContributedRouteRequest, payload: Record<string, unknown>): void {
+  req.store.prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES (?, 'auth_provider_chosen', 'api', ?)").run(req.now().toISOString(), JSON.stringify(payload));
+}
+
+function recordApiKeySet(req: ContributedRouteRequest): void {
+  req.store.prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES (?, 'auth_api_key_set', 'api', ?)").run(req.now().toISOString(), JSON.stringify({ provider: API_KEY_PROVIDER_ID }));
+}
+
+/**
+ * `PUT /settings/auth-provider {provider}`. Refusals: `400 invalid_body`;
+ * `400 unknown_provider` (not in this build); `409 provider_overridden` (a flag
+ * or env var picks the provider, so a choice would not apply); `409
+ * provider_not_ready` (its health is not `ok` or `expiring`, so every session
+ * would fail); `409 sessions_running` (the restart would stop them). The same
+ * provider as in use only records the choice. Otherwise the choice is recorded,
+ * an `auth_provider_chosen` event appended, and the kernel restarts on it
+ * (`restarting: true`) or, with no restart wired, applies it at the next start.
+ */
+async function chooseProvider(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
+  const auth = req.auth;
+  const view = req.status;
+  if (auth === undefined || view === undefined) return unavailable("no_status_view");
+  const provider = bodyField(req.body, "provider");
+  if (provider === undefined) return { status: 400, body: { error: "invalid_body", message: "the body is {provider}, a provider id" } };
+  if (!auth.available.includes(provider)) return { status: 400, body: { error: "unknown_provider", available: auth.available } };
+  if (auth.source === "flag" || auth.source === "env") return { status: 409, body: { error: "provider_overridden", source: auth.source } };
+  if (provider === auth.inUse) {
+    writeAuthChoice(auth.dataDir, provider);
+    return { status: 200, body: { in_use: auth.inUse, chosen: provider, restarting: false } };
+  }
+  const health = view.auth(req.now()).find((p) => p.id === provider)?.health;
+  if (health === undefined || (health.status !== "ok" && health.status !== "expiring")) {
+    return { status: 409, body: { error: "provider_not_ready", provider, health: health ?? null } };
+  }
+  const running = runningSessions(req);
+  if (running > 0) return { status: 409, body: { error: "sessions_running", count: running } };
+  writeAuthChoice(auth.dataDir, provider);
+  recordProviderChosen(req, { from: auth.inUse, to: provider, restarting: auth.restart !== undefined });
+  const restart = auth.restart;
+  if (restart !== undefined) setTimeout(restart, RESTART_DELAY_MS).unref();
+  return { status: 202, body: { in_use: auth.inUse, chosen: provider, restarting: restart !== undefined } };
+}
+
+/**
+ * `PUT /settings/api-key {key}`: replace the Keychain item the `api-key`
+ * provider reads, then read it back (the only proof it was stored). The key is
+ * never echoed, logged or recorded; refusals name the field, never the value.
+ * `400 invalid_key` (empty, whitespace, or a character the Keychain writer
+ * cannot take); `500 keychain_write_failed`. Appends `auth_api_key_set` (no
+ * key). The provider in use is not changed.
+ */
+async function setApiKey(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
+  const auth = req.auth;
+  if (auth === undefined) return unavailable("no_status_view");
+  if (!auth.available.includes(API_KEY_PROVIDER_ID)) return { status: 400, body: { error: "unknown_provider", available: auth.available } };
+  const key = bodyField(req.body, "key");
+  if (key === undefined) return { status: 400, body: { error: "invalid_body", message: "the body is {key}, the API key" } };
+  if (!isPlausibleApiKey(key) || !WRITE_ARG.test(key)) {
+    return { status: 400, body: { error: "invalid_key", message: "the key is empty, has whitespace, or has a character the Keychain cannot take" } };
+  }
+  try {
+    auth.keychainDeleter.delete(API_KEY_KEYCHAIN_SERVICE);
+    auth.keychainWriter.add(API_KEY_KEYCHAIN_SERVICE, API_KEY_PROVIDER_ID, key);
+    if (auth.keychainReader.read(API_KEY_KEYCHAIN_SERVICE) !== key) throw new Error("read-back mismatch");
+  } catch {
+    // Deliberately drop the error: a Keychain error never carries the key, but nothing here risks it.
+    return { status: 500, body: { error: "keychain_write_failed" } };
+  }
+  recordApiKeySet(req);
+  const health = req.status?.auth(req.now()).find((p) => p.id === API_KEY_PROVIDER_ID)?.health ?? null;
+  return { status: 200, body: { stored: true, health } };
+}
+
 export const settingsRoutes: readonly ContributedRoute[] = Object.freeze([
   Object.freeze({ method: "GET", path: "/settings", handler: settings }),
+  Object.freeze({ method: "PUT", path: "/settings/auth-provider", handler: chooseProvider }),
+  Object.freeze({ method: "PUT", path: "/settings/api-key", handler: setApiKey }),
 ]);
 
 export const settingsPart: GuiPart = Object.freeze({

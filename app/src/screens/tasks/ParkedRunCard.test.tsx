@@ -6,7 +6,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiResult, PausedRunBlock, PausedRunView } from "../../api/contract";
 import { fakeBridge, ok } from "../../store/fake-bridge";
-import { ParkedRunCard, blockText, readPausedRuns, resumeErrorText, resumePausedRun } from "./ParkedRunCard";
+import { ParkedRunCard, blockText, readPausedRuns, replyToRun, resumeErrorText, resumePausedRun } from "./ParkedRunCard";
 
 const ESC = String.fromCharCode(0x1b);
 const RLO = "‮";
@@ -203,5 +203,72 @@ describe("the calls", () => {
       throw new Error("boom");
     });
     expect((await readPausedRuns(fake.bridge)).status).toBe(0);
+  });
+});
+
+describe("reply to the run's last message", () => {
+  type OnReply = (run: PausedRunView, text: string) => Promise<ApiResult<unknown>>;
+  const ASKED = { id: 235, status: "completed", message: "PR #19 was closed.\nRedo it, reopen it, or drop the item?" };
+
+  function drawWithReply(view: PausedRunView, onReply = vi.fn<OnReply>(async () => ok({ queue_id: 9, session: 235 })), offline = false) {
+    render(
+      <ul>
+        <ParkedRunCard run={view} agent={AGENT} offline={offline} onResume={vi.fn<OnResume>(async () => ok({ queue_id: 1 }))} onReply={onReply} />
+      </ul>,
+    );
+    return onReply;
+  }
+
+  it("shows the run's last message with its line breaks, as inert text", () => {
+    drawWithReply(run({ stranded: true, last_session: { ...ASKED, message: `<b>x</b>${ESC}\nline two` } }));
+    const text = screen.getByTestId("parked-run-last-text");
+    expect(text.textContent).toBe("<b>x</b>\\x1b\nline two");
+    expect(text.querySelector("b")).toBeNull();
+    expect(screen.getByTestId("parked-run-last").textContent).toContain("session #235");
+  });
+
+  it("sends the trimmed reply once, clears the box, and says the run carries on", async () => {
+    const onReply = drawWithReply(run({ stranded: true, last_session: ASKED }));
+    const box = screen.getByTestId("parked-run-reply-text") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "  Redo it.  " } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-reply-send"));
+    });
+    expect(onReply).toHaveBeenCalledTimes(1);
+    expect(onReply.mock.calls[0]?.[1]).toBe("Redo it.");
+    expect(box.value).toBe("");
+    expect(screen.getByTestId("parked-run-reply-note").textContent).toContain("carries on");
+  });
+
+  it("offers no reply box without a kernel session, while one is live, or when a block other than a settling lock applies", () => {
+    for (const view of [run({ last_session: null }), run({ last_session: { ...ASKED, status: "running" } }), run({ last_session: ASKED, blocked: "run_live" }), run()]) {
+      drawWithReply(view);
+      expect(screen.queryByTestId("parked-run-reply")).toBeNull();
+      cleanup();
+    }
+    drawWithReply(run({ last_session: ASKED, blocked: "lock_settling" }));
+    expect(screen.getByTestId("parked-run-reply")).toBeTruthy();
+  });
+
+  it("shows a refusal in plain words and keeps the draft", async () => {
+    const onReply = vi.fn<OnReply>(async () => ({ ok: false, status: 409, body: { error: "no_run_session" } }));
+    drawWithReply(run({ last_session: ASKED }), onReply);
+    const box = screen.getByTestId("parked-run-reply-text") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "Redo it." } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-reply-send"));
+    });
+    expect(screen.getByTestId("parked-run-reply-note").textContent).toContain("no session for this run");
+    expect(box.value).toBe("Redo it.");
+  });
+
+  it("POSTs to the run's reply path with the body exactly {agent, checkout, text}", async () => {
+    const fake = fakeBridge();
+    fake.route("POST /automate/paused-runs/:run_id/reply", () => ok({ queue_id: 9, session: 235, run_id: "2026-11-16-tickets", agent: "mason", checkout: "/x" }));
+    expect((await replyToRun(fake.bridge, run(), "Redo it.")).ok).toBe(true);
+    const sent = fake.requestsTo("POST /automate/paused-runs/:run_id/reply").map((r) => r.req);
+    expect(sent).toEqual([
+      { method: "POST", path: "/automate/paused-runs/:run_id/reply", params: { run_id: "2026-11-16-tickets" }, body: { agent: "mason", checkout: "/Users/owner/code/sandbox", text: "Redo it." } },
+    ]);
   });
 });

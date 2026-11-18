@@ -119,7 +119,8 @@ describe("the states", () => {
     expect(text(IDS.loomwright)).toBe("/Users/owner/.claude/plugins/loomwright");
     expect(screen.queryByTestId(IDS.band)).toBeNull();
     for (const name of ["Auth provider", "Change it in your terminal", "Kernel", "This app"]) expect(screen.getByRole("region", { name }), name).toBeTruthy();
-    expect(screen.getAllByText("read-only")).toHaveLength(2);
+    // Only the Kernel section and the app section stay read-only; the Auth provider section holds the D48 choice.
+    expect(screen.getAllByText("read-only")).toHaveLength(1);
     expect(screen.getByText("Kept in the app's own settings, not in the kernel")).toBeTruthy();
   });
 

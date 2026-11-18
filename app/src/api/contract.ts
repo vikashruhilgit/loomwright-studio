@@ -54,7 +54,8 @@ export type RouteOrigin =
   | "p8-item-17"
   | "p8-item-18"
   | "p8-item-23"
-  | "github-app";
+  | "github-app"
+  | "d48";
 
 export interface ContractRoute {
   readonly method: HttpMethod;
@@ -153,6 +154,8 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/budget/usage", origin: "p7-item-07" },
   { method: "GET", path: "/audit", origin: "p7-item-07" },
   { method: "GET", path: "/settings", origin: "p7-item-08" },
+  { method: "PUT", path: "/settings/auth-provider", origin: "d48" },
+  { method: "PUT", path: "/settings/api-key", origin: "d48" },
   { method: "GET", path: "/connectors/github/app/upgrade", origin: "p8-item-03" },
   { method: "POST", path: "/connectors/mcp/:kind/connect", origin: "p8-item-06" },
   { method: "POST", path: "/connectors/mcp/:kind/connect/cancel", origin: "p8-item-06" },
@@ -169,6 +172,7 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "POST", path: "/workspaces/:id/remove", origin: "p8-item-18" },
   { method: "GET", path: "/automate/paused-runs", origin: "p8-item-23" },
   { method: "POST", path: "/automate/paused-runs/:run_id/resume", origin: "p8-item-23" },
+  { method: "POST", path: "/automate/paused-runs/:run_id/reply", origin: "d48" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -1477,8 +1481,10 @@ export interface AuditResponse {
 export type NotifierKind = "terminal-notifier" | "osascript" | "none";
 
 /**
- * `GET /settings`: read-only. It never carries a secret: the provider's health
+ * `GET /settings`: it never carries a secret: the provider's health
  * and when its token was made, never the token (invariant 6 keeps sign-in out of the app).
+ * `providers` (D48) lists every provider the build has, the in-use one first;
+ * `provider_source` says what picked it (`flag` and `env` override the owner's choice).
  */
 export interface SettingsResponse {
   readonly provider: {
@@ -1488,10 +1494,41 @@ export interface SettingsResponse {
     /** When the credential was created (`auth_providers.token_created_at`), for expiry; `null` when unknown. */
     readonly token_created_at: IsoTime | null;
   };
+  /** D48. Absent from an older kernel. */
+  readonly providers?: readonly { readonly id: string; readonly account: string | null; readonly health: AuthHealth; readonly in_use: boolean }[];
+  /** D48. Absent from an older kernel; `null` when the kernel wired no auth controls. */
+  readonly provider_source?: "flag" | "env" | "choice" | "default" | null;
   readonly data_dir: string;
   readonly notifier: NotifierKind;
   /** The Loomwright install the adapter resolved, or why it did not. */
   readonly loomwright: LoomwrightAdapterStatus;
+}
+
+/** `PUT /settings/auth-provider` (D48): the provider the owner chooses for every session. */
+export interface AuthProviderChoiceBody {
+  readonly provider: string;
+}
+
+/**
+ * Its answer: 202 when the kernel restarts on the new choice (`restarting`), or records it
+ * for its next start; 200 when the choice is the provider already in use. Refusals (409):
+ * `provider_overridden`, `provider_not_ready`, `sessions_running`; (400) `unknown_provider`, `invalid_body`.
+ */
+export interface AuthProviderChoiceResponse {
+  readonly in_use: string;
+  readonly chosen: string;
+  readonly restarting: boolean;
+}
+
+/** `PUT /settings/api-key` (D48): the API key, sent once to the kernel, which stores it in the Keychain. Never echoed back. */
+export interface ApiKeyBody {
+  readonly key: string;
+}
+
+/** Its answer: the key was stored and read back; the api-key provider's health after it. Refusals: 400 `invalid_key`, 500 `keychain_write_failed`. */
+export interface ApiKeyResponse {
+  readonly stored: true;
+  readonly health: AuthHealth | null;
 }
 
 // ---- Phase 8: the App upgrade, MCP connectors, the repo merge policy and PR tracks ----------
@@ -1734,6 +1771,8 @@ export interface ContractRouteMap {
   "GET /budget/usage": Route<BudgetUsageQuery, undefined, BudgetUsageResponse>;
   "GET /audit": Route<AuditQuery, undefined, AuditResponse>;
   "GET /settings": Route<NoQuery, undefined, SettingsResponse>;
+  "PUT /settings/auth-provider": Route<NoQuery, AuthProviderChoiceBody, AuthProviderChoiceResponse>;
+  "PUT /settings/api-key": Route<NoQuery, ApiKeyBody, ApiKeyResponse>;
   "GET /connectors/github/app/upgrade": Route<NoQuery, undefined, GitHubAppUpgradeResponse>;
   "POST /connectors/mcp/:kind/connect": Route<NoQuery, undefined, McpConnectResponse>;
   "POST /connectors/mcp/:kind/connect/cancel": Route<NoQuery, undefined, GitHubAppSetupCancelResponse>;
@@ -1750,6 +1789,7 @@ export interface ContractRouteMap {
   "POST /workspaces/:id/remove": Route<NoQuery, undefined, RemoveWorkspaceResponse>;
   "GET /automate/paused-runs": Route<NoQuery, undefined, PausedRunsResponse>;
   "POST /automate/paused-runs/:run_id/resume": Route<NoQuery, PausedRunResumeBody, PausedRunResumeResponse>;
+  "POST /automate/paused-runs/:run_id/reply": Route<NoQuery, PausedRunReplyBody, PausedRunReplyResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;
@@ -1895,6 +1935,11 @@ export interface PausedRunView {
    * `null` when the lock's age cannot be read. A lock one of the kernel's own ended sessions left never blocks.
    */
   readonly resume_at: string | null;
+  /**
+   * The run's newest kernel run session and the last thing it said (model text: untrusted, shown as text), or `null`
+   * when the kernel started none for this run id. Absent from an older kernel.
+   */
+  readonly last_session?: { readonly id: number; readonly status: string; readonly message: string | null } | null;
 }
 
 /** A workspace whose run state could not be read. */
@@ -1915,6 +1960,26 @@ export interface PausedRunsResponse {
  * `invalid_body`, 404 `not_found` (no such paused run for that agent and checkout), or 409 with a `PausedRunBlock`.
  */
 export interface PausedRunResumeBody {
+  readonly agent: string;
+  readonly checkout: string;
+}
+
+/**
+ * `POST /automate/paused-runs/:run_id/reply`: the owner's answer to the run's last message (1 to 4000 characters after
+ * trimming). It continues that run's newest session. Refused with 400 `invalid_run_id` / `invalid_body`, 404
+ * `not_found`, 409 a `PausedRunBlock` (bar `lock_settling`), `no_run_session` or `not_kernel_run`.
+ */
+export interface PausedRunReplyBody {
+  readonly agent: string;
+  readonly checkout: string;
+  readonly text: string;
+}
+
+export interface PausedRunReplyResponse {
+  readonly queue_id: number;
+  /** The run session the reply continues. */
+  readonly session: number;
+  readonly run_id: string;
   readonly agent: string;
   readonly checkout: string;
 }

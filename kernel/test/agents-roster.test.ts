@@ -1021,3 +1021,36 @@ describe("show: whether each ticket duty's tracker can be read (item 21b)", () =
     expect(await access()).toBeNull();
   });
 });
+
+// ---- A raised daily limit lets the member's parked runs check again (live 2026-11-18) -----------------------
+
+describe("setting limits.tokens_per_day releases the member's daily-limit parks", () => {
+  const park = (agent: string, error: string, notBefore = "2099-01-01T00:00:00.000Z"): number =>
+    Number(
+      env.store
+        .prepare("INSERT INTO event_queue (kind, payload_json, status, not_before, last_error) VALUES ('message', ?, 'pending', ?, ?)")
+        .run(JSON.stringify({ agent, automate_run: { kind: "resume" } }), notBefore, error).lastInsertRowid,
+    );
+  const notBefore = (id: number) => env.store.prepare<[number], string | null>("SELECT not_before FROM event_queue WHERE id = ?").pluck().get(id);
+
+  it("makes its runs parked on the daily limit due now, raised or re-affirmed, and leaves every other park alone", async () => {
+    create();
+    const mine = park("mason", "start refused for agent mason on account api-key: agent_daily_limit until 2099-01-01T00:00:00.000Z");
+    const otherReason = park("mason", "start refused for agent mason on account api-key: cap_reached until 2099-01-01T00:00:00.000Z");
+    const otherAgent = park("wren", "start refused for agent wren on account api-key: agent_daily_limit until 2099-01-01T00:00:00.000Z");
+    const res = await api("POST", "/agents/mason/set", { field: "limits.tokens_per_day", value: "4000000" });
+    expect(res).toMatchObject({ status: 200, body: { changed: true, released_parked: 1 } });
+    expect(Date.parse(notBefore(mine) ?? "")).toBeLessThan(Date.parse("2099-01-01T00:00:00.000Z"));
+    expect(notBefore(otherReason)).toBe("2099-01-01T00:00:00.000Z");
+    expect(notBefore(otherAgent)).toBe("2099-01-01T00:00:00.000Z");
+    // Re-affirming the same limit releases a park made since (the owner's set is the signal), with no file change.
+    const again = park("mason", "start refused for agent mason on account api-key: agent_daily_limit until 2099-01-01T00:00:00.000Z");
+    expect(await api("POST", "/agents/mason/set", { field: "limits.tokens_per_day", value: "4000000" })).toMatchObject({ status: 200, body: { changed: false, released_parked: 1 } });
+    expect(Date.parse(notBefore(again) ?? "")).toBeLessThan(Date.parse("2099-01-01T00:00:00.000Z"));
+    // Another field releases nothing.
+    const later = park("mason", "start refused for agent mason on account api-key: agent_daily_limit until 2099-01-01T00:00:00.000Z");
+    const effort = await api("POST", "/agents/mason/set", { field: "limits.sessions_at_once", value: "2" });
+    expect(effort.body.released_parked).toBeUndefined();
+    expect(notBefore(later)).toBe("2099-01-01T00:00:00.000Z");
+  });
+});

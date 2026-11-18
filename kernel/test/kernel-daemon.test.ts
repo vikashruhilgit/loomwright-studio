@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_TOKEN_KEYCHAIN_SERVICE, engageKillSwitch } from "../src/api/index.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthProvider, KeychainReader, KeychainWriter } from "../src/auth/index.js";
+import { AUTH_CHOICE_FILE, writeAuthChoice } from "../src/auth/choice.js";
 import { daemonKernelDeps } from "../src/daemon-deps.js";
 import { SHIPPED_CONTRIBUTIONS } from "../src/features/index.js";
 import { startKernel } from "../src/kernel.js";
@@ -110,7 +111,11 @@ describe("startKernel", () => {
     const res = await fetch(`http://127.0.0.1:${kernel.api.port}/status`, { headers: { Authorization: `Bearer ${token as string}` } });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { auth: unknown[]; kill_switch: unknown };
+    // Only the in-use provider: each health is a Keychain read and `/status` is polled; Settings lists the others (D48).
     expect(body.auth).toEqual([{ id: "stub-provider", account: "owner@example.test", health: { status: "ok" } }]);
+    // Settings, which is read on demand, lists every provider the build has (D48), the in-use one first.
+    const settings = (await (await fetch(`http://127.0.0.1:${kernel.api.port}/settings`, { headers: { Authorization: `Bearer ${token as string}` } })).json()) as { providers: { in_use: boolean }[] };
+    expect(settings.providers).toHaveLength(2); // the stub names every provider "stub-provider", so in_use is not told apart here
     expect(body.kill_switch).toEqual({ engaged: false, since: null });
   });
 
@@ -199,7 +204,7 @@ describe("startKernel", () => {
   it("daemon.ts passes daemonKernelDeps(), whose only dependencies are the real GitHub client and the session token minter factory, built with no Keychain read and no request", () => {
     // The production entry point is the one composition no other test starts: pin that it wires the client and the minter.
     const daemonSource = readFileSync(fileURLToPath(new URL("../src/daemon.ts", import.meta.url)), "utf8");
-    expect(daemonSource).toContain("startKernel(parseArgs(args), daemonKernelDeps())");
+    expect(daemonSource).toContain("startKernel({ ...parseArgs(args), ...(launchd ? { onRestartRequested } : {}) }, daemonKernelDeps())");
     const reads: string[] = [];
     const requests: string[] = [];
     const d = daemonKernelDeps({
@@ -227,6 +232,27 @@ describe("startKernel", () => {
     expect(kinds).toEqual(["event_done"]);
   });
 
+  it("selects the owner's recorded choice (D48) over the build default, and a flag or env var over the choice", async () => {
+    writeAuthChoice(dataDir, "api-key");
+    const c = deps();
+    const chosen = await start(options(), c.d);
+    await chosen.stop();
+    const f = deps();
+    await (await start(options({ authProviderId: "subscription-token" }), f.d)).stop();
+    const e = deps();
+    await (await start(options({ env: { STUDIO_AUTH_PROVIDER: "subscription-token" } }), e.d)).stop();
+    expect([c.selected[0], f.selected[0], e.selected[0]]).toEqual(["api-key", "subscription-token", "subscription-token"]);
+    // A choice this build does not have (a distribution build has no subscription provider) is ignored for the default.
+    writeAuthChoice(dataDir, "subscription-token");
+    const dist = deps({ availableProviderIds: async () => ["api-key"] });
+    await (await start(options(), dist.d)).stop();
+    expect(dist.selected).toEqual(["api-key"]);
+    writeFileSync(join(dataDir, AUTH_CHOICE_FILE), "not json");
+    const broken = deps();
+    await (await start(options(), broken.d)).stop();
+    expect(broken.selected[0]).toBe("subscription-token");
+  });
+
   it("selects the provider from --auth-provider, then STUDIO_AUTH_PROVIDER, then the build default", async () => {
     const a = deps();
     await (await start(options({ authProviderId: "api-key", env: { STUDIO_AUTH_PROVIDER: "subscription-token" } }), a.d)).stop();
@@ -236,7 +262,8 @@ describe("startKernel", () => {
     await (await start(options(), c.d)).stop();
     const dist = deps({ availableProviderIds: async () => ["api-key"] });
     await (await start(options(), dist.d)).stop();
-    expect([a.selected, b.selected, c.selected, dist.selected]).toEqual([["api-key"], ["api-key"], ["subscription-token"], ["api-key"]]);
+    // The first selection is the in-use provider; the rest are built for their health only (D48).
+    expect([a.selected[0], b.selected[0], c.selected[0], dist.selected[0]]).toEqual(["api-key", "api-key", "subscription-token", "api-key"]);
   });
 
   it("with STUDIO_AUTH_PROVIDER=api-key the real registry selects the api-key provider", async () => {

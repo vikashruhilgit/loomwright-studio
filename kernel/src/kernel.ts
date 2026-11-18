@@ -15,8 +15,10 @@ import { API_HOST, startApiServer } from "./api/server.js";
 import type { ApiServer, ApiServerDeps, ApiServerOptions } from "./api/server.js";
 import { API_KEY_PROVIDER_ID } from "./auth/api-key.js";
 import { AUTH_PROVIDER_ENV, authProviderFromEnv } from "./auth/provider-env.js";
-import { securityCliKeychain, securityCliKeychainWriter } from "./auth/keychain.js";
-import type { KeychainReader, KeychainWriter } from "./auth/keychain.js";
+import { securityCliKeychain, securityCliKeychainDeleter, securityCliKeychainWriter } from "./auth/keychain.js";
+import { readAuthChoice } from "./auth/choice.js";
+import type { AuthControl, AuthProviderSource } from "./auth/choice.js";
+import type { KeychainDeleter, KeychainReader, KeychainWriter } from "./auth/keychain.js";
 import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./auth/registry.js";
 import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
 import { Budget } from "./budget/index.js";
@@ -83,6 +85,14 @@ export interface KernelOptions {
    * refused before the store opens.
    */
   readonly contributions?: readonly FeatureContribution[];
+  /**
+   * Called (after the answer is sent) when the owner switches the auth provider
+   * in Settings (D48): it must stop the kernel gracefully and have it start
+   * again, so the new choice applies. The daemon wires it only under launchd,
+   * whose KeepAlive starts the kernel again. Absent: the choice is recorded and
+   * applies at the next start.
+   */
+  readonly onRestartRequested?: () => void;
 }
 
 /** Every side effect of the composition, injectable for tests. */
@@ -92,8 +102,10 @@ export interface KernelDeps {
   readonly selectAuthProvider?: (id: string, deps: AuthProviderDeps) => Promise<AuthProvider>;
   /** Defaults to the real `/usr/bin/security` reader; used by the auth provider and the API token. */
   readonly keychain?: KeychainReader;
-  /** Defaults to the real `security -i` writer (the API token's first start only). */
+  /** Defaults to the real `security -i` writer (the API token's first start, and the owner's API key from Settings). */
   readonly keychainWriter?: KeychainWriter;
+  /** Defaults to the real `security delete-generic-password` deleter (replacing the owner's API key from Settings). */
+  readonly keychainDeleter?: KeychainDeleter;
   readonly randomBytes?: (size: number) => Buffer;
   readonly sessionDeps?: SessionManagerDeps;
   readonly loopDeps?: EventLoopDeps;
@@ -356,7 +368,7 @@ export function agentLimitsFor(dataDir: string): (agent: string) => AgentLimitsL
  * the same way, named: the phase 1 tools when they fail to list alone,
  * else the failing contributed ones); open
  * the `Store` (taking its lock); select
- * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the
+ * the auth provider (`--auth-provider`, else `STUDIO_AUTH_PROVIDER`, else the owner's choice in `config/auth.json` (D48), else the
  * build default); the `Budget` (each agent's limits read from its settings
  * file, `agentLimitsFor`); the `SessionManager` (wired to the budget and
  * given the kernel MCP server per launch); reap orphans left by an earlier
@@ -420,11 +432,26 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
 
   try {
     const keychain = deps.keychain ?? securityCliKeychain();
-    const providerId =
-      nonEmpty(options.authProviderId) ??
-      authProviderFromEnv(env) ??
-      (await defaultAuthProviderId(deps.availableProviderIds ?? availableProviderIds));
-    const authProvider = await (deps.selectAuthProvider ?? selectAuthProvider)(providerId, { keychain, store, now });
+    // D48: the flag, then the env var, then the owner's recorded choice (when this build has it), then the build default.
+    const listProviders = deps.availableProviderIds ?? availableProviderIds;
+    const available = await listProviders();
+    const flagId = nonEmpty(options.authProviderId);
+    const envId = flagId === undefined ? authProviderFromEnv(env) : undefined;
+    const chosen = readAuthChoice(dataDir);
+    const choiceId = chosen !== undefined && available.includes(chosen) ? chosen : undefined;
+    const [providerId, providerSource]: [string, AuthProviderSource] =
+      flagId !== undefined
+        ? [flagId, "flag"]
+        : envId !== undefined
+          ? [envId, "env"]
+          : choiceId !== undefined
+            ? [choiceId, "choice"]
+            : [await defaultAuthProviderId(async () => available), "default"];
+    const pick = deps.selectAuthProvider ?? selectAuthProvider;
+    const authProvider = await pick(providerId, { keychain, store, now });
+    // Every other provider this build has, for Settings to show (health only): sessions run on `authProvider` alone.
+    const otherProviders: AuthProvider[] = [];
+    for (const id of available) if (id !== providerId) otherProviders.push(await pick(id, { keychain, store, now }));
 
     const budget = new Budget({ store, authProvider, agentLimits: agentLimitsFor(dataDir) }, { now });
     // The client the loop's due work gets, also given to a contributed tool's context (a poll playbook's dry run); absent stays absent.
@@ -492,7 +519,18 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     loop = eventLoop;
     if (!isKillSwitchEngaged(store)) eventLoop.start();
 
-    const token = ensureApiToken(keychain, deps.keychainWriter ?? securityCliKeychainWriter(), deps.randomBytes);
+    const keychainWriter = deps.keychainWriter ?? securityCliKeychainWriter();
+    const token = ensureApiToken(keychain, keychainWriter, deps.randomBytes);
+    const authControl: AuthControl = {
+      inUse: authProvider.id,
+      source: providerSource,
+      available: [...available].sort(),
+      dataDir,
+      keychainReader: keychain,
+      keychainWriter,
+      keychainDeleter: deps.keychainDeleter ?? securityCliKeychainDeleter(),
+      ...(options.onRestartRequested === undefined ? {} : { restart: options.onRestartRequested }),
+    };
     const server = await (deps.startApiServer ?? startApiServer)(
       {
         store,
@@ -500,7 +538,10 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         // The whole manager, for contributed routes (`ContributedRouteRequest.sessions`).
         sessionManager: manager,
         loop: eventLoop,
+        // `/status` reports the in-use provider only; Settings also lists the others (D48), each health a Keychain read.
         authProviders: [authProvider],
+        otherAuthProviders: otherProviders,
+        authControl,
         token,
         routes: contributions.routes,
         approvalApplier,
