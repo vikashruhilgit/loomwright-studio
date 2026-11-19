@@ -641,6 +641,48 @@ describe("an approval held by a run session continues that session (23o)", () =>
     expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({ session_id: 301 });
   });
 
+  // 23u (review of PR #294): a resume in place keeps the resumed session's model, so the version it records is paired
+  // with that session, not with the run's source session (which never changes along a continuation chain). Live chain:
+  // asked under v1/M1, a continuation started on v2/M2, the owner enabled v3/M3, a restart interrupted the continuation,
+  // and the decision resumed it in place: it recorded v1, a version whose model did not run.
+  describe("a resume in place records the resumed session's own version and model pair", () => {
+    function playbookVersionSnapshot(version: number, model: string): void {
+      store
+        .prepare("INSERT INTO playbook_versions (playbook, version, snapshot_json, created_at) VALUES (5, ?, ?, '2026-11-18T00:00:00.000Z')")
+        .run(version, JSON.stringify({ slug: "pb5", intent: "Hand tickets over", model }));
+    }
+
+    /** Session 301 interrupted at v3 on opus (the source session is v2 on sonnet); the playbook then moves to `enabled`. */
+    async function resumedAt(enabled: number, snapshotModel?: string): Promise<{ id: number; params: ResumeSessionParams }[]> {
+      const starts: StartSessionParams[] = [];
+      const resumes: { id: number; params: ResumeSessionParams }[] = [];
+      const loop = loopWith(starts, resumes);
+      const id = await heldRunSession(loop, "interrupted");
+      store.prepare("UPDATE sessions SET playbook = 5, playbook_version = 3, model = 'claude-opus-5-5' WHERE id = 301").run();
+      store.prepare("UPDATE playbooks SET version = ? WHERE id = 5").run(enabled);
+      if (snapshotModel !== undefined) playbookVersionSnapshot(enabled, snapshotModel);
+      decideApproval(store, { id, decision: "once", by: "owner" }, NOW);
+      expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+      expect(resumes).toHaveLength(1);
+      return resumes;
+    }
+
+    it("a newer enabled version on another model: keeps the resumed session's version, not the source session's", async () => {
+      const resumes = await resumedAt(4, "claude-haiku-5-5");
+      expect(resumes[0]?.params.playbookVersion).toBe(3);
+    });
+
+    it("a newer enabled version whose snapshot model is the resumed session's: records the enabled version", async () => {
+      const resumes = await resumedAt(4, "claude-opus-5-5");
+      expect(resumes[0]?.params.playbookVersion).toBe(4);
+    });
+
+    it("the enabled version is the resumed session's own: records it, even with no readable snapshot", async () => {
+      const resumes = await resumedAt(3);
+      expect(resumes[0]?.params.playbookVersion).toBe(3);
+    });
+  });
+
   // PR #291 review: these are the checks that keep a decision on one session from continuing a different one.
   for (const c of [
     { name: "is gone", change: "UPDATE event_queue SET payload_json = json_set(payload_json, '$.automate_run.session', 999) WHERE source_ref LIKE 'approval:%'", skipped: "continue_session_gone: session 999" },
