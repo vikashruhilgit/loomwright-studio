@@ -176,7 +176,7 @@ export function ProviderChoice({ api, view, offline, onChanged }: ProviderChoice
         })}
       </ul>
       {pending === undefined ? null : (
-        <div className="settings-row" data-testid={IDS.choicePending}>
+        <div className="settings-choice-pending" data-testid={IDS.choicePending}>
           <p className="settings-cap" data-tone="attention">
             You chose the {providerName(pending)}, but the kernel has not restarted onto it{inUse === undefined ? "" : `, so sessions still run on the ${providerName(inUse)}`}. It applies at the next kernel start.
           </p>
