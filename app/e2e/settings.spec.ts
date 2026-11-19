@@ -581,6 +581,21 @@ test("item 18 AC4: an account equal to the provider's id reads 'personal subscri
   expect(await textOf(page, IDS.account)).toBe("personal subscription");
 });
 
+test("the window never scrolls: Settings scrolls inside its pane, and an absolutely placed element at its foot does not grow the document", async () => {
+  // Live 2026-11-19: the Workspaces section's screen-reader live region (`position: absolute`) took the document as its
+  // containing block, so the document grew to its foot and the wheel scrolled the whole window past the content.
+  const page = await open(settingsFixture());
+  await expect(byId(page, IDS.auth)).toBeVisible();
+  await expect(byId(page, "settings-workspaces-live")).toBeAttached();
+  const doc = () => page.evaluate(() => ({ scrollHeight: document.scrollingElement!.scrollHeight, clientHeight: document.scrollingElement!.clientHeight, scrollTop: document.scrollingElement!.scrollTop }));
+  const at = await doc();
+  expect(at.scrollHeight, "the document is no taller than the window").toBe(at.clientHeight);
+  await page.mouse.move(800, 400);
+  for (let i = 0; i < 10; i += 1) await page.mouse.wheel(0, 800);
+  await expect.poll(async () => (await doc()).scrollTop, { message: "the wheel never scrolls the window" }).toBe(0);
+  await expect.poll(() => page.locator(".content").evaluate((el) => el.scrollTop), { message: "the pane scrolled instead" }).toBeGreaterThan(0);
+});
+
 test("item 18 AC5: each command block is one line at the default window size and at the smallest, and scrolls sideways rather than wrapping", async () => {
   const { page } = await openPopulated();
   const measure = () =>
