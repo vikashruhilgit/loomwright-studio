@@ -357,6 +357,10 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
     return `You chose ${g("to") ?? "an auth provider"} for every session${withText(g("from"), " (was ")}${g("from") === undefined ? "" : ")"}.`;
   },
   auth_api_key_set: () => "You stored an API key in the Keychain.",
+  auth_provider_switch_withdrawn: (p) => {
+    const g = reader(p);
+    return `You kept ${g("kept") ?? "the auth provider in use"}: the pending switch${withText(g("withdrawn"), " to ")} was withdrawn.`;
+  },
   auth_provider_restart_deferred: (p) => {
     const g = reader(p);
     return `The kernel did not restart for ${g("to") ?? "the new auth provider"}: a session started meanwhile, so the choice applies at the next start.`;

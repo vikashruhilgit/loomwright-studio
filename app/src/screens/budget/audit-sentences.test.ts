@@ -135,6 +135,8 @@ describe("the sentences", () => {
       ["tool_decision", { tool: "Bash", decision: "deny", reason: "draft_mode" }, "Bash was denied (draft mode).", {}],
       ["memory_updated", { path: "memory/mason/lessons.md", by: "owner", size: 12 }, "memory/mason/lessons.md was updated by owner.", {}],
       ["budget_limit_reached", { agent: "mason", limit: 150000, counted_tokens: 150100 }, "Mason reached its daily limit of 150,000 tokens.", {}],
+      ["auth_provider_switch_withdrawn", { kept: "api-key", withdrawn: "subscription-token" }, "You kept api-key: the pending switch to subscription-token was withdrawn.", {}],
+      ["auth_provider_switch_withdrawn", {}, "You kept the auth provider in use: the pending switch was withdrawn.", {}],
     ];
     for (const [kind, payload, expected, o] of cases) expect(auditSentence(kind, payload, refs(o)), `${kind} ${JSON.stringify(payload)}`).toBe(expected);
   });

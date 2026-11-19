@@ -263,5 +263,16 @@ describe("GET /settings pending_provider (23u)", () => {
     const put = route("/settings/auth-provider");
     expect((await put.handler(request({ provider: "subscription-token" }))).status).toBe(200);
     expect(await read()).toBeNull();
+    // The audit says the pending switch was withdrawn, so its last auth entry is not a deferral that never happened.
+    expect(events("auth_provider_switch_withdrawn").map((p) => JSON.parse(p))).toEqual([{ kept: "subscription-token", withdrawn: "api-key" }]);
+    expect(events("auth_provider_chosen")).toEqual([]);
+  });
+
+  it("choosing the provider in use with nothing pending records nothing", async () => {
+    const put = route("/settings/auth-provider");
+    expect((await put.handler(request({ provider: "subscription-token" }))).status).toBe(200);
+    writeAuthChoice(env.store.dataDir, "subscription-token");
+    expect((await put.handler(request({ provider: "subscription-token" }))).status).toBe(200);
+    expect(events("auth_provider_switch_withdrawn")).toEqual([]);
   });
 });

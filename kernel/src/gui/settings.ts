@@ -125,6 +125,10 @@ function recordProviderChosen(req: ContributedRouteRequest, payload: Record<stri
   req.store.prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES (?, 'auth_provider_chosen', 'api', ?)").run(req.now().toISOString(), JSON.stringify(payload));
 }
 
+function recordSwitchWithdrawn(req: ContributedRouteRequest, payload: { kept: string; withdrawn: string }): void {
+  req.store.prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES (?, 'auth_provider_switch_withdrawn', 'api', ?)").run(req.now().toISOString(), JSON.stringify(payload));
+}
+
 function recordApiKeySet(req: ContributedRouteRequest): void {
   req.store.prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES (?, 'auth_api_key_set', 'api', ?)").run(req.now().toISOString(), JSON.stringify({ provider: API_KEY_PROVIDER_ID }));
 }
@@ -135,7 +139,9 @@ function recordApiKeySet(req: ContributedRouteRequest): void {
  * or env var picks the provider, so a choice would not apply); `409
  * provider_not_ready` (its health is not `ok` or `expiring`, so every session
  * would fail); `409 sessions_running` (the restart would stop them). The same
- * provider as in use only records the choice. Otherwise the choice is recorded,
+ * provider as in use only records the choice; when that withdraws a pending
+ * choice (a deferred switch, 23u), `auth_provider_switch_withdrawn {kept,
+ * withdrawn}` is appended, and nothing when none was pending. Otherwise the choice is recorded,
  * an `auth_provider_chosen` event appended, and the kernel restarts on it
  * (`restarting: true`) or, with no restart wired, applies it at the next start.
  */
@@ -148,7 +154,9 @@ async function chooseProvider(req: ContributedRouteRequest): Promise<Contributed
   if (!auth.available.includes(provider)) return { status: 400, body: { error: "unknown_provider", available: auth.available } };
   if (auth.source === "flag" || auth.source === "env") return { status: 409, body: { error: "provider_overridden", source: auth.source } };
   if (provider === auth.inUse) {
+    const pending = pendingProvider(req, auth.inUse);
     writeAuthChoice(auth.dataDir, provider);
+    if (pending !== null) recordSwitchWithdrawn(req, { kept: provider, withdrawn: pending });
     return { status: 200, body: { in_use: auth.inUse, chosen: provider, restarting: false } };
   }
   const health = view.auth(req.now()).find((p) => p.id === provider)?.health;
