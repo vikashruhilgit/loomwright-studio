@@ -105,9 +105,7 @@ export function columnOf(item: Pick<TaskBoardItem, "kind" | "state"> & Partial<P
 
 /** Local midnight of `now`'s day, as `GET /tasks`' `skipped_since` takes it: the board's "today". */
 export function startOfToday(now: number): string {
-  const day = new Date(now);
-  day.setHours(0, 0, 0, 0);
-  return day.toISOString();
+  return new Date(startOfDay(now)).toISOString();
 }
 
 /**
@@ -307,11 +305,31 @@ export function whenText(iso: string | null, now: number): string {
   return `${dateText(at, { month: "short", day: "numeric" })} ${clockText(iso)}`;
 }
 
-/** The card's last line after the agent: `since 14:10` while it works, else the time it last changed. */
-export function metaText(card: BoardCard): string {
+/**
+ * A card's time: `14:10` today, `Oct 29 20:54` on an earlier day this year, `Oct 29, 2025 20:54` in another
+ * year. A bare clock time on a card from weeks ago reads as today, so any other day is always named. Empty
+ * when not a time. `now` is the board's clock (`startOfDay` is enough: only the day matters).
+ */
+export function cardTimeText(iso: string | null, now: number): string {
+  const clock = clockText(iso);
+  if (clock === "" || iso === null || isToday(iso, now)) return clock;
+  const at = new Date(iso);
+  const sameYear = at.getFullYear() === new Date(now).getFullYear();
+  return `${dateText(at, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" })} ${clock}`;
+}
+
+/** Local midnight of `now`'s day, in ms: what a card needs to date its time, and changes once a day. */
+export function startOfDay(now: number): number {
+  const day = new Date(now);
+  day.setHours(0, 0, 0, 0);
+  return day.getTime();
+}
+
+/** The card's last line after the agent: `since 14:10` while it works, else the time it last changed; dated when not today (`cardTimeText`). */
+export function metaText(card: BoardCard, now: number): string {
   const { item, column } = card;
-  if (column === "work") return `since ${clockText(item.started ?? item.updated)}`;
-  return clockText(item.ended ?? item.updated);
+  if (column === "work") return `since ${cardTimeText(item.started ?? item.updated, now)}`;
+  return cardTimeText(item.ended ?? item.updated, now);
 }
 
 /**

@@ -1376,3 +1376,21 @@ test("a failed:auth that a later session got past leaves Waiting on you; skipped
 
   await testInfo.attach("board", { body: await page.screenshot(), contentType: "image/png" });
 });
+
+test("a card from an earlier day shows its date with the time, so it never reads as today", async () => {
+  const old = new Date();
+  old.setDate(old.getDate() - 20);
+  old.setHours(8, 35, 0, 0);
+  const parkedOld = item("task", 70, "parked", { title: "Check my sandbox repo for new PRs", agent: "wright", started: old.toISOString(), updated: old.toISOString() });
+  const { fixture: started } = await startKernel({ items: [...populatedItems(), parkedOld], sessions: runningSessions() });
+  const page = await openWith(started);
+  const expected = await page.evaluate((iso) => {
+    const at = new Date(iso);
+    const sameYear = at.getFullYear() === new Date().getFullYear();
+    const date = new Intl.DateTimeFormat(undefined, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" }).format(at);
+    return `${date} 08:35`;
+  }, old.toISOString());
+  await expect(card(page, "task:70").locator(".tasks-card-meta")).toHaveText(new RegExp(` · ${expected}$`));
+  // A card from today keeps the bare time.
+  await expect(card(page, "task:7").locator(".tasks-card-meta")).toHaveText(/ · \d\d:\d\d$/);
+});

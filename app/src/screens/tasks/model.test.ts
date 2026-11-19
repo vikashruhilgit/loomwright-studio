@@ -4,6 +4,7 @@
 // escaped.
 import { describe, expect, it } from "vitest";
 import type { EventFrame, SessionSummary, TaskBoardItem, TaskBoardKind, TruncatedEventFrame } from "../../api/contract";
+import { dateText } from "../../components/format";
 import { isLive } from "../sessions/model";
 import {
   BOARD_COLUMNS,
@@ -22,8 +23,10 @@ import {
   reasonText,
   refetchMark,
   refetchWanted,
+  cardTimeText,
   sessionTitles,
   skippedText,
+  startOfDay,
   startOfToday,
   toneOf,
 } from "./model";
@@ -389,8 +392,51 @@ describe("the words on a card", () => {
       NOW,
     );
     const [working, parked] = [board.columns[1]?.cards[0], board.columns[2]?.cards[0]];
-    expect(working && metaText(working)).toMatch(/^since \d\d:\d\d$/);
-    expect(parked && metaText(parked)).toMatch(/^\d\d:\d\d$/);
+    expect(working && metaText(working, NOW)).toMatch(/^since \d\d:\d\d$/);
+    expect(parked && metaText(parked, NOW)).toMatch(/^\d\d:\d\d$/);
+  });
+
+  it("dates a time from an earlier day, so a card from weeks ago never reads as today", () => {
+    const board = buildBoard(
+      [
+        {
+          state: "x",
+          items: [
+            item("session", 67, "interrupted", { started: at(20, 54, 29), ended: null, updated: at(20, 54, 29) }),
+            item("task", 3, "working", { started: at(9, 5, 28), updated: at(14, 0) }),
+          ],
+        },
+      ],
+      NOW,
+    );
+    const parked = board.columns[2]?.cards[0];
+    const working = board.columns[1]?.cards[0];
+    const oct = (day: number): string => dateText(new Date(2026, 9, day, 12), { month: "short", day: "numeric" });
+    expect(parked && metaText(parked, NOW)).toBe(`${oct(29)} 20:54`);
+    expect(working && metaText(working, NOW)).toBe(`since ${oct(28)} 09:05`);
+  });
+});
+
+describe("cardTimeText", () => {
+  it("is the bare time today, the date and time on another day this year, and adds the year for another year", () => {
+    expect(cardTimeText(at(9, 5), NOW)).toBe("09:05");
+    expect(cardTimeText(at(0, 0), NOW)).toBe("00:00");
+    const lastNight = new Date(2026, 9, 29, 23, 59).toISOString();
+    expect(cardTimeText(lastNight, NOW)).toBe(`${dateText(new Date(2026, 9, 29), { month: "short", day: "numeric" })} 23:59`);
+    const lastYear = new Date(2025, 9, 30, 8, 35).toISOString();
+    expect(cardTimeText(lastYear, NOW)).toBe(`${dateText(new Date(2025, 9, 30), { month: "short", day: "numeric", year: "numeric" })} 08:35`);
+  });
+
+  it("is empty for no time or a time that does not parse", () => {
+    expect(cardTimeText(null, NOW)).toBe("");
+    expect(cardTimeText("not a time", NOW)).toBe("");
+  });
+
+  it("gives the same answer for any moment of the day, so the board can pass local midnight (startOfDay)", () => {
+    const old = new Date(2026, 9, 1, 8, 35).toISOString();
+    expect(cardTimeText(old, startOfDay(NOW))).toBe(cardTimeText(old, NOW));
+    expect(cardTimeText(at(9, 5), startOfDay(NOW))).toBe("09:05");
+    expect(new Date(startOfDay(NOW)).getHours()).toBe(0);
   });
 });
 

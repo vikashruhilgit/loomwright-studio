@@ -9,7 +9,8 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
 import type { Approval, PrCiState, PrOwnerKind, PrTrackState, TaskBoardItem, TaskTicketPr } from "../../api/contract";
-import { buildBoard, cardKey, cardLabel } from "./model";
+import { dateText } from "../../components/format";
+import { buildBoard, cardKey, cardLabel, startOfDay } from "./model";
 import type { BoardCard } from "./model";
 import {
   TicketPrCard,
@@ -328,7 +329,7 @@ interface Handlers {
   readonly onFocused: Mock<(key: string) => void>;
 }
 
-function draw(item: TaskBoardItem, options: { readonly approvalId?: number; readonly offline?: boolean; readonly column?: BoardCard["column"] } = {}): Handlers & { readonly card: BoardCard } {
+function draw(item: TaskBoardItem, options: { readonly approvalId?: number; readonly offline?: boolean; readonly column?: BoardCard["column"]; readonly day?: number } = {}): Handlers & { readonly card: BoardCard } {
   const column = options.column ?? "park";
   const card: BoardCard = { key: cardKey(item), item, column };
   const handlers: Handlers = { onOpen: vi.fn<(card: BoardCard) => void>(), onFocused: vi.fn<(key: string) => void>() };
@@ -336,6 +337,7 @@ function draw(item: TaskBoardItem, options: { readonly approvalId?: number; read
     <ul>
       <TicketPrCard
         card={card}
+        day={options.day ?? startOfDay(Date.parse("2026-11-09T12:00:00.000Z"))}
         ticket={item.ticket_pr as TaskTicketPr}
         agent={{ id: "ada", name: "ada" }}
         avatarState="parked"
@@ -441,6 +443,17 @@ describe("the card as drawn", () => {
     expect(note.textContent).toContain("Set this repo's merge policy to move it on.");
     fireEvent.click(within(note).getByRole("button", { name: "Open repo policy" }));
     expect(window.location.hash).toBe("#/integrations");
+  });
+
+  it("dates its time when the card is from an earlier day, and shows the bare time on its own day", () => {
+    const item = ticketCard({ state: "merged", merged_by_gate: true, approvals: "solo" }, { ended: "2026-11-09T09:00:00.000Z" });
+    const at = new Date("2026-11-09T09:00:00.000Z");
+    const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    draw(item, { column: "done", day: startOfDay(Date.parse("2026-11-19T12:00:00.000Z")) });
+    expect(screen.getByTestId("ticket-meta").textContent).toBe(`${dateText(at, { month: "short", day: "numeric" })} ${clock} · by Loomwright's gate`);
+    cleanup();
+    draw(item, { column: "done", day: startOfDay(at.getTime()) });
+    expect(screen.getByTestId("ticket-meta").textContent).toBe(`${clock} · by Loomwright's gate`);
   });
 
   it("shows a gate merge as text, never an action", () => {

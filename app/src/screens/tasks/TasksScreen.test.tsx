@@ -32,6 +32,7 @@ import type {
   TaskHistoryResponse,
   TasksResponse,
 } from "../../api/contract";
+import { dateText } from "../../components/format";
 import { installKeyboardMap } from "../../commands/keyboard";
 import { createCommandRegistry } from "../../commands/registry";
 import type { CommandRegistry } from "../../commands/registry";
@@ -403,6 +404,27 @@ describe("the agent on a card", () => {
     expect(meta("task:22")).toMatch(/^No agent recorded · /);
     await waitFor(() => expect(meta("task:21")).toMatch(/^Wright · /));
     expect(document.body.textContent).not.toContain("unknown agent");
+  });
+});
+
+describe("card times", () => {
+  it("a card from an earlier day shows its date with the time; today's shows the time alone", async () => {
+    const old = new Date();
+    old.setDate(old.getDate() - 20);
+    old.setHours(8, 35, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 30, 0);
+    await mount({
+      items: [
+        card("task", 30, "parked", { title: "Old parked task", started: old.toISOString(), updated: old.toISOString() }),
+        card("task", 31, "parked", { title: "Parked today", started: today.toISOString(), updated: today.toISOString() }),
+      ],
+    });
+    const meta = (key: string): string => cardEl(key).querySelector(".tasks-card-meta")?.textContent ?? "";
+    const sameYear = old.getFullYear() === today.getFullYear();
+    const date = dateText(old, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+    expect(meta("task:30")).toMatch(new RegExp(` · ${date} 08:35$`));
+    expect(meta("task:31")).toMatch(/ · 00:00$/);
   });
 });
 

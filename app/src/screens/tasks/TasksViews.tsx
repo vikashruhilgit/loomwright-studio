@@ -159,6 +159,8 @@ export function TasksNoKernel() {
 
 interface CardViewProps {
   readonly card: BoardCard;
+  /** Local midnight today (`startOfDay`): dates a card time from an earlier day. Changes once a day, so cards redraw once a day. */
+  readonly day: number;
   readonly agent: AvatarAgent;
   /** The store's pending approvals: a ticket card waits on one that names its PR. */
   readonly approvals: readonly Approval[] | undefined;
@@ -182,6 +184,7 @@ function sameCard(a: CardViewProps, b: CardViewProps): boolean {
   return (
     a.card.key === b.card.key &&
     a.card.column === b.card.column &&
+    a.day === b.day &&
     (a.card.item === b.card.item || JSON.stringify(a.card.item) === JSON.stringify(b.card.item)) &&
     a.agent.id === b.agent.id &&
     a.agent.name === b.agent.name &&
@@ -199,7 +202,7 @@ function sameCard(a: CardViewProps, b: CardViewProps): boolean {
 
 const CardView = memo(CardViewInner, sameCard);
 
-function CardViewInner({ card, agent, approvals, titles, offline, tabbable, onOpen, onFocused, onFocusLost }: CardViewProps) {
+function CardViewInner({ card, day, agent, approvals, titles, offline, tabbable, onOpen, onFocused, onFocusLost }: CardViewProps) {
   const { item, key, column } = card;
   const why = reasonText(item);
   // Reports the card leaving the DOM while it holds focus (a card that moves column is a new element), so the screen hands focus to its new one.
@@ -217,6 +220,7 @@ function CardViewInner({ card, agent, approvals, titles, offline, tabbable, onOp
     return (
       <TicketPrCard
         card={card}
+        day={day}
         ticket={item.ticket_pr}
         agent={agent}
         avatarState={avatarState(item, column)}
@@ -260,7 +264,7 @@ function CardViewInner({ card, agent, approvals, titles, offline, tabbable, onOp
         <span className="tasks-card-meta">
           <Avatar agent={agent} state={avatarState(item, column)} size={20} />
           <span>
-            {agent.name} · {metaText(card)}
+            {agent.name} · {metaText(card, day)}
           </span>
         </span>
       </button>
@@ -270,6 +274,8 @@ function CardViewInner({ card, agent, approvals, titles, offline, tabbable, onOp
 
 interface BoardViewProps {
   readonly board: Board;
+  /** Local midnight today (`startOfDay`), for the cards' times. */
+  readonly day: number;
   readonly roster: readonly RosterEntry[] | undefined;
   /** The store's pending approvals, for the ticket cards that wait on one. */
   readonly approvals: readonly Approval[] | undefined;
@@ -290,7 +296,7 @@ interface BoardViewProps {
 
 const NO_RESUME = async (): Promise<ApiResult<unknown>> => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } });
 
-export function BoardView({ board, roster, approvals, titles, pausedRuns = [], onResume = NO_RESUME, onReply, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
+export function BoardView({ board, day, roster, approvals, titles, pausedRuns = [], onResume = NO_RESUME, onReply, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
   const idBase = useId();
   const order = cardOrder(board);
   const tabKey = order.some((c) => c.key === activeKey) ? activeKey : (order[0]?.key ?? null);
@@ -323,6 +329,7 @@ export function BoardView({ board, roster, approvals, titles, pausedRuns = [], o
                     <CardView
                       key={card.key}
                       card={card}
+                      day={day}
                       agent={avatarAgent(cardAgent(card.item), roster)}
                       approvals={approvals}
                       titles={titles}

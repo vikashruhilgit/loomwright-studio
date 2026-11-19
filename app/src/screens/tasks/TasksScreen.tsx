@@ -47,7 +47,7 @@ import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
 import { readPausedRuns, replyToRun, resumePausedRun } from "./ParkedRunCard";
 import { ticketColumnOf, waitingApprovalOf } from "./TicketPrCard";
-import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark, sessionTitles, skippedText, startOfToday } from "./model";
+import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark, sessionTitles, skippedText, startOfDay, startOfToday } from "./model";
 import type { Board, BoardCard } from "./model";
 import { getLastBoard, setLastBoard } from "./lastKnown";
 import { setSubtitleLine } from "./subtitle";
@@ -465,7 +465,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           {skipped}
         </p>
       )}
-      <BoardView board={board} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} onReply={replyRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
+      <BoardView board={board} day={startOfDay(now)} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} onReply={replyRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
     </TasksFrame>
   );
 }
