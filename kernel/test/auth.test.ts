@@ -22,7 +22,9 @@ import {
   isWholeToken,
   parseTokenCreatedAt,
   readProviderMetadata,
+  recordCredentialRejected,
   recordTokenCreated,
+  credentialFingerprint,
   securityCliKeychain,
   selectAuthProvider,
   stripCredentialEnv,
@@ -33,7 +35,9 @@ import {
   SUBSCRIPTION_KEYCHAIN_SERVICE,
   createSubscriptionTokenProvider,
 } from "../src/auth/subscription-token.js";
-import { Store } from "../src/store/index.js";
+import Database from "better-sqlite3";
+import { DB_FILENAME, Store } from "../src/store/index.js";
+import { migrations } from "../src/store/migrations/index.js";
 
 const PREFIX = "sk-ant-oat01-";
 /** A fake whole token: right prefix, 103 characters, no whitespace. Never real-looking. */
@@ -187,7 +191,7 @@ describe("AuthProvider (AC1)", () => {
     expect(typeof provider.health).toBe("function");
   });
 
-  it("health() variants are exactly ok, missing, invalid_shape, expiring(days) and error(reason)", () => {
+  it("health() variants are exactly ok, missing, invalid_shape, expiring(days), rejected(at) and error(reason)", () => {
     // A compile-time exhaustiveness check over the union, plus a runtime sample.
     const label = (h: AuthHealth): string => {
       switch (h.status) {
@@ -197,6 +201,8 @@ describe("AuthProvider (AC1)", () => {
           return h.status;
         case "expiring":
           return `expiring(${h.days})`;
+        case "rejected":
+          return `rejected(${h.at})`;
         case "error":
           return `error(${h.reason})`;
         default: {
@@ -751,6 +757,23 @@ describe("health() is total (H02)", () => {
   });
 
   it("a metadata read that throws is error(token_created_at_unreadable)", () => {
+    const real = openStore();
+    // Only the creation-date read throws; the refusal read (step 2) still works.
+    const store = {
+      prepare: (sql: string) => {
+        if (sql.includes("token_created_at")) throw new Error("metadata read failed");
+        return real.prepare(sql);
+      },
+    } as unknown as Store;
+    const provider = createSubscriptionTokenProvider({
+      keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
+      store,
+      now: () => NOW,
+    });
+    expect(provider.health()).toEqual({ status: "error", reason: "token_created_at_unreadable" });
+  });
+
+  it("a closed store fails at the refusal read first: error(rejection_unreadable)", () => {
     const store = openStore();
     const provider = createSubscriptionTokenProvider({
       keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }),
@@ -758,7 +781,7 @@ describe("health() is total (H02)", () => {
       now: () => NOW,
     });
     store.close();
-    expect(provider.health()).toEqual({ status: "error", reason: "token_created_at_unreadable" });
+    expect(provider.health()).toEqual({ status: "error", reason: "rejection_unreadable" });
   });
 
   it("an invalid provider clock is error(clock_unreadable)", () => {
@@ -1191,5 +1214,86 @@ describe("source guards (AC6, AC7)", () => {
       readFileSync(file, "utf8").includes("loomwright-studio-oauth"),
     );
     expect(naming).toEqual([join(AUTH_DIR, "subscription-token.ts")]);
+  });
+});
+
+describe("a server refusal reaches health (rejected)", () => {
+  const AT = "2026-11-19T03:24:02.828Z";
+  let dir: string;
+  let store: Store;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "auth-rejected-"));
+    store = new Store({ dataDir: dir });
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("the subscription token the server refused reads rejected, before expiry", () => {
+    const items = { [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN };
+    recordTokenCreated(store, "subscription-token", "me", "2025-12-01T00:00:00.000Z", new Date("2026-11-19T00:00:00Z"));
+    recordCredentialRejected(store, "subscription-token", "me", credentialFingerprint(WHOLE_TOKEN), AT);
+    const provider = createSubscriptionTokenProvider({ keychain: stubKeychain(items), store, now: () => new Date("2026-11-19T12:00:00Z") });
+    expect(provider.health()).toEqual({ status: "rejected", at: AT });
+    // The creation date the row already had is kept.
+    expect(readProviderMetadata(store, "subscription-token")?.token_created_at).toBe("2025-12-01T00:00:00.000Z");
+  });
+
+  it("a replaced token is not the refused one", () => {
+    recordCredentialRejected(store, "subscription-token", "me", credentialFingerprint(WHOLE_TOKEN), AT);
+    const other = PREFIX + "z".repeat(90);
+    const provider = createSubscriptionTokenProvider({ keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: other }), store });
+    expect(provider.health()).toEqual({ status: "ok" });
+  });
+
+  it("missing and invalid_shape still come first", () => {
+    recordCredentialRejected(store, "api-key", "me", credentialFingerprint(FAKE_API_KEY), AT);
+    expect(createApiKeyProvider({ keychain: stubKeychain({}), store }).health()).toEqual({ status: "missing" });
+    expect(createApiKeyProvider({ keychain: stubKeychain({ [API_KEY_KEYCHAIN_SERVICE]: FAKE_API_KEY }), store }).health()).toEqual({ status: "rejected", at: AT });
+  });
+
+  it("an unreadable refusal record is error(rejection_unreadable), never ok", () => {
+    const broken = { prepare: () => { throw new Error("store gone"); } } as unknown as Store;
+    const provider = createApiKeyProvider({ keychain: stubKeychain({ [API_KEY_KEYCHAIN_SERVICE]: FAKE_API_KEY }), store: broken });
+    expect(provider.health()).toEqual({ status: "error", reason: "rejection_unreadable" });
+  });
+
+  it("the stored fingerprint is not the credential and each provider fingerprints its own env variable", () => {
+    const fp = credentialFingerprint(WHOLE_TOKEN);
+    expect(fp).toMatch(/^[0-9a-f]{16}$/);
+    expect(fp).not.toContain(WHOLE_TOKEN.slice(0, 8));
+    const sub = createSubscriptionTokenProvider({ keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }) });
+    expect(sub.credentialFingerprintOf?.(sub.buildEnv({}))).toBe(fp);
+    const api = createApiKeyProvider({ keychain: stubKeychain({ [API_KEY_KEYCHAIN_SERVICE]: FAKE_API_KEY }) });
+    expect(api.credentialFingerprintOf?.(api.buildEnv({}))).toBe(credentialFingerprint(FAKE_API_KEY));
+    expect(api.credentialFingerprintOf?.({})).toBeUndefined();
+  });
+});
+
+describe("migration 26: auth_provider_rejection", () => {
+  it("upgrades a v25 store: a recorded creation date is kept, the refusal reads none, and a re-run is a no-op", () => {
+    const dir = mkdtempSync(join(tmpdir(), "auth-m26-"));
+    try {
+      const v25 = new Store({ dataDir: dir, migrations: migrations.slice(0, 25) });
+      recordTokenCreated(v25, "subscription-token", "me", "2026-09-29T11:38:24.000Z", new Date("2026-11-19T00:00:00Z"));
+      v25.close();
+
+      const upgraded = new Store({ dataDir: dir });
+      expect(upgraded.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([26, "auth_provider_rejection"]);
+      expect(readProviderMetadata(upgraded, "subscription-token")?.token_created_at).toBe("2026-09-29T11:38:24.000Z");
+      const provider = createSubscriptionTokenProvider({ keychain: stubKeychain({ [SUBSCRIPTION_KEYCHAIN_SERVICE]: WHOLE_TOKEN }), store: upgraded, now: () => new Date("2026-11-19T00:00:00Z") });
+      expect(provider.health()).toEqual({ status: "ok" });
+      upgraded.close();
+
+      const db = new Database(join(dir, DB_FILENAME));
+      db.exec("DELETE FROM schema_migrations WHERE version = 26");
+      db.close();
+      const rerun = new Store({ dataDir: dir });
+      expect(rerun.prepare("SELECT name FROM pragma_table_info('auth_providers')").pluck().all()).toEqual(["id", "account", "token_created_at", "updated_at", "rejected_at", "rejected_fingerprint"]);
+      rerun.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

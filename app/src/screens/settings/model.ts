@@ -103,12 +103,14 @@ const DAY_MS = 86_400_000;
 
 // ---- The held view ------------------------------------------------------------------------------------
 
-/** The provider's health as the screen holds it: the contract's five states, or a word this build does not know, kept as inert text. */
+/** The provider's health as the screen holds it: the contract's six states, or a word this build does not know, kept as inert text. */
 export type HealthState =
   | { readonly status: "ok" }
   | { readonly status: "missing" }
   | { readonly status: "invalid_shape" }
   | { readonly status: "expiring"; readonly days: number }
+  /** The server refused this credential (a session on it ended `failed:auth`); `at` is when, `null` when not a readable time. */
+  | { readonly status: "rejected"; readonly at: string | null }
   | { readonly status: "error"; readonly reason: string }
   | { readonly status: "unknown"; readonly word: string };
 
@@ -149,6 +151,8 @@ function healthOf(raw: unknown): HealthState | undefined {
       return { status: raw.status };
     case "expiring":
       return typeof raw.days === "number" && Number.isFinite(raw.days) ? { status: "expiring", days: Math.trunc(raw.days) } : undefined;
+    case "rejected":
+      return { status: "rejected", at: typeof raw.at === "string" && Number.isFinite(Date.parse(raw.at)) ? raw.at : null };
     case "error":
       return { status: "error", reason: typeof raw.reason === "string" ? safe(raw.reason) : "unknown" };
     default:
@@ -268,6 +272,8 @@ export function healthView(health: HealthState): HealthView {
       return { label: "expiring", tone: "attention", note: daysLeftText(health.days) };
     case "invalid_shape":
       return { label: "invalid_shape", tone: "danger", note: "the Keychain item does not hold a whole token" };
+    case "rejected":
+      return { label: "rejected", tone: "danger", note: "the server refused this credential" };
     case "error":
       return { label: "error", tone: "danger", note: health.reason };
     default:
@@ -294,6 +300,14 @@ export function dateLabel(instant: string | Date): string | undefined {
   const at = typeof instant === "string" ? new Date(instant) : instant;
   if (!Number.isFinite(at.getTime())) return undefined;
   return `${at.getDate()} ${MONTHS[at.getMonth()]} ${at.getFullYear()}`;
+}
+
+/** `19 Nov 2026, 08:54`, in the owner's local time; `undefined` for an instant that is not a date. */
+export function dateTimeLabel(instant: string): string | undefined {
+  const at = new Date(instant);
+  const day = dateLabel(at);
+  if (day === undefined) return undefined;
+  return `${day}, ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
 }
 
 export interface TokenLife {
@@ -336,6 +350,12 @@ export function bandOf(view: SettingsView, now: Date): BandView | undefined {
     return { tone: "attention", role: "status", text: `The subscription token ${when}. Create a new one with the commands below, or sessions stop with failed:auth.` };
   }
   if (health.status === "missing") return { tone: "danger", role: "alert", text: "There is no token in the Keychain. Without one the crew can't start sessions." };
+  if (health.status === "rejected") {
+    const what = view.provider.id === API_KEY_PROVIDER ? "API key" : "subscription token";
+    const when = health.at === null ? undefined : dateTimeLabel(health.at);
+    const how = view.provider.id === API_KEY_PROVIDER ? "Save a new key below." : "Create a new one with the commands below.";
+    return { tone: "danger", role: "alert", text: `Anthropic refused the ${what}${when === undefined ? "" : ` on ${when}`}, so sessions on it end with failed:auth. ${how}` };
+  }
   if (health.status === "invalid_shape") return { tone: "danger", role: "alert", text: "The Keychain item does not hold a whole token. Without one the crew can't start sessions. Replace it with the commands below." };
   return undefined;
 }

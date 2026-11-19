@@ -1,6 +1,8 @@
 import { stripCredentialEnv } from "./credential-env.js";
+import { credentialFingerprint } from "./fingerprint.js";
 import { securityCliKeychain } from "./keychain.js";
 import { readProviderMetadata } from "./metadata.js";
+import { rejectionHealth } from "./rejection.js";
 import { isPlausibleApiKey } from "./token-shape.js";
 import { AuthProviderError } from "./types.js";
 import type { AuthHealth, AuthProvider, AuthProviderDeps, BaseEnv, ChildEnv } from "./types.js";
@@ -55,6 +57,10 @@ export function createApiKeyProvider(deps: AuthProviderDeps = {}): AuthProvider 
       return env;
     },
     // No expiry, so the clock (`_at`) is accepted for the interface and ignored.
+    credentialFingerprintOf(env: ChildEnv): string | undefined {
+      const credential = env[API_KEY_ENV_VAR];
+      return credential === undefined ? undefined : credentialFingerprint(credential);
+    },
     health(_at?: Date): AuthHealth {
       let key: string | undefined;
       try {
@@ -65,7 +71,7 @@ export function createApiKeyProvider(deps: AuthProviderDeps = {}): AuthProvider 
       }
       if (key === undefined) return { status: "missing" };
       if (!isPlausibleApiKey(key)) return { status: "invalid_shape" };
-      return { status: "ok" };
+      return rejectionHealth(store, id, key) ?? { status: "ok" };
     },
   };
 }

@@ -91,3 +91,55 @@ export function readProviderMetadata(store: Store, providerId: string): Provider
     )
     .get(providerId);
 }
+
+/** The server's last refusal of a provider's credential (migration 26). */
+export interface CredentialRejection {
+  /** When a session on the provider was refused, as `toISOString()` gives it. */
+  readonly at: string;
+  /** `credentialFingerprint` of the refused credential; never the credential. */
+  readonly fingerprint: string;
+}
+
+/**
+ * Record that the server refused the credential whose fingerprint is
+ * `fingerprint` (a session on it ended `failed:auth` on a `401` or
+ * `authentication_failed`). Replaces any earlier refusal; keeps the account
+ * label and creation date a row already has.
+ */
+export function recordCredentialRejected(store: Store, providerId: string, account: string, fingerprint: string, at: string): void {
+  store
+    .prepare(
+      `INSERT INTO auth_providers (id, account, rejected_at, rejected_fingerprint, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         rejected_at = excluded.rejected_at,
+         rejected_fingerprint = excluded.rejected_fingerprint,
+         updated_at = excluded.updated_at`,
+    )
+    .run(providerId, account, at, fingerprint, at);
+}
+
+/**
+ * Clear the refusal when it names this credential (a later session on it got
+ * an answer). A refusal of another credential stays. Returns whether a row changed.
+ */
+export function clearCredentialRejected(store: Store, providerId: string, fingerprint: string, at: string): boolean {
+  const result = store
+    .prepare(
+      `UPDATE auth_providers SET rejected_at = NULL, rejected_fingerprint = NULL, updated_at = ?
+       WHERE id = ? AND rejected_fingerprint = ?`,
+    )
+    .run(at, providerId, fingerprint);
+  return result.changes > 0;
+}
+
+/** The provider's recorded refusal, or `undefined` when none is recorded. */
+export function readCredentialRejection(store: Store, providerId: string): CredentialRejection | undefined {
+  const row = store
+    .prepare<[string], { rejected_at: string | null; rejected_fingerprint: string | null }>(
+      "SELECT rejected_at, rejected_fingerprint FROM auth_providers WHERE id = ?",
+    )
+    .get(providerId);
+  if (row === undefined || row.rejected_at === null || row.rejected_fingerprint === null) return undefined;
+  return { at: row.rejected_at, fingerprint: row.rejected_fingerprint };
+}

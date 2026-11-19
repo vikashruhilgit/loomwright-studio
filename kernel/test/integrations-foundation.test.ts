@@ -51,6 +51,7 @@ import { threadContinuity } from "../src/store/migrations/022_thread_continuity.
 import { playbookJobs } from "../src/store/migrations/023_playbook_jobs.js";
 import { savedWorkspaces } from "../src/store/migrations/024_saved_workspaces.js";
 import { playbookTargetRepo } from "../src/store/migrations/025_playbook_target_repo.js";
+import { authProviderRejection } from "../src/store/migrations/026_auth_provider_rejection.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import type { KernelToolContext, KernelToolResult } from "../src/tools/server.js";
 import { TRIGGER_KINDS, TriggerError, registerTrigger, triggersContribution, updateTriggerSpec } from "../src/triggers/index.js";
@@ -322,26 +323,27 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
   it("is version 17, and migration 18 (connector_permissions_source, its own tests in integrations-github-declared.test.ts) and 19 (connector_app, in integrations-github-app-migration.test.ts) sit above it, 19 directly below 20 (phase_8_foundation), 21 (playbook_merge_requirement), 22 (thread_continuity), 23 (playbook_jobs), 24 (saved_workspaces) and 25 (playbook_target_repo, last)", () => {
     expect(migrations.at(16)).toBe(phase6Foundation);
     expect([phase6Foundation.version, phase6Foundation.name]).toEqual([17, "phase_6_foundation"]);
-    expect(migrations.at(-8)).toBe(connectorPermissionsSource);
+    expect(migrations.at(-9)).toBe(connectorPermissionsSource);
     expect([connectorPermissionsSource.version, connectorPermissionsSource.name]).toEqual([18, "connector_permissions_source"]);
-    expect(migrations.at(-7)).toBe(connectorApp);
+    expect(migrations.at(-8)).toBe(connectorApp);
     expect([connectorApp.version, connectorApp.name]).toEqual([19, "connector_app"]);
-    expect(migrations.at(-6)).toBe(phase8Foundation);
+    expect(migrations.at(-7)).toBe(phase8Foundation);
     expect([phase8Foundation.version, phase8Foundation.name]).toEqual([20, "phase_8_foundation"]);
-    expect(migrations.at(-5)).toBe(playbookMergeRequirement);
+    expect(migrations.at(-6)).toBe(playbookMergeRequirement);
     expect([playbookMergeRequirement.version, playbookMergeRequirement.name]).toEqual([21, "playbook_merge_requirement"]);
-    expect(migrations.at(-4)).toBe(threadContinuity);
+    expect(migrations.at(-5)).toBe(threadContinuity);
     expect([threadContinuity.version, threadContinuity.name]).toEqual([22, "thread_continuity"]);
-    expect(migrations.at(-3)).toBe(playbookJobs);
+    expect(migrations.at(-4)).toBe(playbookJobs);
     expect([playbookJobs.version, playbookJobs.name]).toEqual([23, "playbook_jobs"]);
-    expect(migrations.at(-2)).toBe(savedWorkspaces);
-    expect(migrations.at(-1)).toBe(playbookTargetRepo);
+    expect(migrations.at(-3)).toBe(savedWorkspaces);
+    expect(migrations.at(-2)).toBe(playbookTargetRepo);
+    expect(migrations.at(-1)).toBe(authProviderRejection);
     expect([savedWorkspaces.version, savedWorkspaces.name]).toEqual([24, "saved_workspaces"]);
   });
 
   it("on a fresh store creates connectors and draft_outputs with exactly their columns, and adds playbooks.mode / mode_set_by and playbook_runs.item_ref / item_revision", () => {
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([26, "auth_provider_rejection"]);
     // Migration 17's columns, then the two migration 18 adds, then the three migration 19 adds at the end.
     expect(columnsOf(store, "connectors")).toEqual([
       "id",
@@ -419,26 +421,27 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     expect(before.tables).not.toContain("draft_outputs");
 
     const store = open();
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([26, "auth_provider_rejection"]);
     expect(store.prepare("SELECT mode, mode_set_by FROM playbooks WHERE id = 1").get()).toEqual({ mode: "draft", mode_set_by: null });
     expect(store.prepare("SELECT item_ref, item_revision FROM playbook_runs WHERE id = 1").get()).toEqual({ item_ref: null, item_revision: null });
     store.close();
 
     inspect((db) => {
       expect(() => checkAfterMigrating(db, tmp, migrations)).not.toThrow();
-      const added: Record<string, string[]> = { playbooks: ["mode", "mode_set_by", "merge_requirement", "merge_requirement_set_by", "jobs_json", "target_repo"], playbook_runs: ["item_ref", "item_revision"] };
+      const added: Record<string, string[]> = { playbooks: ["mode", "mode_set_by", "merge_requirement", "merge_requirement_set_by", "jobs_json", "target_repo"], playbook_runs: ["item_ref", "item_revision"], auth_providers: ["rejected_at", "rejected_fingerprint"] };
       for (const t of before.tables) {
         const cols = before.cols[t] ?? [];
         expect(columnsOf(db, t), t).toEqual([...cols, ...(added[t] ?? [])]);
         expect(db.prepare(`SELECT ${cols.map((c) => `quote(${c})`).join(", ")} FROM ${t} ORDER BY rowid`).raw().all(), t).toEqual(before.rows[t]);
       }
-      const altered = (o: { name: string }): boolean => o.name === "playbooks" || o.name === "playbook_runs";
+      const altered = (o: { name: string }): boolean => o.name === "playbooks" || o.name === "playbook_runs" || o.name === "auth_providers";
       const named = (o: { name: string }): boolean => before.objects.some((b) => b.name === o.name);
       // Migration 20 (phase_8_foundation, its own tests in phase-8-foundation.test.ts) adds its three tables and their unique indexes on top of 17's,
       // and migration 22 (thread_continuity, its own tests in brain-threads.test.ts) its two tables and their index;
       // migration 23 (playbook_jobs, its own tests in store.test.ts) adds playbooks.jobs_json only, migration 24
       // (saved_workspaces, its own tests in console-workspaces.test.ts) its one table and the index of its UNIQUE path,
-      // and migration 25 (playbook_target_repo, its own tests in playbooks-target-repo.test.ts) playbooks.target_repo only.
+      // and migration 25 (playbook_target_repo, its own tests in playbooks-target-repo.test.ts) playbooks.target_repo only,
+      // and migration 26 (auth_provider_rejection, tested in auth.test.ts and sessions.test.ts) auth_providers.rejected_at / rejected_fingerprint only.
       const phase8 = (o: { name: string }): boolean => /repo_policies|pr_tracks|mcp_connections|brain_threads|brain_message_threads|saved_workspaces/.test(o.name);
       const after = objectsOf(db).filter((o) => !phase8(o));
       expect(after.filter((o) => named(o) && !altered(o))).toEqual(before.objects.filter((o) => !altered(o)));
@@ -472,7 +475,7 @@ describe("migration 17: phase_6_foundation (AC1)", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 17");
     db.close();
     const rerun = open();
-    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
+    expect(rerun.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([26, "auth_provider_rejection"]);
     rerun.close();
     expect(snap()).toEqual(before);
   });

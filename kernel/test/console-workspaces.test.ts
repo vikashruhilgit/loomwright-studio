@@ -25,6 +25,7 @@ import { PROTECTED_DATA_FILES, classifyToolCall } from "../src/sessions/policy.j
 import { migrations } from "../src/store/migrations/index.js";
 import { savedWorkspaces } from "../src/store/migrations/024_saved_workspaces.js";
 import { playbookTargetRepo } from "../src/store/migrations/025_playbook_target_repo.js";
+import { authProviderRejection } from "../src/store/migrations/026_auth_provider_rejection.js";
 import { DB_FILENAME, Store } from "../src/store/store.js";
 import { stubProvider, unexpectedAbandon } from "./session-fakes.js";
 
@@ -103,10 +104,11 @@ describe("migration 24: saved_workspaces", () => {
   const cols = (s: Store): unknown[] => s.prepare("SELECT name, type, \"notnull\", pk FROM pragma_table_info('saved_workspaces')").all();
 
   it("is version 24, named saved_workspaces, directly below 25 (playbook_target_repo, the last migration); creates the table with exactly its columns, path UNIQUE, and no SQL trigger", () => {
-    expect(migrations.at(-2)).toBe(savedWorkspaces);
-    expect(migrations.at(-1)).toBe(playbookTargetRepo);
+    expect(migrations.at(-3)).toBe(savedWorkspaces);
+    expect(migrations.at(-2)).toBe(playbookTargetRepo);
+    expect(migrations.at(-1)).toBe(authProviderRejection);
     expect([savedWorkspaces.version, savedWorkspaces.name]).toEqual([24, "saved_workspaces"]);
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([26, "auth_provider_rejection"]);
     expect(cols(store)).toEqual([
       { name: "id", type: "INTEGER", notnull: 0, pk: 1 },
       { name: "path", type: "TEXT", notnull: 1, pk: 0 },
@@ -129,7 +131,7 @@ describe("migration 24: saved_workspaces", () => {
     db.exec("DELETE FROM schema_migrations WHERE version >= 24");
     db.close();
     store = new Store({ dataDir });
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([26, "auth_provider_rejection"]);
     expect(tableRows()).toEqual(before);
   });
 });

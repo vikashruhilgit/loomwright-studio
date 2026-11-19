@@ -23,6 +23,7 @@ import type { CreatePlaybookParams } from "../src/playbooks/store.js";
 import { DB_FILENAME, Store } from "../src/store/index.js";
 import { migrations } from "../src/store/migrations/index.js";
 import { playbookTargetRepo } from "../src/store/migrations/025_playbook_target_repo.js";
+import { authProviderRejection } from "../src/store/migrations/026_auth_provider_rejection.js";
 import { approvalApplierOf, heldToolCheckOf } from "../src/tools/server.js";
 import type { KernelToolContext } from "../src/tools/server.js";
 
@@ -87,10 +88,11 @@ function applyApproved(id: number, extra: Record<string, unknown> = {}) {
 const columnsOf = (s: Store): string[] => s.prepare<[], string>("SELECT name FROM pragma_table_info('playbooks')").pluck().all();
 
 describe("migration 25: playbooks.target_repo (AC1)", () => {
-  it("is version 25, named playbook_target_repo, the last migration, and adds one nullable TEXT column with no default, no *_set_by and no trigger", () => {
-    expect(migrations.at(-1)).toBe(playbookTargetRepo);
+  it("is version 25, named playbook_target_repo, below 26 (auth_provider_rejection, the last migration), and adds one nullable TEXT column with no default, no *_set_by and no trigger", () => {
+    expect(migrations.at(-2)).toBe(playbookTargetRepo);
+    expect(migrations.at(-1)).toBe(authProviderRejection);
     expect([playbookTargetRepo.version, playbookTargetRepo.name]).toEqual([25, "playbook_target_repo"]);
-    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([25, "playbook_target_repo"]);
+    expect(store.appliedMigrations().map((m) => [m.version, m.name]).at(-1)).toEqual([26, "auth_provider_rejection"]);
     const cols = columnsOf(store);
     expect(cols.at(-1)).toBe("target_repo");
     expect(cols).not.toContain("target_repo_set_by");
@@ -113,10 +115,10 @@ describe("migration 25: playbooks.target_repo (AC1)", () => {
     upgraded.close();
 
     const db = new Database(join(dir, DB_FILENAME));
-    db.exec("DELETE FROM schema_migrations WHERE version = 25");
+    db.exec("DELETE FROM schema_migrations WHERE version >= 25");
     db.close();
     const rerun = new Store({ dataDir: dir });
-    expect(rerun.appliedMigrations().map((m) => m.version).at(-1)).toBe(25);
+    expect(rerun.appliedMigrations().map((m) => m.version).at(-1)).toBe(26);
     expect(columnsOf(rerun).filter((c) => c === "target_repo")).toEqual(["target_repo"]);
     expect(rerun.prepare("SELECT slug, target_repo FROM playbooks").all()).toEqual([{ slug: "review", target_repo: null }]);
     rerun.close();

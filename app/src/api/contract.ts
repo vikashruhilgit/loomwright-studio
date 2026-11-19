@@ -197,6 +197,8 @@ export type AuthHealth =
   | { readonly status: "missing" }
   | { readonly status: "invalid_shape" }
   | { readonly status: "expiring"; readonly days: number }
+  /** The server refused the credential the Keychain holds (a session on it ended `failed:auth`); `at` is when. */
+  | { readonly status: "rejected"; readonly at: string }
   | { readonly status: "error"; readonly reason: string };
 
 export interface KillSwitchState {

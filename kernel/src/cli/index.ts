@@ -367,7 +367,9 @@ export function formatStatus(status: StatusBody): string {
     const health =
       h.status === "expiring"
         ? `expiring (${h.days} days left)`
-        : h.status === "error"
+        : h.status === "rejected"
+          ? `rejected (the server refused this credential at ${h.at}; replace it)`
+          : h.status === "error"
           ? // `?? "unknown"`: a daemon older than this CLI sends `{status: "error"}` with no reason.
             `error (${h.reason ?? "unknown"})`
           : h.status;

@@ -23,6 +23,7 @@ import { threadContinuity } from "./022_thread_continuity.js";
 import { playbookJobs } from "./023_playbook_jobs.js";
 import { savedWorkspaces } from "./024_saved_workspaces.js";
 import { playbookTargetRepo } from "./025_playbook_target_repo.js";
+import { authProviderRejection } from "./026_auth_provider_rejection.js";
 import type { Migration } from "./types.js";
 
 export type { Migration } from "./types.js";
@@ -54,4 +55,5 @@ export const migrations: readonly Migration[] = [
   playbookJobs,
   savedWorkspaces,
   playbookTargetRepo,
+  authProviderRejection,
 ];

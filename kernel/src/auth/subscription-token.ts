@@ -2,8 +2,10 @@
 // registry loads it through a non-literal dynamic import so a distribution
 // build (tsconfig.distribution.json) can leave it out of dist/ entirely.
 import { stripCredentialEnv } from "./credential-env.js";
+import { credentialFingerprint } from "./fingerprint.js";
 import { securityCliKeychain } from "./keychain.js";
 import { parseTokenCreatedAt, readProviderMetadata } from "./metadata.js";
+import { rejectionHealth } from "./rejection.js";
 import { isWholeToken } from "./token-shape.js";
 import { AuthProviderError } from "./types.js";
 import type { AuthHealth, AuthProvider, AuthProviderDeps, BaseEnv, ChildEnv } from "./types.js";
@@ -81,6 +83,10 @@ export function createSubscriptionTokenProvider(deps: AuthProviderDeps = {}): Au
       env[SUBSCRIPTION_ENV_VAR] = token;
       return env;
     },
+    credentialFingerprintOf(env: ChildEnv): string | undefined {
+      const credential = env[SUBSCRIPTION_ENV_VAR];
+      return credential === undefined ? undefined : credentialFingerprint(credential);
+    },
     health(at?: Date): AuthHealth {
       let value: string | undefined;
       try {
@@ -91,6 +97,8 @@ export function createSubscriptionTokenProvider(deps: AuthProviderDeps = {}): Au
       }
       if (value === undefined) return { status: "missing" };
       if (!isWholeToken(value)) return { status: "invalid_shape" };
+      const rejected = rejectionHealth(store, id, value);
+      if (rejected !== undefined) return rejected;
 
       let instant: Date;
       try {
