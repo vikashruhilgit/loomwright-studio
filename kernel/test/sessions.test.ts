@@ -10,7 +10,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { HookCallback, HookInput, McpServerConfig, Options, SDKMessage, SDKUserMessage, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthProviderError, KeychainError, stripCredentialEnv } from "../src/auth/index.js";
+import { AuthProviderError, KeychainError, createApiKeyProvider, stripCredentialEnv } from "../src/auth/index.js";
 import type { AuthProvider, BaseEnv } from "../src/auth/index.js";
 import { LOOMWRIGHT_CONTRACT_ERROR_REASONS } from "../src/loomwright/index.js";
 import {
@@ -3345,5 +3345,81 @@ describe("the never boundary (phase 4 foundation)", () => {
     expect((await handle.dryRun)?.wouldDo.map((e) => [e.tool, e.would, e.action])).toEqual([["Bash", "held", "git push"]]);
     expect(store.prepare("SELECT count(*) FROM approvals").pluck().get()).toBe(0);
     expect(events(store, "tool_decision").map((e) => e.payload.reason)).toEqual(["agent_boundary", "dry_run"]);
+  });
+});
+
+// The server's refusal of a credential reaches that provider's health (2026-11-19: the
+// subscription token was revoked server-side twice, sessions 230 and 245, while Settings
+// said `ok`, because health read only the Keychain). Real api-key provider, stub Keychain.
+describe("a server-rejected credential reads rejected in health", () => {
+  const KEY_A = "fake-key-a-" + "a".repeat(40);
+  const KEY_B = "fake-key-b-" + "b".repeat(40);
+
+  function rejectingSetup(script: (stream: { push(m: SDKMessage): void }) => void) {
+    const store = openStore();
+    const items: Record<string, string> = { "loomwright-studio-api-key": KEY_A };
+    const keychain = { read: (service: string) => items[service] };
+    const provider = createApiKeyProvider({ keychain, store });
+    const h = harness({ store, options: { authProvider: provider }, script: ({ stream }) => script(stream) });
+    return { ...h, provider, items };
+  }
+
+  it("a 401 marks the credential in use rejected, and the store never holds the credential", async () => {
+    const { manager, store, provider } = rejectingSetup((stream) => {
+      stream.push(msg.init(UUID));
+      stream.push(msg.apiRetry401(1));
+    });
+    expect(provider.health()).toEqual({ status: "ok" });
+    const handle = await manager.startSession(startParams());
+    await vi.waitFor(() => expect(row(store, handle.id).status).toBe("failed:auth"));
+    const health = provider.health();
+    expect(health.status).toBe("rejected");
+    expect(health.status === "rejected" && Number.isFinite(Date.parse(health.at))).toBe(true);
+    const dump = JSON.stringify(store.prepare("SELECT * FROM auth_providers").all());
+    expect(dump).not.toContain(KEY_A);
+  });
+
+  it("an assistant authentication_failed marks it rejected too", async () => {
+    const { manager, provider } = rejectingSetup((stream) => {
+      stream.push(msg.init(UUID));
+      stream.push(msg.assistantAuthError());
+      stream.push(msg.success());
+    });
+    const handle = await manager.startSession(startParams());
+    expect(await handle.done).toBe("failed:auth");
+    expect(provider.health().status).toBe("rejected");
+  });
+
+  it("a different credential in the Keychain is not the rejected one: ok again", async () => {
+    const { manager, provider, items } = rejectingSetup((stream) => {
+      stream.push(msg.init(UUID));
+      stream.push(msg.assistantAuthError());
+      stream.push(msg.success());
+    });
+    const handle = await manager.startSession(startParams());
+    expect(await handle.done).toBe("failed:auth");
+    items["loomwright-studio-api-key"] = KEY_B;
+    expect(provider.health()).toEqual({ status: "ok" });
+  });
+
+  it("a later session on the same credential that gets an answer clears the rejection", async () => {
+    let reject = true;
+    const { manager, provider } = rejectingSetup((stream) => {
+      stream.push(msg.init(UUID));
+      stream.push(reject ? msg.assistantAuthError() : msg.assistant());
+      stream.push(msg.success());
+    });
+    expect(await (await manager.startSession(startParams())).done).toBe("failed:auth");
+    expect(provider.health().status).toBe("rejected");
+    reject = false;
+    expect(await (await manager.startSession(startParams())).done).toBe("completed");
+    expect(provider.health()).toEqual({ status: "ok" });
+  });
+
+  it("a credential that never reached the server (missing) records no rejection", async () => {
+    const { manager, store, items } = rejectingSetup(() => {});
+    delete items["loomwright-studio-api-key"];
+    await expect(manager.startSession(startParams())).rejects.toThrow();
+    expect(store.prepare("SELECT count(*) FROM auth_providers").pluck().get()).toBe(0);
   });
 });

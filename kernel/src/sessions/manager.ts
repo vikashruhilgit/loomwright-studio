@@ -16,6 +16,7 @@ import type {
 import { KERNEL_APPLIED_ACTIONS, MAX_APPROVAL_SUBJECT, holdOrUseGrant } from "../approvals/store.js";
 import { withdrawnNote } from "../approvals/replace.js";
 import { KeychainError } from "../auth/keychain.js";
+import { clearCredentialRejected, recordCredentialRejected } from "../auth/metadata.js";
 import { recordDraftOutput } from "../integrations/drafts.js";
 import type { DraftRecord } from "../integrations/drafts.js";
 import { CONNECTOR_KINDS } from "../integrations/types.js";
@@ -393,6 +394,10 @@ interface Attempt {
   /** The `result` text of this attempt's last successful `result` message (`SessionHandle.result`). */
   lastSuccessText: string | undefined;
   authTimer: CancelTimer | undefined;
+  /** `credentialFingerprintOf` of the env this attempt was launched with: a server refusal is recorded against it. */
+  readonly credentialFingerprint: string | undefined;
+  /** The server answered this attempt (assistant output or a successful result): its credential works. Cleared once. */
+  credentialAccepted: boolean;
 }
 
 /** The outcome computed from a finished stream, before the group cleanup. */
@@ -1700,6 +1705,8 @@ export class SessionManager {
       stderrTail: new StderrTail(),
       closeInputOnResult: config.closeInputOnResult,
       confirmed: !config.resumeMode,
+      credentialFingerprint: this.#auth.credentialFingerprintOf?.(config.env),
+      credentialAccepted: false,
       query: undefined,
       child: undefined,
       pgid: undefined,
@@ -1957,14 +1964,20 @@ export class SessionManager {
     }
     if (message.type === "assistant") {
       if (message.error === "authentication_failed") this.#authFail(live, attempt, null, message.error);
-      else if (message.error === undefined) attempt.confirmed = true;
+      else if (message.error === undefined) {
+        attempt.confirmed = true;
+        this.#credentialAccepted(live, attempt);
+      }
       return undefined;
     }
     if (message.type === "result") {
       attempt.lastResult = message;
       // A cumulative total for the SDK session: the last one replaces the one before.
       if (live.dryRun !== undefined) live.dryRun.lastModelUsage = (message as { modelUsage?: unknown }).modelUsage;
-      if (message.subtype === "success" && isSuccessResult(message)) attempt.lastSuccessText = message.result;
+      if (message.subtype === "success" && isSuccessResult(message)) {
+        attempt.lastSuccessText = message.result;
+        this.#credentialAccepted(live, attempt);
+      }
       if (attempt.firstResult === undefined) {
         attempt.firstResult = message;
         if (attempt.closeInputOnResult) attempt.input.close();
@@ -2064,6 +2077,25 @@ export class SessionManager {
       error: error ?? null,
     };
     this.#finish(live, "failed:auth", { ...details, attempt: attempt.number }, details);
+    // The server refused this credential: the provider's health reads `rejected` while the Keychain holds it.
+    if (attempt.credentialFingerprint !== undefined) {
+      try {
+        recordCredentialRejected(this.#store, this.#auth.id, this.#auth.account, attempt.credentialFingerprint, this.#nowIso());
+      } catch {
+        // The store is gone (a stopping kernel); the session's own failed:auth row and notify stand.
+      }
+    }
+  }
+
+  /** The first server answer on an attempt clears a recorded refusal of that same credential (it works after all). */
+  #credentialAccepted(live: LiveSession, attempt: Attempt): void {
+    if (attempt.credentialAccepted || live.authFailed || attempt.credentialFingerprint === undefined) return;
+    attempt.credentialAccepted = true;
+    try {
+      clearCredentialRejected(this.#store, this.#auth.id, attempt.credentialFingerprint, this.#nowIso());
+    } catch {
+      // The store is gone; the session loop must still not break.
+    }
   }
 
   /**

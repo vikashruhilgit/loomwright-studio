@@ -15,6 +15,9 @@ import type { KeychainReader } from "./keychain.js";
  *   (not a strict ISO-8601 UTC timestamp of a real calendar date, after the
  *   instant the check runs at, the metadata read failed, or the day count it
  *   gives is not finite). `parseTokenCreatedAt` decides the date part.
+ * - `rejection_unreadable`: the recorded server refusal (`auth_providers`
+ *   `rejected_*`, migration 26) could not be read, so whether the server
+ *   refused this credential is unknown.
  * - `health_threw`: used ONLY by `/status`'s defensive wrapper, for a provider
  *   whose `health()` still throws (a test stub, a future provider). The
  *   providers in this package never return it.
@@ -23,10 +26,11 @@ export type AuthHealthErrorReason =
   | "keychain_unreadable"
   | "token_created_at_unreadable"
   | "clock_unreadable"
+  | "rejection_unreadable"
   | "health_threw";
 
 /**
- * The result of `AuthProvider.health()`. Exactly five variants. `health()` is
+ * The result of `AuthProvider.health()`. Exactly six variants. `health()` is
  * total: every failure is one of these values, never a throw and never a false
  * `ok`. It decides in this order:
  *
@@ -36,25 +40,32 @@ export type AuthHealthErrorReason =
  *    - `invalid_shape`: the stored value is not a whole credential (for
  *      example a token cut off while pasting).
  *    A missing or broken credential comes first: it is the more urgent fact.
- * 2. The clock: `error` (`clock_unreadable`) when the instant is not a valid
+ * 2. `rejected`: the server refused THIS credential (a session on it ended
+ *    `failed:auth` on a `401` or `authentication_failed`, and the Keychain
+ *    still holds the credential with that fingerprint). `at` is when. A
+ *    credential with a different fingerprint is not the refused one. `error`
+ *    (`rejection_unreadable`) when the record cannot be read. Only a server
+ *    answer can tell a revoked credential from a good one; the Keychain cannot.
+ * 3. The clock: `error` (`clock_unreadable`) when the instant is not a valid
  *    date, even when no creation date is recorded.
- * 3. The recorded creation date: `error` (`token_created_at_unreadable`) when
+ * 4. The recorded creation date: `error` (`token_created_at_unreadable`) when
  *    it cannot be read.
- * 4. `expiring`: fewer than 30 days remain of the credential's recorded life.
+ * 5. `expiring`: fewer than 30 days remain of the credential's recorded life.
  *    `days` is whole days left, floored; it is `0` or negative once the
  *    credential has lapsed (there is no separate `expired` variant).
- * 5. `ok`: none of the above. A credential with no recorded creation date has
+ * 6. `ok`: none of the above. A credential with no recorded creation date has
  *    an unknown expiry and reports `ok` when its shape is whole.
  *
  * The api-key provider has no expiry and ignores the clock by design: it only
- * ever reports `error` (`keychain_unreadable`), `missing`, `invalid_shape` or
- * `ok`. See `AuthHealthErrorReason` for what each `error` reason means.
+ * ever reports `error` (`keychain_unreadable`, `rejection_unreadable`),
+ * `missing`, `invalid_shape`, `rejected` or `ok`. See `AuthHealthErrorReason` for what each `error` reason means.
  */
 export type AuthHealth =
   | { readonly status: "ok" }
   | { readonly status: "missing" }
   | { readonly status: "invalid_shape" }
   | { readonly status: "expiring"; readonly days: number }
+  | { readonly status: "rejected"; readonly at: string }
   | { readonly status: "error"; readonly reason: AuthHealthErrorReason };
 
 /** An environment as the kernel receives it (for example `process.env`). */
@@ -92,6 +103,14 @@ export interface AuthProvider {
    * agree. When omitted the provider reads its `deps.now()`.
    */
   health(at?: Date): AuthHealth;
+  /**
+   * `credentialFingerprint` of the credential in an env this provider built
+   * (`buildEnv`), or `undefined` when it holds none. The session manager keeps
+   * it per attempt, so a server refusal is recorded against the exact
+   * credential the session ran on. Optional: a provider without it never
+   * reports `rejected`.
+   */
+  credentialFingerprintOf?(env: ChildEnv): string | undefined;
 }
 
 /** What every provider factory accepts. All of it is injectable for tests. */

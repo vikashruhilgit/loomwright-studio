@@ -18,8 +18,16 @@ export type { ExecFileSyncLike, ExecOptions, KeychainReader, KeychainWriter } fr
 export type { KeychainDeleter } from "./keychain.js";
 export { CREDENTIAL_ENV_PREFIX, CREDENTIAL_ENV_VARS, isCredentialEnvVar, stripCredentialEnv } from "./credential-env.js";
 export { isPlausibleApiKey, isWholeToken } from "./token-shape.js";
-export { parseTokenCreatedAt, readProviderMetadata, recordTokenCreated } from "./metadata.js";
-export type { ProviderMetadata } from "./metadata.js";
+export {
+  clearCredentialRejected,
+  parseTokenCreatedAt,
+  readCredentialRejection,
+  readProviderMetadata,
+  recordCredentialRejected,
+  recordTokenCreated,
+} from "./metadata.js";
+export type { CredentialRejection, ProviderMetadata } from "./metadata.js";
+export { credentialFingerprint } from "./fingerprint.js";
 export { API_KEY_ENV_VAR, API_KEY_KEYCHAIN_SERVICE, API_KEY_PROVIDER_ID, createApiKeyProvider } from "./api-key.js";
 export { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./registry.js";
 export { AUTH_EXPIRING_REASON, checkAuthHealth } from "./notify.js";

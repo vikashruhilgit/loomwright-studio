@@ -14,6 +14,7 @@ import {
   hasToken,
   healthView,
   healthViewOf,
+  providerReady,
   isSettingsEvent,
   loginNote,
   newestSettingsEventId,
@@ -147,6 +148,7 @@ describe("health", () => {
     [{ status: "expiring", days: 18 }, "expiring", "attention", "18 days left"],
     [{ status: "invalid_shape" }, "invalid_shape", "danger", "the Keychain item does not hold a whole token"],
     [{ status: "error", reason: "keychain_unreadable" }, "error", "danger", "keychain_unreadable"],
+    [{ status: "rejected", at: "2026-11-19T03:24:02.828Z" }, "rejected", "danger", "the server refused this credential"],
     [{ status: "unknown", word: "revoked" }, "revoked", "neutral", undefined],
   ] as const)("%j reads %s with a %s tone", (health, label, tone, note) => {
     expect(healthView(health)).toEqual({ label, tone, note });
@@ -224,6 +226,22 @@ describe("the band", () => {
   it("expiring with no creation date still says the days, and an expired token says so", () => {
     expect(bandOf(view({ status: "expiring", days: 1 }, null), NOW)?.text).toContain("expires in 1 day.");
     expect(bandOf(view({ status: "expiring", days: -2 }, null), NOW)?.text).toContain("has expired");
+  });
+
+  it("rejected: the kernel's word and time are kept, and it is a danger band that says to replace the credential", () => {
+    const rejected = view({ status: "rejected", at: "2026-11-19T03:24:02.828Z" });
+    expect(rejected.provider.health).toEqual({ status: "rejected", at: "2026-11-19T03:24:02.828Z" });
+    const band = bandOf(rejected, NOW);
+    expect(band?.tone).toBe("danger");
+    expect(band?.role).toBe("alert");
+    expect(band?.text).toContain("refused");
+    expect(band?.text).toContain("failed:auth");
+    // A rejection with no readable time is still rejected, never ok.
+    expect(view({ status: "rejected" }).provider.health).toEqual({ status: "rejected", at: null });
+  });
+
+  it("a rejected provider cannot be chosen", () => {
+    expect(providerReady({ status: "rejected", at: null })).toBe(false);
   });
 
   it("missing: a danger band as an alert; invalid_shape the same; ok and error have none", () => {
