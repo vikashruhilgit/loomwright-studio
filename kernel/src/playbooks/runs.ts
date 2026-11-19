@@ -338,6 +338,14 @@ function readSnapshot(store: Store, id: number, version: number): Snapshot | und
   };
 }
 
+/**
+ * The model playbook `id` runs on at `version` (its snapshot's), or `undefined` when there is no readable snapshot or
+ * it names no model. A kernel run launch pairs it with the version it records (23u).
+ */
+export function versionModelOf(store: Store, id: number, version: number): string | undefined {
+  return readSnapshot(store, id, version)?.model ?? undefined;
+}
+
 /** What the `playbook-run` step stored: the run row and `start`, or the terminal status it wrote. */
 interface RunDecision {
   readonly run_id: number;

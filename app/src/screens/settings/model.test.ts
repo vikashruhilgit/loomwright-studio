@@ -58,6 +58,7 @@ describe("parseSettings: the contract's known fields, nothing else", () => {
       // An older kernel names no providers (D42): the choice is not drawn.
       providers: [],
       providerSource: null,
+      pendingProvider: null,
       dataDir: "/Users/o/.loomwright-studio",
       notifier: "osascript",
       loomwright: { ok: true, installPath: "/Users/o/.claude/plugins/loomwright" },
@@ -80,6 +81,9 @@ describe("parseSettings: the contract's known fields, nothing else", () => {
     ]);
     expect(parsed?.providerSource).toBe("choice");
     expect(parseSettings({ ...body(), provider_source: "sneaky" })?.providerSource).toBeNull();
+    // 23u: a recorded choice the kernel is not running on yet.
+    expect(parseSettings({ ...body(), pending_provider: "api-key" })?.pendingProvider).toBe("api-key");
+    expect(parseSettings({ ...body(), pending_provider: 7 })?.pendingProvider).toBeNull();
   });
 
   it("drops a field the contract does not declare, at every level", () => {

@@ -431,7 +431,8 @@ export interface AdmissionRequest {
  * file is invalid or missing (its limits cannot be read, so it is refused
  * rather than read as unlimited), the session's playbook reached its own
  * daily token limit (`token_limit_per_day`), or the owner paused new work
- * (`paused`, the kernel's check before the budget's; `retryAt` is `null`).
+ * (`paused`, the kernel's check before the budget's; `retryAt` is `null`), or
+ * the kernel is restarting to apply the owner's auth switch (`restarting`, D42).
  */
 export type AdmissionRefusalReason =
   | "cap_parked"
@@ -440,7 +441,8 @@ export type AdmissionRefusalReason =
   | "settings_invalid"
   | "settings_missing"
   | "playbook_daily_limit"
-  | "paused";
+  | "paused"
+  | "restarting";
 
 /**
  * The admission verdict. A refusal carries when to try again (ISO-8601), or

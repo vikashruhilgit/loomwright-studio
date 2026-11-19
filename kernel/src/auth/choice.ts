@@ -53,9 +53,15 @@ export interface AuthControl {
   readonly keychainWriter: KeychainWriter;
   readonly keychainDeleter: KeychainDeleter;
   /**
-   * Stop the kernel gracefully and exit so launchd starts it again on the new
-   * choice. Absent when nothing would start it again (a kernel started by
-   * hand): the switch is then recorded and applies at the next start.
+   * Close admission, count the running sessions, and with none stop the kernel
+   * gracefully and exit so launchd starts it again on the new choice. With one
+   * running, admission opens again and nothing restarts (`restarting: false`,
+   * `running` the count, or `null` when it could not be read). Absent when
+   * nothing would start the kernel again (one started by hand): the switch is
+   * then recorded and applies at the next start.
    */
-  readonly restart?: () => void;
+  readonly restart?: () => RestartOutcome;
 }
+
+/** What a requested restart did (`AuthControl.restart`). */
+export type RestartOutcome = { readonly restarting: true } | { readonly restarting: false; readonly running: number | null };

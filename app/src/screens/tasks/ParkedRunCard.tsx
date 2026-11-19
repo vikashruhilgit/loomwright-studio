@@ -84,6 +84,7 @@ const BLOCK_WORDS = table<string>({
   no_kernel_run: "Studio didn't start this run",
   run_live: "A run is going in this workspace",
   resume_queued: "Resume queued",
+  continuation_queued: "Your reply or decision is queued; the run carries on from it next",
   playbook_not_live: "Its playbook isn't live",
   agent_not_active: "Its crew member is off",
   kill_switch_engaged: "Studio is stopped",

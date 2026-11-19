@@ -61,7 +61,7 @@ import type { GuiPart } from "./types.js";
 const SOURCE_SCAN_LIMIT = 500;
 
 /** Why a listed paused run cannot be resumed now, or `null` when it can. */
-export type ResumeBlock = "no_kernel_run" | "run_live" | "resume_queued" | "playbook_not_live" | "agent_not_active" | "kill_switch_engaged" | "lock_settling" | null;
+export type ResumeBlock = "no_kernel_run" | "run_live" | "resume_queued" | "continuation_queued" | "playbook_not_live" | "agent_not_active" | "kill_switch_engaged" | "lock_settling" | null;
 
 /** One paused run as `GET /automate/paused-runs` serves it. */
 export interface PausedRunView {
@@ -122,21 +122,25 @@ function sourceOf(store: Store, agent: string, checkout: string): { source: Sour
 }
 
 /**
- * Whether a resume for `runId` in `checkout` is already queued and not yet handled. A run id is a date and a
- * sequence per checkout, so another checkout's run can share it: the checkout is compared too, as `sourceOf`
- * compares it (`resolve`). PR #291 review.
+ * Which kernel launch of `runId` in `checkout` is already queued and not yet handled: a `resume`, or a `continue` (an
+ * owner's reply, or a decision on a held call, 23o). A run id is a date and a sequence per checkout, so another
+ * checkout's run can share it: the checkout is compared too, as `sourceOf` compares it (`resolve`). PR #291 review.
+ * A queued continuation blocks a second reply and a Resume (23u): either would start a later session of the run first,
+ * and the launch then skips the continuation as superseded, dropping the owner's words.
  */
-function resumeQueued(store: Store, runId: string, checkout: string): boolean {
+function queuedLaunchOf(store: Store, runId: string, checkout: string): "resume" | "continue" | undefined {
   const want = resolve(checkout);
-  return store
-    .prepare<[string], string | null>(
-      `SELECT json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.checkout') FROM event_queue WHERE status = 'pending' AND json_valid(payload_json)
-         AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.kind') = 'resume'
+  const rows = store
+    .prepare<[string], { kind: string; checkout: string | null }>(
+      `SELECT json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.kind') AS kind, json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.checkout') AS checkout
+         FROM event_queue WHERE status = 'pending' AND json_valid(payload_json)
+         AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.kind') IN ('resume', 'continue')
          AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.run_id') = ?`,
     )
-    .pluck()
     .all(runId)
-    .some((queued) => typeof queued === "string" && resolve(queued) === want);
+    .filter((row) => typeof row.checkout === "string" && resolve(row.checkout) === want);
+  if (rows.some((row) => row.kind === "resume")) return "resume";
+  return rows.length > 0 ? "continue" : undefined;
 }
 
 /**
@@ -170,7 +174,9 @@ function blockOf(store: Store, agentStatus: string, live: boolean, settling: boo
   const pb = store.prepare<[number], { mode: string; status: string; version: number }>("SELECT mode, status, version FROM playbooks WHERE id = ?").get(source.playbook);
   if (pb === undefined || pb.mode !== "live" || pausedPlaybook(pb, source.playbook_version) !== undefined) return "playbook_not_live";
   if (live) return "run_live";
-  if (resumeQueued(store, runId, checkout)) return "resume_queued";
+  const queued = queuedLaunchOf(store, runId, checkout);
+  if (queued === "resume") return "resume_queued";
+  if (queued === "continue") return "continuation_queued";
   if (settling) return "lock_settling";
   return null;
 }

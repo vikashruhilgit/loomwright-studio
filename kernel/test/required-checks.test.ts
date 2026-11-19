@@ -83,4 +83,40 @@ describe("handRequiredChecks (23t)", () => {
     mkdirSync(plain);
     expect(handRequiredChecks(store, REPO, plain)).toEqual({ kind: "skipped", reason: "git_unavailable" });
   });
+
+  // 23u (review of PR #292): the list the kernel wrote is the kernel's, so it follows the detection; only a list the
+  // kernel did not write is the owner's (or Loomwright's) and left alone.
+  it("refreshes its own earlier list after the owner re-detects changed protection", () => {
+    detected(PROTECTED);
+    expect(handRequiredChecks(store, REPO, checkout)).toEqual({ kind: "written", checks: ["ci"] });
+    store.prepare("UPDATE repo_policies SET detected_json = ? WHERE repo = ?").run(JSON.stringify({ ...PROTECTED, required_checks: ["ci", "e2e"] }), REPO);
+    expect(handRequiredChecks(store, REPO, checkout)).toEqual({ kind: "written", checks: ["ci", "e2e"] });
+    expect(config()).toEqual({ required_checks: ["ci", "e2e"] });
+  });
+
+  it("removes its own earlier list once the branch is no longer protected, and keeps every other key", () => {
+    detected(PROTECTED);
+    mkdirSync(join(checkout, ".supervisor"));
+    writeFileSync(join(checkout, LOOMWRIGHT_CONFIG), JSON.stringify({ fix_floor: "HIGH" }));
+    expect(handRequiredChecks(store, REPO, checkout)).toEqual({ kind: "written", checks: ["ci"] });
+    store.prepare("UPDATE repo_policies SET detected_json = ? WHERE repo = ?").run(JSON.stringify({ ...PROTECTED, protection: "unprotected", required_checks: [] }), REPO);
+    expect(handRequiredChecks(store, REPO, checkout)).toEqual({ kind: "removed", checks: ["ci"] });
+    expect(config()).toEqual({ fix_floor: "HIGH" });
+  });
+
+  it("an unchanged detection rewrites nothing and records nothing", () => {
+    detected(PROTECTED);
+    handRequiredChecks(store, REPO, checkout);
+    expect(handRequiredChecks(store, REPO, checkout)).toEqual({ kind: "skipped", reason: "unchanged" });
+    expect(store.prepare("SELECT count(*) FROM events WHERE kind = 'run_required_checks'").pluck().get()).toBe(1);
+  });
+
+  it("a list the owner edited after the kernel's write is the owner's from then on", () => {
+    detected(PROTECTED);
+    handRequiredChecks(store, REPO, checkout);
+    writeFileSync(join(checkout, LOOMWRIGHT_CONFIG), JSON.stringify({ required_checks: ["ci", "lint"] }));
+    store.prepare("UPDATE repo_policies SET detected_json = ? WHERE repo = ?").run(JSON.stringify({ ...PROTECTED, required_checks: ["build"] }), REPO);
+    expect(handRequiredChecks(store, REPO, checkout)).toEqual({ kind: "skipped", reason: "already_set" });
+    expect(config()).toEqual({ required_checks: ["ci", "lint"] });
+  });
 });

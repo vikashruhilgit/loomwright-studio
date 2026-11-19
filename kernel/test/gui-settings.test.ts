@@ -93,7 +93,7 @@ describe("GET /settings", () => {
     recordTokenCreated(env.store, "stub-provider", "owner@example.test", "2026-09-01T00:00:00.000Z", env.now());
     const res = await get(await serve());
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body).sort()).toEqual(["data_dir", "loomwright", "notifier", "provider", "provider_source", "providers"]);
+    expect(Object.keys(res.body).sort()).toEqual(["data_dir", "loomwright", "notifier", "pending_provider", "provider", "provider_source", "providers"]);
     expect(Object.keys(res.body.provider).sort()).toEqual(["account", "health", "id", "token_created_at"]);
     expect(res.body.provider).toEqual({ id: "stub-provider", account: "owner@example.test", health: { status: "ok" }, token_created_at: "2026-09-01T00:00:00.000Z" });
     expect(res.body.data_dir).toBe(env.store.dataDir);

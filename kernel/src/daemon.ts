@@ -5,7 +5,7 @@
 //   node dist/daemon.js [--auth-provider <id>] [--launchd]
 //   node dist/daemon.js --version
 import { daemonKernelDeps } from "./daemon-deps.js";
-import { DAEMON_NAME, parseArgs, restartAfterStop, startFailureExit, stopFailureExit, underLaunchd } from "./daemon-exit.js";
+import { DAEMON_NAME, daemonStartOptions, startFailureExit, stopFailureExit, underLaunchd } from "./daemon-exit.js";
 import type { DaemonExit } from "./daemon-exit.js";
 import { startKernel } from "./kernel.js";
 import type { Kernel } from "./kernel.js";
@@ -22,16 +22,11 @@ async function main(args: readonly string[]): Promise<void> {
   let kernel: Kernel;
   // D42: under launchd a Settings switch of the auth provider stops the kernel
   // gracefully and exits 1, so KeepAlive {SuccessfulExit: false} starts it
-  // again on the new choice. Started by hand, nothing would restart it, so no
-  // restart is wired and the choice applies at the next start.
-  let restarting = false;
-  const onRestartRequested = (): void => {
-    if (restarting) return;
-    restarting = true;
-    void restartAfterStop(() => kernel.stop(), exitWith);
-  };
+  // again on the new choice (`daemonStartOptions`). A restart fired before
+  // `kernel` is assigned finds no kernel to stop: `restartAfterStop` then
+  // exits 1 naming the error, and launchd still starts it again.
   try {
-    kernel = await startKernel({ ...parseArgs(args), ...(launchd ? { onRestartRequested } : {}) }, daemonKernelDeps());
+    kernel = await startKernel(daemonStartOptions(args, () => kernel, exitWith), daemonKernelDeps());
   } catch (err) {
     exitWith(startFailureExit(err, launchd));
   }

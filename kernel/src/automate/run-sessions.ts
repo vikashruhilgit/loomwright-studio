@@ -43,7 +43,8 @@ export function runLaunchOf(store: Store, sessionId: number): RunLaunch | undefi
  * each in its checkout. `undefined` when the payload names none of them.
  */
 function runKeyOf(run: Readonly<Record<string, unknown>>): string | undefined {
-  const where = typeof run.checkout === "string" ? run.checkout : undefined;
+  // Resolved, as `latestRunSessionOf` compares it (23u): a Resume carries the workspace as the settings spell it.
+  const where = typeof run.checkout === "string" ? resolve(run.checkout) : undefined;
   if (where === undefined) return undefined;
   if (typeof run.run_id === "string") return `${where}\0run:${run.run_id}`;
   if (typeof run.backlog === "string") return `${where}\0backlog:${run.backlog}`;
