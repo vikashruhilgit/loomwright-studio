@@ -581,6 +581,43 @@ test("item 18 AC4: an account equal to the provider's id reads 'personal subscri
   expect(await textOf(page, IDS.account)).toBe("personal subscription");
 });
 
+test("23u: a pending switch reads as two rows, the note across the row and the Keep button under it at its own size, never squeezed into the label column", async () => {
+  const fx = settingsFixture();
+  const routes = fx.options.routes as Record<string, (req: FixtureRequest) => Promise<FixtureAnswer>>;
+  const inner = routes["GET /settings"] as (req: FixtureRequest) => Promise<FixtureAnswer>;
+  // What the kernel answers after a switch whose restart a running session deferred (live 2026-11-19).
+  routes["GET /settings"] = async (req) => {
+    const answer = await inner(req);
+    if (answer.status !== 200) return answer;
+    const body = answer.body as Record<string, unknown>;
+    return {
+      ...answer,
+      body: {
+        ...body,
+        provider: { id: "api-key", account: "api-key", health: { status: "ok" }, token_created_at: null },
+        providers: [
+          { id: "api-key", account: "api-key", health: { status: "ok" }, in_use: true },
+          { id: "subscription-token", account: "subscription-token", health: { status: "ok" }, in_use: false },
+        ],
+        provider_source: "choice",
+        pending_provider: "subscription-token",
+      },
+    };
+  };
+  const page = await open(fx);
+  const pending = byId(page, IDS.choicePending);
+  await expect(pending).toBeVisible();
+  const block = await pending.boundingBox();
+  const note = await pending.locator("p").boundingBox();
+  const keep = await byId(page, IDS.choiceKeep).boundingBox();
+  if (block === null || note === null || keep === null) throw new Error("the pending note, its text or the Keep button has no box");
+  // The bug: the row's 112px label column held the sentence and the button stretched over the rest.
+  expect(note.width, "the note's text is not squeezed into a label column").toBeGreaterThan(block.width / 2);
+  expect(keep.width, "Keep is its own size, not stretched across the row").toBeLessThan(block.width / 2);
+  expect(keep.y, "Keep is on its own row, under the note").toBeGreaterThanOrEqual(note.y + note.height);
+  expect(Math.abs(keep.x - note.x), "Keep lines up with the note's left edge").toBeLessThanOrEqual(1);
+});
+
 test("item 18 AC5: each command block is one line at the default window size and at the smallest, and scrolls sideways rather than wrapping", async () => {
   const { page } = await openPopulated();
   const measure = () =>
