@@ -641,6 +641,48 @@ describe("an approval held by a run session continues that session (23o)", () =>
     expect(getWorkStep(store, `event:${event?.id}:automate-run`)?.result).toEqual({ session_id: 301 });
   });
 
+  // 23u (review of PR #294): a resume in place keeps the resumed session's model, so the version it records is paired
+  // with that session, not with the run's source session (which never changes along a continuation chain). Live chain:
+  // asked under v1/M1, a continuation started on v2/M2, the owner enabled v3/M3, a restart interrupted the continuation,
+  // and the decision resumed it in place: it recorded v1, a version whose model did not run.
+  describe("a resume in place records the resumed session's own version and model pair", () => {
+    function playbookVersionSnapshot(version: number, model: string): void {
+      store
+        .prepare("INSERT INTO playbook_versions (playbook, version, snapshot_json, created_at) VALUES (5, ?, ?, '2026-11-18T00:00:00.000Z')")
+        .run(version, JSON.stringify({ slug: "pb5", intent: "Hand tickets over", model }));
+    }
+
+    /** Session 301 interrupted at v3 on opus (the source session is v2 on sonnet); the playbook then moves to `enabled`. */
+    async function resumedAt(enabled: number, snapshotModel?: string): Promise<{ id: number; params: ResumeSessionParams }[]> {
+      const starts: StartSessionParams[] = [];
+      const resumes: { id: number; params: ResumeSessionParams }[] = [];
+      const loop = loopWith(starts, resumes);
+      const id = await heldRunSession(loop, "interrupted");
+      store.prepare("UPDATE sessions SET playbook = 5, playbook_version = 3, model = 'claude-opus-5-5' WHERE id = 301").run();
+      store.prepare("UPDATE playbooks SET version = ? WHERE id = 5").run(enabled);
+      if (snapshotModel !== undefined) playbookVersionSnapshot(enabled, snapshotModel);
+      decideApproval(store, { id, decision: "once", by: "owner" }, NOW);
+      expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+      expect(resumes).toHaveLength(1);
+      return resumes;
+    }
+
+    it("a newer enabled version on another model: keeps the resumed session's version, not the source session's", async () => {
+      const resumes = await resumedAt(4, "claude-haiku-5-5");
+      expect(resumes[0]?.params.playbookVersion).toBe(3);
+    });
+
+    it("a newer enabled version whose snapshot model is the resumed session's: records the enabled version", async () => {
+      const resumes = await resumedAt(4, "claude-opus-5-5");
+      expect(resumes[0]?.params.playbookVersion).toBe(4);
+    });
+
+    it("the enabled version is the resumed session's own: records it, even with no readable snapshot", async () => {
+      const resumes = await resumedAt(3);
+      expect(resumes[0]?.params.playbookVersion).toBe(3);
+    });
+  });
+
   // PR #291 review: these are the checks that keep a decision on one session from continuing a different one.
   for (const c of [
     { name: "is gone", change: "UPDATE event_queue SET payload_json = json_set(payload_json, '$.automate_run.session', 999) WHERE source_ref LIKE 'approval:%'", skipped: "continue_session_gone: session 999" },
@@ -907,6 +949,22 @@ describe("the owner replies to a run's last message", () => {
     expect(await reply({ agent: "mason", checkout, text: "Redo" })).toMatchObject({ status: 409, body: { error: "run_live" } });
   });
 
+  // 23u (review of PR #292): a queued reply (a pending `continue`) was not counted, so a second reply or a Resume could
+  // run first and the first reply was then skipped as superseded, its words lost after the card said "Sent".
+  it("a reply still queued blocks a second reply and a Resume, so neither can make the first one superseded", async () => {
+    const starts: StartSessionParams[] = [];
+    const loop = loopWith(starts);
+    await askingRunSession(loop);
+    expect(await reply({ agent: "mason", checkout, text: "Redo it." })).toMatchObject({ status: 200 });
+    expect(listPausedRuns(store).runs[0]?.blocked).toBe("continuation_queued");
+    expect(await reply({ agent: "mason", checkout, text: "Actually, drop it." })).toMatchObject({ status: 409, body: { error: "continuation_queued" } });
+    expect(await resume()).toMatchObject({ status: 409, body: { error: "continuation_queued" } });
+    // Once handled, the run is open to the next reply again.
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(starts).toHaveLength(2);
+    expect(listPausedRuns(store).runs[0]?.blocked).not.toBe("continuation_queued");
+  });
+
   it("after a later Resume the list points the next reply at the newer session (the launch refuses a superseded one, 23s gap 3)", async () => {
     const starts: StartSessionParams[] = [];
     const loop = loopWith(starts);
@@ -932,6 +990,7 @@ describe("a resumed run launches under the playbook version the owner enabled", 
   it("the playbook is enabled at v3 while the run was prepared under v2: the session starts as v3", async () => {
     store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, 'mason', 'completed', ?)").run(CALLER.id, checkout);
     store.prepare("UPDATE playbooks SET version = 3 WHERE id = 5").run();
+    snapshot(3, "claude-sonnet-5-5");
     const starts: StartSessionParams[] = [];
     const sessions: EventSessions = {
       async startSession(params) {
@@ -948,6 +1007,49 @@ describe("a resumed run launches under the playbook version the owner enabled", 
     expect(CALLER.playbook_version).toBe(2);
     expect(starts[0]).toMatchObject({ playbook: 5, playbookVersion: 3 });
   });
+
+  // 23u (review of PR #292): the version and its model are one pair. The run took v3 but kept v2's model (the source
+  // session's), so the session row and audit named a version whose model did not run.
+  it("runs on the enabled version's own model, not the source session's", async () => {
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, 'mason', 'completed', ?)").run(CALLER.id, checkout);
+    store.prepare("UPDATE playbooks SET version = 3 WHERE id = 5").run();
+    snapshot(3, "claude-opus-5-5");
+    const starts: StartSessionParams[] = [];
+    const loop = versionLoop(starts);
+    queueSourceLaunch();
+    await resume();
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(starts[0]).toMatchObject({ playbookVersion: 3, model: "claude-opus-5-5" });
+  });
+
+  it("with no readable snapshot of the enabled version, keeps the source session's version and model together", async () => {
+    store.prepare("INSERT INTO sessions (id, agent, status, cwd) VALUES (?, 'mason', 'completed', ?)").run(CALLER.id, checkout);
+    store.prepare("UPDATE playbooks SET version = 3 WHERE id = 5").run();
+    const starts: StartSessionParams[] = [];
+    const loop = versionLoop(starts);
+    queueSourceLaunch();
+    await resume();
+    expect(await loop.tick()).toMatchObject({ done: 1, failed: 0 });
+    expect(starts[0]).toMatchObject({ playbookVersion: 2, model: CALLER.model });
+  });
+
+  function versionLoop(starts: StartSessionParams[]): EventLoop {
+    const sessions: EventSessions = {
+      async startSession(params) {
+        starts.push(params);
+        return { id: 300 + starts.length } as unknown as SessionHandle;
+      },
+      resumeSession: () => Promise.reject(new Error("unexpected resume")),
+      getSession: (id) => (id === CALLER.id ? ({ ...CALLER } as unknown as SessionRow) : undefined),
+    };
+    return new EventLoop({ store, handlers: { message: handleAutomateRun }, sessions });
+  }
+
+  function snapshot(version: number, model: string): void {
+    store
+      .prepare("INSERT INTO playbook_versions (playbook, version, snapshot_json, created_at) VALUES (5, ?, ?, '2026-11-18T00:00:00.000Z')")
+      .run(version, JSON.stringify({ slug: "pb5", intent: "Hand tickets over", model }));
+  }
 });
 
 // ---- 23t: the repo's required checks reach the run's drain --------------------------------------------------

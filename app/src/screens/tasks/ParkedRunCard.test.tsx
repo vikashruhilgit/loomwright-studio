@@ -241,7 +241,7 @@ describe("reply to the run's last message", () => {
   });
 
   it("offers no reply box without a kernel session, while one is live, or when a block other than a settling lock applies", () => {
-    for (const view of [run({ last_session: null }), run({ last_session: { ...ASKED, status: "running" } }), run({ last_session: ASKED, blocked: "run_live" }), run()]) {
+    for (const view of [run({ last_session: null }), run({ last_session: { ...ASKED, status: "running" } }), run({ last_session: ASKED, blocked: "run_live" }), run({ last_session: ASKED, blocked: "continuation_queued" }), run()]) {
       drawWithReply(view);
       expect(screen.queryByTestId("parked-run-reply")).toBeNull();
       cleanup();

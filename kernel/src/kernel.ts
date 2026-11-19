@@ -17,7 +17,7 @@ import { API_KEY_PROVIDER_ID } from "./auth/api-key.js";
 import { AUTH_PROVIDER_ENV, authProviderFromEnv } from "./auth/provider-env.js";
 import { securityCliKeychain, securityCliKeychainDeleter, securityCliKeychainWriter } from "./auth/keychain.js";
 import { readAuthChoice } from "./auth/choice.js";
-import type { AuthControl, AuthProviderSource } from "./auth/choice.js";
+import type { AuthControl, AuthProviderSource, RestartOutcome } from "./auth/choice.js";
 import type { KeychainDeleter, KeychainReader, KeychainWriter } from "./auth/keychain.js";
 import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./auth/registry.js";
 import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
@@ -94,6 +94,9 @@ export interface KernelOptions {
    */
   readonly onRestartRequested?: () => void;
 }
+
+/** How long an event refused `restarting` waits before it is tried again (on the restarted kernel). */
+export const RESTART_RETRY_MS = 30_000;
 
 /** Every side effect of the composition, injectable for tests. */
 export interface KernelDeps {
@@ -197,9 +200,14 @@ export function admissionFor(
   budget: Pick<Budget, "checkPlaybook">,
   provider: string,
   paused?: () => boolean,
+  restartingUntil?: () => Date | undefined,
 ): (request: AdmissionRequest) => AdmissionDecision {
   return (request) => {
     if (paused?.() === true) return { admitted: false, reason: "paused", retryAt: null };
+    // D42 (23u): while an auth-switch restart checks for running sessions, nothing new is admitted, so no session can
+    // start between that check and the stop. The event retries shortly after, on the restarted kernel.
+    const until = restartingUntil?.();
+    if (until !== undefined) return { admitted: false, reason: "restarting", retryAt: until.toISOString() };
     const verdict = budget.checkPlaybook({ ...request, playbook: request.playbook ?? null });
     if (!verdict.admitted) return { admitted: false, reason: verdict.reason, retryAt: verdict.retryAt };
     if (verdict.provider !== provider) {
@@ -412,6 +420,9 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
   let sessions: SessionManager | undefined;
   let loop: EventLoop | undefined;
   let api: ApiServer | undefined;
+  // D42 (23u): set while an auth-switch restart is under way; admission refuses `restarting` until then.
+  let restartingUntil: Date | undefined;
+  const onRestartRequested = options.onRestartRequested;
 
   const teardown = async (): Promise<void> => {
     const failures: unknown[] = [];
@@ -471,7 +482,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         // The console's session output log (a no-op until phase 5 item 03 fills it in).
         onOutput: (sessionId, message) => recordSessionOutput(store, sessionId, message),
         // The owner's pause refuses every start and resume first (it never stops a running session).
-        admission: admissionFor(budget, authProvider.id, () => isPaused(store)),
+        admission: admissionFor(budget, authProvider.id, () => isPaused(store), () => restartingUntil),
         // The owner's connector grants, read afresh at each start and resume; the manager fills `ToolPolicy.connectors` from them.
         connectorsFor: connectorsFor(dataDir),
         // The proxy tools a session lists join its policy's allowedTools (in memory only), through the same chain the factory below lists them by.
@@ -529,7 +540,29 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
       keychainReader: keychain,
       keychainWriter,
       keychainDeleter: deps.keychainDeleter ?? securityCliKeychainDeleter(),
-      ...(options.onRestartRequested === undefined ? {} : { restart: options.onRestartRequested }),
+      ...(onRestartRequested === undefined
+        ? {}
+        : {
+            // D42 (23u): admission closes first, then the running sessions are counted, so none can start in between.
+            // With one running, admission opens again and the restart is deferred; otherwise the kernel stops (and
+            // admission stays closed until it does).
+            restart: (): RestartOutcome => {
+              restartingUntil = new Date(Date.now() + RESTART_RETRY_MS);
+              let running: number;
+              try {
+                running = store.prepare<[], { n: number }>("SELECT count(*) AS n FROM sessions WHERE status IN ('starting', 'running')").get()?.n ?? 0;
+              } catch {
+                restartingUntil = undefined;
+                return { restarting: false, running: null };
+              }
+              if (running > 0) {
+                restartingUntil = undefined;
+                return { restarting: false, running };
+              }
+              onRestartRequested();
+              return { restarting: true };
+            },
+          }),
     };
     const server = await (deps.startApiServer ?? startApiServer)(
       {

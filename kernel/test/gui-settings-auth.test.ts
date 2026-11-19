@@ -5,8 +5,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API_KEY_KEYCHAIN_SERVICE } from "../src/auth/api-key.js";
-import { AUTH_CHOICE_FILE } from "../src/auth/choice.js";
-import type { AuthControl } from "../src/auth/choice.js";
+import { AUTH_CHOICE_FILE, writeAuthChoice } from "../src/auth/choice.js";
+import type { AuthControl, RestartOutcome } from "../src/auth/choice.js";
 import { KeychainError } from "../src/auth/index.js";
 import type { AuthHealth } from "../src/auth/types.js";
 import type { ContributedRouteRequest, StatusView } from "../src/features/contribution.js";
@@ -48,7 +48,7 @@ interface Setup {
   readonly inUse?: string;
   readonly source?: AuthControl["source"];
   readonly health?: Record<string, AuthHealth>;
-  readonly restart?: () => void;
+  readonly restart?: () => RestartOutcome;
   readonly kc?: ReturnType<typeof keychain>;
 }
 
@@ -65,7 +65,8 @@ function request(body: unknown, { inUse = "subscription-token", source = "defaul
     ...(restart === undefined ? {} : { restart }),
   };
   const status: StatusView = {
-    auth: () => available.map((id) => ({ id, account: null, health: health[id] ?? { status: "ok" } })),
+    // As the kernel lists them: the provider in use first.
+    auth: () => [inUse, ...available.filter((id) => id !== inUse)].map((id) => ({ id, account: null, health: health[id] ?? { status: "ok" } })),
     loomwright: () => undefined,
   };
   return { params: {}, query: {}, body, store: env.store, now: () => env.now(), status, auth };
@@ -82,7 +83,7 @@ describe("PUT /settings/auth-provider (D42)", () => {
 
   it("records the choice and restarts the kernel on it after the answer", async () => {
     vi.useFakeTimers();
-    const restart = vi.fn();
+    const restart = vi.fn((): RestartOutcome => ({ restarting: true }));
     const res = await put.handler(request({ provider: "api-key" }, { restart }));
     expect(res).toEqual({ status: 202, body: { in_use: "subscription-token", chosen: "api-key", restarting: true } });
     expect(choice()).toEqual({ provider: "api-key" });
@@ -92,15 +93,25 @@ describe("PUT /settings/auth-provider (D42)", () => {
     expect(events("auth_provider_chosen").map((p) => JSON.parse(p))).toEqual([{ from: "subscription-token", to: "api-key", restarting: true }]);
   });
 
-  it("a session that starts in the restart's delay keeps it from firing; the choice waits for the next start", async () => {
+  it("a restart that finds a session running is deferred and recorded; the choice waits for the next start", async () => {
     vi.useFakeTimers();
-    const restart = vi.fn();
+    // The kernel's restart closes admission, counts, and answers (kernel-auth-restart.test.ts); here it found one running.
+    const restart = vi.fn((): RestartOutcome => ({ restarting: false, running: 1 }));
     expect((await put.handler(request({ provider: "api-key" }, { restart }))).status).toBe(202);
-    env.store.prepare("INSERT INTO sessions (agent, status, model, started_at, created_at, updated_at) VALUES ('wright', 'starting', 'm', ?, ?, ?)").run(NOW, NOW, NOW);
     vi.advanceTimersByTime(RESTART_DELAY_MS);
-    expect(restart).not.toHaveBeenCalled();
+    expect(restart).toHaveBeenCalledTimes(1);
     expect(choice()).toEqual({ provider: "api-key" });
     expect(events("auth_provider_restart_deferred").map((p) => JSON.parse(p))).toEqual([{ to: "api-key", running: 1 }]);
+  });
+
+  it("a restart that throws (the kernel already stopping) is never an uncaught exception", async () => {
+    vi.useFakeTimers();
+    const restart = vi.fn((): RestartOutcome => {
+      throw new Error("store closed");
+    });
+    expect((await put.handler(request({ provider: "api-key" }, { restart }))).status).toBe(202);
+    expect(() => vi.advanceTimersByTime(RESTART_DELAY_MS)).not.toThrow();
+    expect(restart).toHaveBeenCalledTimes(1);
   });
 
   it("with no restart wired, records the choice for the next start", async () => {
@@ -110,7 +121,7 @@ describe("PUT /settings/auth-provider (D42)", () => {
   });
 
   it("choosing the provider in use only records it, with no restart", async () => {
-    const restart = vi.fn();
+    const restart = vi.fn((): RestartOutcome => ({ restarting: true }));
     const res = await put.handler(request({ provider: "subscription-token" }, { restart }));
     expect(res).toEqual({ status: 200, body: { in_use: "subscription-token", chosen: "subscription-token", restarting: false } });
     expect(choice()).toEqual({ provider: "subscription-token" });
@@ -125,7 +136,7 @@ describe("PUT /settings/auth-provider (D42)", () => {
 
   it("refuses while a session runs, since the restart would stop it", async () => {
     env.store.prepare("INSERT INTO sessions (agent, status, model, started_at, created_at, updated_at) VALUES ('wright', 'running', 'm', ?, ?, ?)").run(NOW, NOW, NOW);
-    const restart = vi.fn();
+    const restart = vi.fn((): RestartOutcome => ({ restarting: true }));
     const res = await put.handler(request({ provider: "api-key" }, { restart }));
     expect(res).toEqual({ status: 409, body: { error: "sessions_running", count: 1 } });
     expect(choice()).toBeUndefined();
@@ -175,7 +186,82 @@ describe("PUT /settings/api-key (D42)", () => {
 
   it("answers keychain_write_failed when the write fails, with no event", async () => {
     const res = await put.handler(request({ key: KEY }, { kc: keychain({}, true) }));
-    expect(res).toEqual({ status: 500, body: { error: "keychain_write_failed" } });
+    expect(res).toEqual({ status: 500, body: { error: "keychain_write_failed", previous_key: "none" } });
     expect(events("auth_api_key_set")).toEqual([]);
+  });
+
+  // 23u (review of PR #292): replacing a key deletes the old item first, so a failed add must put the old key back.
+  function failingAdd(initial: Record<string, string>, mode: "throw" | "silent", restoreFails = false) {
+    const kc = keychain(initial);
+    let adds = 0;
+    kc.writer.add = (service: string, _account: string, secret: string) => {
+      adds += 1;
+      if (adds === 1) {
+        if (mode === "throw") throw new KeychainError(service, 1, null, "write");
+        return; // `security -i` exited 0 without writing the item
+      }
+      if (restoreFails) throw new KeychainError(service, 1, null, "write");
+      kc.items.set(service, secret);
+    };
+    return kc;
+  }
+
+  it("puts the old key back when the new one's write fails", async () => {
+    const kc = failingAdd({ [API_KEY_KEYCHAIN_SERVICE]: "sk-old-key" }, "throw");
+    const res = await put.handler(request({ key: KEY }, { kc }));
+    expect(res).toEqual({ status: 500, body: { error: "keychain_write_failed", previous_key: "kept" } });
+    expect(kc.items.get(API_KEY_KEYCHAIN_SERVICE)).toBe("sk-old-key");
+  });
+
+  it("puts the old key back when the write reports success but the read-back finds nothing", async () => {
+    const kc = failingAdd({ [API_KEY_KEYCHAIN_SERVICE]: "sk-old-key" }, "silent");
+    const res = await put.handler(request({ key: KEY }, { kc }));
+    expect(res).toEqual({ status: 500, body: { error: "keychain_write_failed", previous_key: "kept" } });
+    expect(kc.items.get(API_KEY_KEYCHAIN_SERVICE)).toBe("sk-old-key");
+  });
+
+  it("says so when the old key could not be put back either", async () => {
+    const kc = failingAdd({ [API_KEY_KEYCHAIN_SERVICE]: "sk-old-key" }, "throw", true);
+    const res = await put.handler(request({ key: KEY }, { kc }));
+    expect(res).toEqual({ status: 500, body: { error: "keychain_write_failed", previous_key: "removed" } });
+    expect(JSON.stringify(res)).not.toContain("sk-old-key");
+  });
+
+  it("with no old key, a failed write says there was none", async () => {
+    const res = await put.handler(request({ key: KEY }, { kc: failingAdd({}, "throw") }));
+    expect(res).toEqual({ status: 500, body: { error: "keychain_write_failed", previous_key: "none" } });
+  });
+});
+
+describe("GET /settings pending_provider (23u)", () => {
+  const get = settingsRoutes.find((r) => r.method === "GET" && r.path === "/settings")!;
+  const read = async (setup: Setup = {}) => {
+    const req = request(undefined, setup);
+    const status: StatusView = { auth: req.status!.auth, loomwright: () => ({ installed: false }) as never };
+    const res = await get.handler({ ...req, status });
+    return (res.body as { pending_provider: string | null }).pending_provider;
+  };
+
+  it("shows a recorded choice that differs from the provider in use, so a deferred switch is visible", async () => {
+    expect(await read()).toBeNull();
+    writeAuthChoice(env.store.dataDir, "api-key");
+    expect(await read()).toBe("api-key");
+    writeAuthChoice(env.store.dataDir, "subscription-token");
+    expect(await read()).toBeNull();
+  });
+
+  it("is null when a flag or env var picks the provider, or the choice names a provider this build lacks", async () => {
+    writeAuthChoice(env.store.dataDir, "api-key");
+    expect(await read({ source: "env" })).toBeNull();
+    expect(await read({ source: "flag" })).toBeNull();
+    writeAuthChoice(env.store.dataDir, "bedrock");
+    expect(await read()).toBeNull();
+  });
+
+  it("keeping the provider in use withdraws a pending choice", async () => {
+    writeAuthChoice(env.store.dataDir, "api-key");
+    const put = route("/settings/auth-provider");
+    expect((await put.handler(request({ provider: "subscription-token" }))).status).toBe(200);
+    expect(await read()).toBeNull();
   });
 });

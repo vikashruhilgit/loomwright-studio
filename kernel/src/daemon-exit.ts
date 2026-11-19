@@ -122,6 +122,29 @@ export async function restartAfterStop(stop: () => Promise<void>, exit: (exit: D
   exit(restartExit());
 }
 
+/**
+ * The kernel's start options from the daemon's arguments, with D42's restart wired: under launchd,
+ * `onRestartRequested` stops the kernel (`stoppable()`, the started kernel) once and exits
+ * `restartExit`'s answer, a second request being a no-op. Started by hand, nothing would restart it,
+ * so no restart is wired and a switch applies at the next start. Here, not in daemon.ts, so the
+ * wiring is tested by what it does (23u), not by matching daemon.ts's text.
+ */
+export function daemonStartOptions(
+  args: readonly string[],
+  stoppable: () => { stop(): Promise<void> },
+  exit: (exit: DaemonExit) => void,
+): { authProviderId?: string; onRestartRequested?: () => void } {
+  const parsed = parseArgs(args);
+  if (!underLaunchd(args)) return parsed;
+  let requested = false;
+  const onRestartRequested = (): void => {
+    if (requested) return;
+    requested = true;
+    void restartAfterStop(() => stoppable().stop(), exit);
+  };
+  return { ...parsed, onRestartRequested };
+}
+
 /** A graceful stop on `signal` whose teardown threw: 1 by hand, 0 under launchd (a requested stop never restarts). */
 export function stopFailureExit(err: unknown, signal: string, launchd: boolean): DaemonExit {
   if (!launchd) return { status: 1, line: `${DAEMON_NAME}: error while stopping on ${signal}: ${oneLine(err)}` };

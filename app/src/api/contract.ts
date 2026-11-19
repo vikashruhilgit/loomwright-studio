@@ -1518,6 +1518,11 @@ export interface SettingsResponse {
   readonly providers?: readonly { readonly id: string; readonly account: string | null; readonly health: AuthHealth; readonly in_use: boolean }[];
   /** D42. Absent from an older kernel; `null` when the kernel wired no auth controls. */
   readonly provider_source?: "flag" | "env" | "choice" | "default" | null;
+  /**
+   * 23u. The recorded choice when it differs from the provider in use (a switch whose restart was deferred, or one
+   * made with no restart wired): it applies at the next kernel start. `null` when none; absent from an older kernel.
+   */
+  readonly pending_provider?: string | null;
   readonly data_dir: string;
   readonly notifier: NotifierKind;
   /** The Loomwright install the adapter resolved, or why it did not. */
@@ -1545,7 +1550,11 @@ export interface ApiKeyBody {
   readonly key: string;
 }
 
-/** Its answer: the key was stored and read back; the api-key provider's health after it. Refusals: 400 `invalid_key`, 500 `keychain_write_failed`. */
+/**
+ * Its answer: the key was stored and read back; the api-key provider's health after it. Refusals: 400 `invalid_key`,
+ * 500 `keychain_write_failed` with `previous_key`: `kept` (the old key was put back, or never touched), `removed` (it
+ * could not be put back: no key now) or `none` (there was none).
+ */
 export interface ApiKeyResponse {
   readonly stored: true;
   readonly health: AuthHealth | null;
@@ -1932,7 +1941,7 @@ export interface RemoveWorkspaceResponse {
 // untrusted data: render it as text only.
 
 /** Why a listed paused run can't be resumed now; `null` when Resume is allowed. The same words are the 409 `error`. */
-export type PausedRunBlock = "no_kernel_run" | "run_live" | "resume_queued" | "playbook_not_live" | "agent_not_active" | "kill_switch_engaged" | "lock_settling";
+export type PausedRunBlock = "no_kernel_run" | "run_live" | "resume_queued" | "continuation_queued" | "playbook_not_live" | "agent_not_active" | "kill_switch_engaged" | "lock_settling";
 
 /** One paused run in a crew member's workspace. */
 export interface PausedRunView {

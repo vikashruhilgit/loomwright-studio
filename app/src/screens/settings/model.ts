@@ -79,6 +79,8 @@ export const SETTINGS_TEST_IDS = {
   choiceInUse: "settings-choice-in-use",
   choiceOverridden: "settings-choice-overridden",
   choiceNote: "settings-choice-note",
+  choicePending: "settings-choice-pending",
+  choiceKeep: "settings-choice-keep",
   apiKey: "settings-api-key",
   apiKeyInput: "settings-api-key-input",
   apiKeySave: "settings-api-key-save",
@@ -122,6 +124,8 @@ export interface SettingsView {
   readonly providers: readonly { readonly id: string; readonly account: string | null; readonly health: HealthState; readonly inUse: boolean }[];
   /** D42: what picked the in-use provider; `flag` and `env` override the owner's choice. `null` when unknown. */
   readonly providerSource: "flag" | "env" | "choice" | "default" | null;
+  /** 23u: a recorded choice that applies at the next kernel start (its restart was deferred); `null` when none. */
+  readonly pendingProvider: string | null;
   readonly dataDir: string;
   /** `terminal-notifier`, `osascript` or `none`; a word this build does not know is kept as inert text. */
   readonly notifier: string;
@@ -202,6 +206,7 @@ export function parseSettings(body: unknown): SettingsView | undefined {
     },
     providers: providersOf(body.providers),
     providerSource: sourceOf(body.provider_source),
+    pendingProvider: typeof body.pending_provider === "string" ? safe(body.pending_provider) : null,
     dataDir: safe(body.data_dir),
     notifier: typeof body.notifier === "string" ? safe(body.notifier) : "none",
     loomwright:

@@ -27,6 +27,9 @@
 .settings-cap[data-tone="danger"] {
   color: var(--danger);
 }
+.settings-cap[data-tone="attention"] {
+  color: var(--attention);
+}
 .settings-tn {
   font-variant-numeric: tabular-nums;
 }

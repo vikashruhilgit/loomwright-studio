@@ -10,12 +10,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiTokenError } from "../src/api/token.js";
 import { KeychainError } from "../src/auth/keychain.js";
 import { AuthProviderError } from "../src/auth/types.js";
 import { ContributionConflictError, InvalidContributionError, UnknownEventKindError } from "../src/features/contribution.js";
-import { DAEMON_NAME, DaemonArgumentError, RESTART_EXIT_STATUS, parseArgs, restartAfterStop, restartExit, startFailureExit, startFailureKind, stopFailureExit, underLaunchd } from "../src/daemon-exit.js";
+import { DAEMON_NAME, DaemonArgumentError, RESTART_EXIT_STATUS, daemonStartOptions, parseArgs, restartAfterStop, restartExit, startFailureExit, startFailureKind, stopFailureExit, underLaunchd } from "../src/daemon-exit.js";
 import { LAUNCHD_ARGUMENT, THROTTLE_INTERVAL_SECONDS } from "../src/service/index.js";
 import { DB_FILENAME, Store, StoreIntegrityError, StoreLockedError, StoreSchemaTooNewError } from "../src/store/index.js";
 import { buildKernel } from "./crash-helpers.js";
@@ -260,6 +260,32 @@ describe("the built daemon (end to end, no Keychain)", () => {
 //
 // Under launchd, KeepAlive {SuccessfulExit: false} starts the kernel again only after a non-zero exit, so the switch
 // must exit 1 whatever its teardown did, while a requested SIGTERM stop keeps exiting 0 (PR #292 review).
+
+describe("daemonStartOptions: the restart the daemon wires (D42, 23u)", () => {
+  it("under launchd, a restart request stops the started kernel once and exits 1; a second request does nothing", async () => {
+    const stops: string[] = [];
+    const exits: number[] = [];
+    const o = daemonStartOptions([LAUNCHD_ARGUMENT, "--auth-provider", "api-key"], () => ({ stop: async () => void stops.push("stop") }), (e) => void exits.push(e.status));
+    expect(o.authProviderId).toBe("api-key");
+    expect(typeof o.onRestartRequested).toBe("function");
+    o.onRestartRequested?.();
+    o.onRestartRequested?.();
+    await vi.waitFor(() => expect(exits).toEqual([RESTART_EXIT_STATUS]));
+    expect(stops).toEqual(["stop"]);
+  });
+
+  it("a request before the kernel exists still exits 1, so launchd starts it again", async () => {
+    const lines: string[] = [];
+    const o = daemonStartOptions([LAUNCHD_ARGUMENT], () => undefined as unknown as { stop(): Promise<void> }, (e) => void lines.push(`${e.status} ${e.line}`));
+    o.onRestartRequested?.();
+    await vi.waitFor(() => expect(lines).toHaveLength(1));
+    expect(lines[0]).toMatch(/^1 .*error while stopping to switch the auth provider/);
+  });
+
+  it("started by hand, no restart is wired: the choice applies at the next start", () => {
+    expect(daemonStartOptions(["--auth-provider", "api-key"], () => ({ stop: async () => {} }), () => {})).toEqual({ authProviderId: "api-key" });
+  });
+});
 
 describe("the auth-switch restart (D42)", () => {
   it("stops the kernel once, then exits non-zero so launchd starts it again", async () => {

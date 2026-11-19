@@ -93,6 +93,8 @@ import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
 import { isRepoName, loomwrightMergeFlags, TRUST_UNPROTECTED_FLAG } from "../integrations/github/repo-policy.js";
 import { handRequiredChecks } from "../loomwright/required-checks.js";
+import { versionModelOf } from "../playbooks/runs.js";
+import type { Store } from "../store/index.js";
 import { isPositiveId, messageOf } from "../loop/internal.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
 import { resolvedPath } from "../protected-paths.js";
@@ -577,6 +579,9 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   // (the owner released an orphaned row the kernel could not verify), may still be running, so nothing continues it
   // (PR #291 reviews). "Ended" is the manager's own list (`isContinuableStatus`), so the two cannot disagree.
   let resumeInterrupted = false;
+  // The session resumed in place, as a version and model pair: a resume keeps its session's model, so the version it
+  // records is paired with that session, not with the run's source session (unchanged along a continuation chain).
+  let resumed: { readonly playbook_version?: number | null; readonly model?: string | null } | undefined;
   if (continuation !== undefined) {
     const earlier = sessions.getSession(continuation.session);
     if (earlier === undefined) return skip(`continue_session_gone: session ${continuation.session}`);
@@ -587,6 +592,7 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
       return skip(`continue_session_${earlier.status}: session ${continuation.session} may still be running; the kernel settles it before anything continues it`);
     }
     resumeInterrupted = earlier.status === "interrupted";
+    if (resumeInterrupted) resumed = { playbook_version: earlier.playbook_version, model: earlier.model };
     if (!resumeInterrupted && !isContinuableStatus(earlier.status)) return skip(`continue_session_live: session ${continuation.session} can repeat the call itself`);
     // 23s gap 3: a later run session of the same run (a later Resume, or a continuation already carrying it) means the
     // run moved on; continuing this one again would fork it from a stale point (live: approval 56 of session 226).
@@ -635,13 +641,10 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   if (live !== undefined) return skip(`run_session_live: session ${live}`);
 
   // 23t: the repo's required checks, which the session's down-scoped token can't read from branch protection, handed to
-  // the run's drain through the checkout's own Loomwright config (`required-checks.ts`). Recorded either way.
-  const checks = handRequiredChecks(store, run.repo, checkout);
-  if (!(checks.kind === "skipped" && (checks.reason === "no_detection" || checks.reason === "not_protected" || checks.reason === "no_required_checks"))) {
-    store
-      .prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES (?, 'run_required_checks', 'kernel', ?)")
-      .run(new Date().toISOString(), JSON.stringify({ repo: run.repo, checkout, ...(checks.kind === "written" ? { written: checks.checks } : { skipped: checks.reason }) }));
-  }
+  // the run's drain through the checkout's own Loomwright config (`required-checks.ts`, which records the outcome). It
+  // runs before admission: a launch refused below leaves the current detected list, which the next launch writes anyway
+  // (23u: the kernel's own list follows the detection, so it is never left stale).
+  handRequiredChecks(store, run.repo, checkout);
 
   // The session is the step's last effect, so an admission refusal leaves nothing to repeat. The manager's
   // Loomwright refusal (no install, or no readable `scripts/`) wrote no row, so it is stored, never retried as is.
@@ -651,7 +654,11 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   // resume or continuation carried the source session's version forward, so after the owner re-enabled playbook 18 at
   // v3 its run sessions were still v2, and "always" on their held calls was refused as not the current version (live:
   // approval 62, 2026-11-18). A draft keeps the source session's version (`pausedPlaybook` already refused a newer one).
-  const version = pb.status === "enabled" ? pb.version : caller.playbook_version;
+  // The version and its model are one pair (23u): a newer version runs on its own snapshot's model, as a playbook run
+  // does. With no readable snapshot model, the source session's pair is kept. A resume in place can't change its
+  // session's model, so it keeps the resumed session's own pair, not the source session's (review of PR #294: asked
+  // under v1, continued on v2, interrupted, resumed after v3: it recorded v1), unless the newer version's model is its own.
+  const { version, model } = runVersionOf(store, run.playbook, pb, caller, resumed);
   const playbookVersion = version === null || version === undefined ? {} : { playbookVersion: version };
   try {
     handle = resumeInterrupted && continuation !== undefined
@@ -659,7 +666,7 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
       : await sessions.startSession({
       agent: run.agent,
       prompt,
-      model: caller.model,
+      model,
       permissionMode: settings.permissionMode,
       cwd: checkout,
       policy,
@@ -676,6 +683,30 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
     throw err;
   }
   return releasedLockOf === undefined ? { session_id: handle.id } : { session_id: handle.id, released_lock_of: releasedLockOf };
+}
+
+/**
+ * The playbook version a run session records and the model it runs on, chosen together (see the call site). The base
+ * pair is the session resumed in place, when there is one, else the source session (`caller`).
+ */
+function runVersionOf(
+  store: Store,
+  playbook: number,
+  pb: { readonly status: string; readonly version: number },
+  caller: { readonly playbook_version?: number | null; readonly model?: string | null },
+  resumed: { readonly playbook_version?: number | null; readonly model?: string | null } | undefined,
+): { version: number | null | undefined; model: string } {
+  const base = resumed ?? caller;
+  const kept = { version: base.playbook_version, model: base.model as string };
+  if (pb.status !== "enabled") return kept;
+  if (pb.version === base.playbook_version) return { ...kept, version: pb.version };
+  const model = versionModelOf(store, playbook, pb.version);
+  // A resume in place runs on its session's own model: the newer version only when that model is the version's.
+  if (resumed !== undefined) return model !== undefined && model === kept.model ? { version: pb.version, model } : kept;
+  // A source session that records no version: the enabled one, on its model when the snapshot names one.
+  if (base.playbook_version === null || base.playbook_version === undefined) return { version: pb.version, model: model ?? kept.model };
+  if (model === undefined) return kept;
+  return { version: pb.version, model };
 }
 
 /**

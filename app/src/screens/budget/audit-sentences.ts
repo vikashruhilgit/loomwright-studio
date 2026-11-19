@@ -342,6 +342,8 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
     const f = fields(p);
     const written = Array.isArray(f.written) ? f.written.filter((c): c is string => typeof c === "string") : undefined;
     const repo = typeof f.repo === "string" ? f.repo : "the repo";
+    const removed = Array.isArray(f.removed) ? f.removed.filter((c): c is string => typeof c === "string") : undefined;
+    if (removed !== undefined) return `The kernel took back the required checks (${removed.join(", ")}) it had handed to ${repo}'s runs: the branch no longer requires them.`;
     return written === undefined
       ? `The kernel did not hand ${repo}'s required checks to its run${withText(typeof f.skipped === "string" ? f.skipped : undefined, ": ")}.`
       : `The kernel handed ${repo}'s required checks (${written.join(", ")}) to its run's review.`;

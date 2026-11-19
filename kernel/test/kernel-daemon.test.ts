@@ -204,9 +204,8 @@ describe("startKernel", () => {
   it("daemon.ts passes daemonKernelDeps(), whose only dependencies are the real GitHub client and the session token minter factory, built with no Keychain read and no request", () => {
     // The production entry point is the one composition no other test starts: pin that it wires the client and the minter.
     const daemonSource = readFileSync(fileURLToPath(new URL("../src/daemon.ts", import.meta.url)), "utf8");
-    expect(daemonSource).toContain("startKernel({ ...parseArgs(args), ...(launchd ? { onRestartRequested } : {}) }, daemonKernelDeps())");
-    // The D42 restart is daemon-exit.ts's tested `restartAfterStop` (exit 1 after the stop, a failed one included).
-    expect(daemonSource).toContain("void restartAfterStop(() => kernel.stop(), exitWith);");
+    // The start options, D42's restart included, are daemon-exit.ts's `daemonStartOptions`, tested by what it does there.
+    expect(daemonSource).toContain("startKernel(daemonStartOptions(args, () => kernel, exitWith), daemonKernelDeps())");
     const reads: string[] = [];
     const requests: string[] = [];
     const d = daemonKernelDeps({
@@ -278,6 +277,47 @@ describe("startKernel", () => {
     });
     expect(kernel.authProvider.id).toBe("api-key");
     expect(kernel.authProvider.health()).toEqual({ status: "ok" });
+  });
+});
+
+// 23u (review of PR #292): the auth-switch restart closes admission before it counts running sessions, so no session can
+// start between the count and the stop; with one running it opens admission again and the switch waits.
+describe("the D42 auth-switch restart, as the kernel wires it", () => {
+  async function switchTo(kernel: Kernel, token: string, provider: string): Promise<{ status: number; body: unknown }> {
+    const res = await fetch(`http://127.0.0.1:${kernel.api.port}/settings/auth-provider`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ provider }),
+    });
+    return { status: res.status, body: await res.json() };
+  }
+  const providerDeps = () => deps({ selectAuthProvider: async (id): Promise<AuthProvider> => stubProvider({ id }) });
+
+  it("restarts with no session running, and refuses every admission from then on as restarting", async () => {
+    const { d, keychain } = providerDeps();
+    const onRestartRequested = vi.fn();
+    const kernel = await start(options({ onRestartRequested }), d);
+    const answer = await switchTo(kernel, keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) as string, "api-key");
+    expect(answer).toEqual({ status: 202, body: { in_use: "subscription-token", chosen: "api-key", restarting: true } });
+    await vi.waitFor(() => expect(onRestartRequested).toHaveBeenCalledTimes(1));
+    await expect(kernel.sessions.startSession(startParams(tmp))).rejects.toMatchObject({ reason: "restarting" });
+    expect(kernel.store.prepare("SELECT count(*) FROM events WHERE kind = 'auth_provider_restart_deferred'").pluck().get()).toBe(0);
+  });
+
+  it("with a session running when the restart fires, nothing restarts, admission opens again, and the choice shows as pending", async () => {
+    const { d, keychain } = providerDeps();
+    const onRestartRequested = vi.fn();
+    const kernel = await start(options({ onRestartRequested }), d);
+    const token = keychain.items.get(API_TOKEN_KEYCHAIN_SERVICE) as string;
+    expect((await switchTo(kernel, token, "api-key")).status).toBe(202);
+    // A session admitted inside the answer's delay, before the restart counts.
+    const handle = await kernel.sessions.startSession(startParams(tmp));
+    await vi.waitFor(() => expect(kernel.store.prepare("SELECT count(*) FROM events WHERE kind = 'auth_provider_restart_deferred'").pluck().get()).toBe(1));
+    expect(onRestartRequested).not.toHaveBeenCalled();
+    expect(kernel.sessions.getSession(handle.id)?.status).not.toBe("interrupted");
+    await expect(kernel.sessions.startSession(startParams(tmp))).resolves.toBeDefined();
+    const settings = (await (await fetch(`http://127.0.0.1:${kernel.api.port}/settings`, { headers: { Authorization: `Bearer ${token}` } })).json()) as { pending_provider: string | null };
+    expect(settings.pending_provider).toBe("api-key");
   });
 });
 

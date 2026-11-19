@@ -86,6 +86,18 @@ afterEach(() => {
 
 // ---- Shared pieces ------------------------------------------------------------------------------------------
 
+/**
+ * A live playbook enabled at v1 with v1's snapshot, as the playbook store writes one at every version: its model is the
+ * one a launch pairs with v1 (23u). The calling sessions below record v2 on the same model.
+ */
+function snapshottedPlaybook(): number {
+  const pb = env.playbook("live");
+  env.store
+    .prepare("INSERT INTO playbook_versions (playbook, version, snapshot_json) VALUES (?, 1, ?)")
+    .run(pb, JSON.stringify({ slug: `pb${pb}`, intent: "Hand tickets over", model: PLAYBOOK_MODEL }));
+  return pb;
+}
+
 /** A calling session's row, as the recording `EventSessions` answers it. */
 const callerRow = (id: number, playbook: number, over: Partial<SessionRow> = {}): Partial<SessionRow> => ({
   id,
@@ -313,7 +325,7 @@ describe("handleAutomateRun starts the review-pr and merge-parked sessions", () 
       agentSettingsPath(env.dataDir, "mason"),
       JSON.stringify({ model: CREW_MODEL, permission_mode: "acceptEdits", tool_policy: { allowedTools: ["Read"], allowedBashPrefixes: [] }, never: ["gh_pr_close"], connectors: { github: "write" }, workspaces: [env.checkout] }),
     );
-    const pb = env.playbook("live");
+    const pb = snapshottedPlaybook();
     const r = recorder();
     r.set(41, callerRow(41, pb, { task_id: 9 }));
     const id = queue(fixRun(pb));
@@ -341,7 +353,7 @@ describe("handleAutomateRun starts the review-pr and merge-parked sessions", () 
   });
 
   it("AC2: a merge_parked event starts /loomwright:automate --merge-parked <run_id> under its own policy", async () => {
-    const pb = env.playbook("live");
+    const pb = snapshottedPlaybook();
     const r = recorder();
     r.set(41, callerRow(41, pb));
     installRunFiles(env.checkout, "parked");

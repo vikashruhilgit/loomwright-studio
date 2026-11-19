@@ -49,6 +49,16 @@ describe("laterRunSessionOf", () => {
     expect(later(228)).toBeUndefined();
   });
 
+  // 23u (review of PR #292): the checkout is compared resolved, as `latestRunSessionOf` compares it; a Resume queued from
+  // the paused-runs list carries the workspace as the crew member's settings spell it.
+  it("the same checkout spelled differently (a trailing slash, a dot segment) is the same run", () => {
+    launched(226, RESUME);
+    launched(227, { ...RESUME, checkout: "/w/sandbox/" });
+    launched(228, { ...RESUME, checkout: "/w/./sandbox" });
+    expect(later(226)).toBe(227);
+    expect(later(227)).toBe(228);
+  });
+
   it("another run, another checkout, or another PR drain in the same checkout does not supersede", () => {
     launched(226, RESUME);
     launched(230, { ...RESUME, run_id: "automate-2026-11-18-001" });

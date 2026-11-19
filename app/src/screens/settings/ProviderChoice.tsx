@@ -55,9 +55,22 @@ export function keyNote(status: number, body: unknown): Note {
   if (status === 0) return { tone: "danger", text: "The kernel did not answer, so the key was not stored. Enter it again." };
   if (status === 200) return { tone: "ok", text: `Stored in the Keychain as ${API_KEY_KEYCHAIN_ITEM}. Studio never shows it again.` };
   if (refusalCode(body) === "invalid_key") return { tone: "danger", text: "That isn't a whole API key: it starts sk-ant-, is longer than 80 characters, and has no spaces. A subscription token (sk-ant-oat…) can't go here. Nothing was stored." };
-  if (refusalCode(body) === "keychain_write_failed") return { tone: "danger", text: "The Keychain refused the write. Nothing was stored." };
+  if (refusalCode(body) === "keychain_write_failed") {
+    // 23u: the kernel deletes the old item before the add, and says whether it could put the old key back.
+    const previous = isRecord(body) ? body.previous_key : undefined;
+    if (previous === "removed") return { tone: "danger", text: "The Keychain refused the new key, and the old one could not be put back: there is no API key now. Enter the key again." };
+    if (previous === "none") return { tone: "danger", text: "The Keychain refused the write. No key was stored." };
+    return { tone: "danger", text: "The Keychain refused the write. Your previous key is still in place." };
+  }
   return { tone: "danger", text: `The kernel refused the key (${status}). Nothing was stored.` };
 }
+
+/**
+ * How long after a `restarting: true` answer the screen reads the settings again. A restart drops the connection and the
+ * screen reads again on reconnect; a deferred one (a session started in its delay, 23u) never does, so this read is what
+ * shows it as pending instead of leaving "restarting" up.
+ */
+export const RESTART_CHECK_MS = 5_000;
 
 export interface ProviderChoiceProps {
   readonly api: StudioBridge;
@@ -78,13 +91,24 @@ export function ProviderChoice({ api, view, offline, onChanged }: ProviderChoice
   if (view.providers.length === 0) return null;
 
   const overridden = view.providerSource === "flag" || view.providerSource === "env";
+  // 23u: a choice whose restart was deferred, shown with a way to keep the provider in use instead.
+  const pending = view.pendingProvider ?? undefined;
+  const inUse = view.providers.find((p) => p.inUse)?.id;
   const hasApiKey = view.providers.some((p) => p.id === API_KEY_PROVIDER);
 
   const choose = async (provider: string): Promise<void> => {
     setBusy(true);
     try {
       const res = await api.request({ method: "PUT", path: "/settings/auth-provider", body: { provider } });
-      setChoice(choiceNote(res.status, "body" in res ? res.body : undefined, provider));
+      const body = "body" in res ? res.body : undefined;
+      setChoice(choiceNote(res.status, body, provider));
+      if (res.status === 200) onChanged();
+      if (res.status === 202 && isRecord(body) && body.restarting === true) {
+        setTimeout(() => {
+          setChoice(undefined);
+          onChanged();
+        }, RESTART_CHECK_MS);
+      }
     } catch {
       setChoice({ tone: "danger", text: NO_ANSWER_TEXT });
     } finally {
@@ -151,6 +175,18 @@ export function ProviderChoice({ api, view, offline, onChanged }: ProviderChoice
           );
         })}
       </ul>
+      {pending === undefined ? null : (
+        <div className="settings-row" data-testid={IDS.choicePending}>
+          <p className="settings-cap" data-tone="attention">
+            You chose the {providerName(pending)}, but the kernel has not restarted onto it{inUse === undefined ? "" : `, so sessions still run on the ${providerName(inUse)}`}. It applies at the next kernel start.
+          </p>
+          {inUse === undefined ? null : (
+            <Button size="row" variant="secondary" disabled={busy || offline} data-testid={IDS.choiceKeep} onClick={() => void choose(inUse)}>
+              Keep the {providerName(inUse)}
+            </Button>
+          )}
+        </div>
+      )}
       {choice === undefined ? null : (
         <p className="settings-cap" data-tone={choice.tone} role="status" data-testid={IDS.choiceNote}>
           {choice.text}
