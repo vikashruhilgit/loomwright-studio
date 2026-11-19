@@ -75,10 +75,12 @@ interface Card {
   creator_agent: string | null;
   creator_session: number | null;
   ticket_pr: TicketPrCard | null;
+  auth_recovered_by: number | null;
 }
 interface Board {
   groups: { state: string; items: Card[] }[];
   next_before: string | null;
+  skipped: { since: string; count: number; by_status: Record<string, number> } | null;
 }
 
 async function board(query: Record<string, string> = {}): Promise<Board> {
@@ -168,7 +170,7 @@ describe("the tasks part's seams (AC3)", () => {
 
 describe("GET /tasks: the union (AC1)", () => {
   it("answers an empty board for an empty store", async () => {
-    expect(await board()).toEqual({ groups: [], next_before: null });
+    expect(await board()).toEqual({ groups: [], next_before: null, skipped: null });
   });
 
   it("returns every source as a TaskBoardItem in the contract's field order, each from its own columns", async () => {
@@ -183,18 +185,18 @@ describe("GET /tasks: the union (AC1)", () => {
     const byKey = new Map(b.groups.flatMap((g) => g.items).map((c) => [`${c.kind}:${c.id}`, c]));
     expect(byKey.get(`task:${task}`)).toEqual({
       kind: "task", id: task, title: "Ship it", state: "waiting", agent: "wright", playbook: null, item_ref: null, session: null, tokens: null,
-      started: at(2), ended: null, updated: at(7), creator_agent: null, creator_session: null, ticket_pr: null,
+      started: at(2), ended: null, updated: at(7), creator_agent: null, creator_session: null, ticket_pr: null, auth_recovered_by: null,
     });
     expect(byKey.get(`playbook_run:${run}`)).toEqual({
       kind: "playbook_run", id: run, title: "Review PRs", state: "done", agent: "ada", playbook, item_ref: "github:o/r#4", session: null, tokens: 120,
-      started: at(3), ended: at(9), updated: at(9), creator_agent: null, creator_session: null, ticket_pr: null,
+      started: at(3), ended: at(9), updated: at(9), creator_agent: null, creator_session: null, ticket_pr: null, auth_recovered_by: null,
     });
     expect(byKey.get(`session:${session}`)).toEqual({
       kind: "session", id: session, title: null, state: "completed", agent: "bo", playbook, item_ref: null, session: null, tokens: 17,
-      started: at(4), ended: at(6), updated: at(6), creator_agent: null, creator_session: null, ticket_pr: null,
+      started: at(4), ended: at(6), updated: at(6), creator_agent: null, creator_session: null, ticket_pr: null, auth_recovered_by: null,
     });
     expect(Object.keys(byKey.get(`task:${task}`) ?? {})).toEqual(
-      ["kind", "id", "title", "state", "agent", "playbook", "item_ref", "session", "tokens", "started", "ended", "updated", "creator_agent", "creator_session", "ticket_pr"],
+      ["kind", "id", "title", "state", "agent", "playbook", "item_ref", "session", "tokens", "started", "ended", "updated", "creator_agent", "creator_session", "ticket_pr", "auth_recovered_by"],
     );
   });
 
@@ -235,7 +237,7 @@ describe("GET /tasks: the creator of a task (AC7)", () => {
     addEvent("task_created", { session: wright, task });
     const card = await cardOf("task", task);
     expect(card).toMatchObject({ agent: null, session: null, creator_agent: "wright", creator_session: wright });
-    expect(Object.keys(card ?? {}).slice(-2)).toEqual(["creator_session", "ticket_pr"]);
+    expect(Object.keys(card ?? {}).slice(-3)).toEqual(["creator_session", "ticket_pr", "auth_recovered_by"]);
   });
 
   it("the creator is the FIRST task_created event, and the assignee stays the assignee", async () => {
@@ -328,7 +330,7 @@ describe("GET /tasks: a ticket's pull request (AC5)", () => {
       updated: at(8),
     });
     expect(Object.keys(card?.ticket_pr ?? {})).toEqual(["ticket", "repo", "number", "url", "state", "head_sha", "approvals", "ci", "owner_kind", "merged_by_gate", "updated"]);
-    expect(Object.keys(card ?? {}).slice(-2)).toEqual(["creator_session", "ticket_pr"]);
+    expect(Object.keys(card ?? {}).slice(-3)).toEqual(["creator_session", "ticket_pr", "auth_recovered_by"]);
   });
 
   it("reads approvals as the repo policy words them: solo, studio_approval, no_policy, and merged_by_gate as a boolean", async () => {
@@ -355,7 +357,7 @@ describe("GET /tasks: a ticket's pull request (AC5)", () => {
     expect((await cardOf("task", plain))?.ticket_pr).toBeNull();
     expect((await cardOf("playbook_run", run))?.ticket_pr).toBeNull();
     expect((await cardOf("session", session))?.ticket_pr).toBeNull();
-    for (const c of (await board()).groups.flatMap((g) => g.items)) expect(Object.keys(c).slice(-1)).toEqual(["ticket_pr"]);
+    for (const c of (await board()).groups.flatMap((g) => g.items)) expect(Object.keys(c).slice(-2)).toEqual(["ticket_pr", "auth_recovered_by"]);
   });
 
   it("a task whose agent-written links name an untracked PR carries null, whatever the links claim", async () => {
@@ -608,6 +610,88 @@ describe("GET /tasks: paging (AC1)", () => {
   });
 });
 
+describe("GET /tasks: skipped runs are counted, not carded, with skipped_since", () => {
+  it("without skipped_since every run is a card and skipped is null (unchanged)", async () => {
+    const playbook = addPlaybook();
+    const done = addRun({ playbook, status: "done", started: at(1), ended: at(2) });
+    const dup = addRun({ playbook, status: "skipped_duplicate", started: at(3), ended: at(3) });
+    const b = await board();
+    expect(cardsOf(b)).toEqual([`playbook_run:${dup}`, `playbook_run:${done}`]);
+    expect(b.skipped).toBeNull();
+  });
+
+  it("with skipped_since, skipped_duplicate and skipped_not_enabled runs are not cards; every other run and card stays", async () => {
+    const playbook = addPlaybook();
+    const done = addRun({ playbook, status: "done", started: at(1), ended: at(2) });
+    const failed = addRun({ playbook, status: "failed", started: at(2), ended: at(3) });
+    const parked = addRun({ playbook, status: "parked", started: at(4) });
+    addRun({ playbook, status: "skipped_duplicate", started: at(5), ended: at(5) });
+    addRun({ playbook, status: "skipped_not_enabled", started: at(6), ended: at(6) });
+    const session = addSession({ status: "completed", updated: at(7) });
+    const b = await board({ skipped_since: at(0) });
+    expect(cardsOf(b).sort()).toEqual([`playbook_run:${done}`, `playbook_run:${failed}`, `playbook_run:${parked}`, `session:${session}`].sort());
+    expect(b.skipped).toEqual({ since: at(0), count: 2, by_status: { skipped_duplicate: 1, skipped_not_enabled: 1 } });
+  });
+
+  it("counts only skips that ended (else started) at or after skipped_since", async () => {
+    const playbook = addPlaybook();
+    addRun({ playbook, status: "skipped_duplicate", started: at(1), ended: at(1) });
+    addRun({ playbook, status: "skipped_duplicate", started: at(4), ended: at(5) });
+    addRun({ playbook, status: "skipped_duplicate", started: at(5), ended: null });
+    expect((await board({ skipped_since: at(5) })).skipped).toEqual({ since: at(5), count: 2, by_status: { skipped_duplicate: 2 } });
+    expect((await board({ skipped_since: at(9) })).skipped).toEqual({ since: at(9), count: 0, by_status: {} });
+  });
+
+  it("skips no longer fill the page: the limit counts only cards", async () => {
+    const playbook = addPlaybook();
+    const real = addRun({ playbook, status: "done", started: at(1), ended: at(1) });
+    for (let i = 2; i < 12; i++) addRun({ playbook, status: "skipped_duplicate", started: at(i), ended: at(i) });
+    const b = await board({ limit: "1", skipped_since: at(0) });
+    expect(cardsOf(b)).toEqual([`playbook_run:${real}`]);
+    expect(b.next_before).toBeNull();
+    expect(b.skipped?.count).toBe(10);
+  });
+
+  it("a skipped_since that is not a Date#toISOString time answers 400 invalid_query", async () => {
+    for (const skipped_since of ["", "2026-10-30", "2026-10-30T10:00:00Z", "2026-13-30T10:00:00.000Z", "2026-02-30T10:00:00.000Z", "yesterday", "' OR 1=1 --"]) {
+      const res = await list({ skipped_since });
+      expect(res.status, skipped_since).toBe(400);
+      expect((res.body as { error: string }).error, skipped_since).toBe("invalid_query");
+    }
+  });
+});
+
+describe("GET /tasks: a failed auth that worked again", () => {
+  it("names the first session that started after the failure ended and completed", async () => {
+    const failedAuth = addSession({ status: "failed:auth", started: at(1), ended: at(2), updated: at(2) });
+    addSession({ status: "completed", started: at(1), ended: at(5), updated: at(5) });
+    addSession({ status: "failed", started: at(3), ended: at(4), updated: at(4) });
+    addSession({ status: "running", started: at(3), updated: at(4) });
+    const first = addSession({ status: "completed", started: at(6), ended: at(7), updated: at(7) });
+    addSession({ status: "completed", started: at(8), ended: at(9), updated: at(9) });
+    const card = (await board()).groups.flatMap((g) => g.items).find((c) => c.kind === "session" && c.id === failedAuth);
+    expect(card).toMatchObject({ state: "failed:auth", auth_recovered_by: first });
+  });
+
+  it("is null while nothing completed after it, and for every card that is not a failed:auth session", async () => {
+    const failedAuth = addSession({ status: "failed:auth", started: at(5), ended: at(6), updated: at(6) });
+    addSession({ status: "completed", started: at(1), ended: at(9), updated: at(9) });
+    addSession({ status: "failed:auth", started: at(7), ended: at(8), updated: at(8) });
+    const playbook = addPlaybook();
+    addRun({ playbook, status: "done", started: at(1), ended: at(2) });
+    addTask();
+    const cards = (await board()).groups.flatMap((g) => g.items);
+    expect(cards.find((c) => c.id === failedAuth && c.kind === "session")?.auth_recovered_by).toBeNull();
+    for (const c of cards) expect(c.auth_recovered_by, `${c.kind}:${c.id}`).toBeNull();
+  });
+
+  it("the history item carries it too", async () => {
+    const failedAuth = addSession({ status: "failed:auth", started: at(1), ended: at(2), updated: at(2) });
+    const later = addSession({ status: "completed", started: at(3), ended: at(4), updated: at(4) });
+    expect((await historyOf("session", failedAuth)).item).toMatchObject({ auth_recovered_by: later });
+  });
+});
+
 // ---- GET /tasks/:kind/:id ----------------------------------------------------------
 
 describe("GET /tasks/:kind/:id: errors (AC2)", () => {
@@ -691,7 +775,7 @@ describe("GET /tasks/:kind/:id: the history (AC2)", () => {
     addEvent("session_started", { session: wright }, {}, at(2));
     const h = await historyOf("task", task);
     expect(h.item).toMatchObject({ kind: "task", id: task, agent: null, session: null, creator_agent: "wright", creator_session: wright });
-    expect(Object.keys(h.item).slice(-2)).toEqual(["creator_session", "ticket_pr"]);
+    expect(Object.keys(h.item).slice(-3)).toEqual(["creator_session", "ticket_pr", "auth_recovered_by"]);
     expect(h.sessions).toEqual([]);
     expect(h.events.map((e) => e.id)).toEqual([created]);
     expect((await historyOf("session", wright)).item).toMatchObject({ creator_agent: null, creator_session: null });

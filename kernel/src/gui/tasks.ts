@@ -1,8 +1,14 @@
 // The `gui` feature's `tasks` part (phase 7, item 03): the read routes behind
 // the Tasks screen, on the loopback API (bearer token, like every route):
 //
-//   GET /tasks[?limit=][&before=]   {groups, next_before}: tasks, playbook runs
-//                                   and sessions, newest first, grouped by state
+//   GET /tasks[?limit=][&before=][&skipped_since=]
+//                                   {groups, next_before, skipped}: tasks, playbook
+//                                   runs and sessions, newest first, grouped by
+//                                   state. With `skipped_since`, a skipped run
+//                                   (`skipped_duplicate`, `skipped_not_enabled`)
+//                                   is not a card: `skipped` counts those since
+//                                   that time instead (`null` without it). The
+//                                   rows stay in the store as the audit trail.
 //   GET /tasks/:kind/:id            {item, events, runs, sessions, approvals}: one
 //                                   card and everything that names it
 //
@@ -91,8 +97,20 @@ interface TicketPr {
  * columns of the union: they are read once per request for the page's tasks
  * (`withCreators`, `withTicketPrs`), `null` for a run and a session.
  */
-interface BoardRow extends CreatedRow {
+interface TicketedRow extends CreatedRow {
   readonly ticket_pr: TicketPr | null;
+}
+
+/**
+ * A served card: a ticketed row, then `auth_recovered_by`. For a `failed:auth`
+ * session card, that is the id of the first session that started after it
+ * ended and ended `completed`. Such a session proves the auth then in use
+ * worked again, so the failure no longer waits on the owner. It is `null`
+ * while no such session exists, and for every other card. It is a fact the
+ * kernel recorded, not a state: the card keeps its `failed:auth` word.
+ */
+interface BoardRow extends TicketedRow {
+  readonly auth_recovered_by: number | null;
 }
 
 /** The columns every source SELECT answers, in `BoardRow`'s order. */
@@ -236,7 +254,7 @@ function namedPr(linksJson: string | null): [string, number] | undefined {
  * wording over the row's counts). Two queries per request for the page's tasks,
  * never one per row.
  */
-function withTicketPrs(store: Store, rows: readonly CreatedRow[]): BoardRow[] {
+function withTicketPrs(store: Store, rows: readonly CreatedRow[]): TicketedRow[] {
   const taskIds = rows.filter((row) => row.kind === "task").map((row) => row.id);
   const named = new Map<number, [string, number]>();
   if (taskIds.length > 0) {
@@ -293,14 +311,70 @@ function withTicketPrs(store: Store, rows: readonly CreatedRow[]): BoardRow[] {
   });
 }
 
-/** The cards `rows` are, as served: each with its creator and its ticket's pull request. */
-const boardRows = (store: Store, rows: readonly SelectedRow[]): BoardRow[] => withTicketPrs(store, withCreators(store, rows));
+// ---- A failed auth that worked again --------------------------------------------------
+
+/**
+ * Merges in `auth_recovered_by` (see `BoardRow`). One query per request for
+ * the page's `failed:auth` session cards, never one per row. A session that
+ * started before the failure ended, or that has not ended `completed`, proves
+ * nothing about the auth and is never named.
+ */
+function withAuthRecovery(store: Store, rows: readonly TicketedRow[]): BoardRow[] {
+  const failed = rows.filter((row) => row.kind === "session" && row.state === "failed:auth" && row.ended !== null).map((row) => [row.id, row.ended]);
+  const recovered = new Map<number, number>();
+  if (failed.length > 0) {
+    const found = store
+      .prepare<[string], { id: number; by: number | null }>(
+        `SELECT json_extract(j.value, '$[0]') AS id,
+                (SELECT min(s.id) FROM sessions s
+                  WHERE s.status = 'completed' AND s.started_at > json_extract(j.value, '$[1]')) AS by
+           FROM json_each(?) j`,
+      )
+      .all(JSON.stringify(failed));
+    for (const { id, by } of found) if (by !== null) recovered.set(id, by);
+  }
+  return rows.map((row) => ({ ...row, auth_recovered_by: row.kind === "session" ? (recovered.get(row.id) ?? null) : null }));
+}
+
+/** The cards `rows` are, as served: each with its creator, its ticket's pull request and, for a failed auth, the session that worked after it. */
+const boardRows = (store: Store, rows: readonly SelectedRow[]): BoardRow[] => withAuthRecovery(store, withTicketPrs(store, withCreators(store, rows)));
+
+// ---- Skipped runs ------------------------------------------------------------------------
+
+/** The run statuses that start nothing: a poll or a fire that found its work already done, or its playbook off. */
+const SKIPPED_RUN_STATUSES = ["skipped_duplicate", "skipped_not_enabled"] as const;
+
+/** A `skipped_since`: exactly the form the store writes (`Date#toISOString`), so it compares as text with stored times. */
+function sinceOf(raw: string): string | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(raw)) return undefined;
+  const at = new Date(raw);
+  return !Number.isNaN(at.getTime()) && at.toISOString() === raw ? raw : undefined;
+}
+
+/** The skipped runs since `since` (by when each ended, else started), counted per status that has any. */
+function skippedSince(store: Store, since: string): { since: string; count: number; by_status: Record<string, number> } {
+  const found = store
+    .prepare<[string], { status: string; n: number }>(
+      `SELECT status, count(*) AS n FROM playbook_runs
+        WHERE status IN (${SKIPPED_RUN_STATUSES.map((status) => `'${status}'`).join(", ")})
+          AND coalesce(ended_at, started_at) >= ?
+        GROUP BY status ORDER BY status`,
+    )
+    .all(since);
+  const by_status: Record<string, number> = {};
+  let count = 0;
+  for (const { status, n } of found) {
+    by_status[status] = n;
+    count += n;
+  }
+  return { since, count, by_status };
+}
 
 // ---- GET /tasks ----------------------------------------------------------------
 
 /** `GET /tasks`: validate the query, read one page of the union, group it by state. */
 function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
-  const { limit: rawLimit, before: rawBefore } = req.query;
+  const { limit: rawLimit, before: rawBefore, skipped_since: rawSince } = req.query;
   let limit = DEFAULT_LIMIT;
   if (rawLimit !== undefined) {
     const n = positiveIntegerOf(rawLimit);
@@ -312,6 +386,14 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
     cursor = parseCursor(rawBefore);
     if (cursor === undefined) return Promise.resolve(invalidQuery("before must be a cursor from next_before"));
   }
+  let since: string | undefined;
+  if (rawSince !== undefined) {
+    since = sinceOf(rawSince);
+    if (since === undefined) return Promise.resolve(invalidQuery("skipped_since must be a time as Date#toISOString writes it"));
+  }
+  const skippedList = SKIPPED_RUN_STATUSES.map((status) => `'${status}'`).join(", ");
+  // With `skipped_since`, a skipped run is not a card: it is counted instead (below).
+  const runs = since === undefined ? RUN_SELECT : `${RUN_SELECT} WHERE r.status NOT IN (${skippedList})`;
   // The keyset for `updated DESC, kind ASC, id DESC`: the rows after the cursor's.
   const after = cursor === undefined ? "" : "WHERE updated < ? OR (updated = ? AND kind > ?) OR (updated = ? AND kind = ? AND id < ?)";
   const rows = req.store
@@ -319,7 +401,7 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
       `SELECT * FROM (
          ${TASK_SELECT}
          UNION ALL
-         ${RUN_SELECT}
+         ${runs}
          UNION ALL
          ${BOARD_SESSION_SELECT}
        ) ${after}
@@ -346,6 +428,7 @@ function listHandler(req: ContributedRouteRequest): Promise<ContributedRouteResp
     body: {
       groups,
       next_before: rows.length > limit ? cursorOf(selected[selected.length - 1]) : null,
+      skipped: since === undefined ? null : skippedSince(req.store, since),
     },
   });
 }

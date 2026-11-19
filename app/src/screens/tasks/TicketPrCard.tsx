@@ -326,6 +326,8 @@ function PolicyFooter({ offline }: { readonly offline: boolean }) {
 
 export interface TicketPrCardProps {
   readonly card: BoardCard;
+  /** Local midnight today (`startOfDay`): dates the card's time when it is from an earlier day. */
+  readonly day: number;
   readonly ticket: TaskTicketPr;
   readonly agent: AvatarAgent;
   readonly avatarState: AvatarState;
@@ -344,7 +346,7 @@ export interface TicketPrCardProps {
  * The ticket card: the board's one card button (so J / K, Enter and Esc work as on any card) with its ticket, PR,
  * state, approvals, CI and owner inside, and the footer link beside it, never inside it (no button in a button).
  */
-export function TicketPrCard({ card, ticket, agent, avatarState, approvalId, offline, tabbable, buttonRef, onOpen, onFocused }: TicketPrCardProps) {
+export function TicketPrCard({ card, day, ticket, agent, avatarState, approvalId, offline, tabbable, buttonRef, onOpen, onFocused }: TicketPrCardProps) {
   const { item, key, column } = card;
   const ref = ticketRef(ticket.ticket);
   const approvals = approvalsView(ticket.approvals, approvalId !== undefined);
@@ -397,7 +399,7 @@ export function TicketPrCard({ card, ticket, agent, avatarState, approvalId, off
           <span data-testid="ticket-owner">{owner === undefined ? agent.name : `${agent.name} · ${owner}`}</span>
         </span>
         <span className="tasks-card-meta" data-testid="ticket-meta">
-          {ticket.merged_by_gate ? `${metaText(card)} · ${BY_GATE}` : metaText(card)}
+          {ticket.merged_by_gate ? `${metaText(card, day)} · ${BY_GATE}` : metaText(card, day)}
         </span>
         {offline ? (
           <span className="ticket-last-known" data-testid="ticket-last-known">

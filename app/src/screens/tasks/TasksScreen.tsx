@@ -47,7 +47,7 @@ import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
 import { readPausedRuns, replyToRun, resumePausedRun } from "./ParkedRunCard";
 import { ticketColumnOf, waitingApprovalOf } from "./TicketPrCard";
-import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark, sessionTitles } from "./model";
+import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark, sessionTitles, skippedText, startOfDay, startOfToday } from "./model";
 import type { Board, BoardCard } from "./model";
 import { getLastBoard, setLastBoard } from "./lastKnown";
 import { setSubtitleLine } from "./subtitle";
@@ -70,7 +70,8 @@ export const TASKS_LIMIT = "200";
 async function readTasks(api: StudioBridge): Promise<ApiResult<TasksResponse>> {
   let result: ApiResult<TasksResponse>;
   try {
-    result = await api.request<TasksResponse>({ method: "GET", path: "/tasks", query: { limit: TASKS_LIMIT } });
+    // Skipped runs are counted, not carded: each poll of an already-done item would otherwise be a card of its own.
+    result = await api.request<TasksResponse>({ method: "GET", path: "/tasks", query: { limit: TASKS_LIMIT, skipped_since: startOfToday(Date.now()) } });
   } catch {
     return { ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } };
   }
@@ -441,6 +442,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
     );
   }
 
+  const skipped = skippedText(data.skipped);
   if (board.total === 0 && pausedRuns.length === 0) return <TasksEmpty />;
 
   return (
@@ -458,7 +460,12 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           Showing the newest {TASKS_LIMIT} cards; older ones are not shown.
         </p>
       )}
-      <BoardView board={board} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} onReply={replyRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
+      {skipped === null ? null : (
+        <p className="tasks-stale" data-testid="tasks-skipped">
+          {skipped}
+        </p>
+      )}
+      <BoardView board={board} day={startOfDay(now)} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} onReply={replyRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
     </TasksFrame>
   );
 }

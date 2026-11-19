@@ -1340,3 +1340,57 @@ test("phase 8 AC9: the evidence README lists every ticket screenshot in both the
   expect(readme).toContain("Deviations from the mockup");
   for (const word of ["comment_tally", "comment_routed", "Task <id>:"]) expect(readme, `the README names ${word}`).toContain(word);
 });
+
+test("a failed:auth that a later session got past leaves Waiting on you; skipped runs are one line, never cards", async ({}, testInfo) => {
+  // #39 (waitingItems) is a refused token nothing got past; #45 is one that #46 later got past.
+  const recovered = item("session", 45, "failed:auth", { agent: "wright", started: stamp(30), ended: stamp(29), updated: stamp(29), auth_recovered_by: 46 });
+  const skips = Array.from({ length: 6 }, (_, i) =>
+    item("playbook_run", 60 + i, i === 5 ? "skipped_not_enabled" : "skipped_duplicate", { title: "Review PRs on studio-sandbox", agent: "mason", playbook: 1, started: stamp(i + 1), ended: stamp(i + 1), updated: stamp(i + 1) }),
+  );
+  const { kernel, fixture: started } = await startKernel({ items: [...waitingItems(), recovered, ...skips], sessions: runningSessions() });
+  const page = await openWith(started);
+
+  // The board asks for skips from local midnight, so they are counted instead of carded.
+  const midnight = await page.evaluate(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.toISOString();
+  });
+  expect(kernel.listReads.at(-1)?.query).toMatchObject({ skipped_since: midnight });
+  await expect(page.getByTestId("tasks-skipped")).toHaveText(
+    "6 runs skipped today without starting anything (5 already done, 1 playbook off). They are in each playbook's history.",
+  );
+  for (let i = 0; i < 6; i++) await expect(card(page, `playbook_run:${60 + i}`)).toHaveCount(0);
+
+  // The recovered refusal is Done, keeps its own word and red tone, and says which session got past it.
+  expect(await keysIn(page, "done")).toContain("session:45");
+  expect(await keysIn(page, "wait")).not.toContain("session:45");
+  await expect(card(page, "session:45").getByTestId("task-card-state")).toHaveText("failed:auth");
+  await expect(card(page, "session:45").locator(".badge")).toHaveAttribute("data-tone", "danger");
+  await expect(card(page, "session:45").locator(".tasks-card-why")).toHaveText("The token was refused; session #46 later ran fine.");
+
+  // The one nothing got past still waits on the owner, with its pause note.
+  expect(await keysIn(page, "wait")).toContain("session:39");
+  await expect(card(page, "session:39").locator(".tasks-card-why")).toHaveText("Paused: the subscription token was refused.");
+  await expect(page.getByTestId("tasks-attention-band")).toHaveText("2 things wait on you.");
+
+  await testInfo.attach("board", { body: await page.screenshot(), contentType: "image/png" });
+});
+
+test("a card from an earlier day shows its date with the time, so it never reads as today", async () => {
+  const old = new Date();
+  old.setDate(old.getDate() - 20);
+  old.setHours(8, 35, 0, 0);
+  const parkedOld = item("task", 70, "parked", { title: "Check my sandbox repo for new PRs", agent: "wright", started: old.toISOString(), updated: old.toISOString() });
+  const { fixture: started } = await startKernel({ items: [...populatedItems(), parkedOld], sessions: runningSessions() });
+  const page = await openWith(started);
+  const expected = await page.evaluate((iso) => {
+    const at = new Date(iso);
+    const sameYear = at.getFullYear() === new Date().getFullYear();
+    const date = new Intl.DateTimeFormat(undefined, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" }).format(at);
+    return `${date} 08:35`;
+  }, old.toISOString());
+  await expect(card(page, "task:70").locator(".tasks-card-meta")).toHaveText(new RegExp(` · ${expected}$`));
+  // A card from today keeps the bare time.
+  await expect(card(page, "task:7").locator(".tasks-card-meta")).toHaveText(/ · \d\d:\d\d$/);
+});

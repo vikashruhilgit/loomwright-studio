@@ -1159,6 +1159,11 @@ export interface TaskBoardItem {
    * as the kernel wrote it; `null` for every other card, and for a task whose links name an untracked PR.
    */
   readonly ticket_pr: TaskTicketPr | null;
+  /**
+   * For a `failed:auth` session card: the first session that started after it ended and ended `completed`, which proves the
+   * auth then in use worked again. `null` while there is none, and for every other card. The card's `state` stays `failed:auth`.
+   */
+  readonly auth_recovered_by: number | null;
 }
 
 /** One state's cards: the board groups by the source's `state`, in the page's order. */
@@ -1172,12 +1177,27 @@ export interface TasksQuery {
   readonly before?: string;
   /** Default 50, at most 200. */
   readonly limit?: string;
+  /**
+   * A time as `Date#toISOString` writes it. When given, a skipped run (`skipped_duplicate`, `skipped_not_enabled`) is not a
+   * card and does not count toward `limit`; `skipped` counts those since this time instead. The rows stay in the store.
+   */
+  readonly skipped_since?: string;
+}
+
+/** The skipped runs `GET /tasks` counted instead of carding (`TasksQuery.skipped_since`). */
+export interface TaskBoardSkipped {
+  readonly since: IsoTime;
+  readonly count: number;
+  /** Per run status that has any. */
+  readonly by_status: Readonly<Record<string, number>>;
 }
 
 export interface TasksResponse {
   readonly groups: readonly TaskBoardGroup[];
   /** `null` once the oldest card is in this page. */
   readonly next_before: string | null;
+  /** `null` when the query gave no `skipped_since`. */
+  readonly skipped: TaskBoardSkipped | null;
 }
 
 /** `GET /tasks/:kind/:id`: the card, and everything that names it. Every string in an event `payload` is untrusted. */

@@ -119,7 +119,14 @@ export interface MemoryFixture {
 export function memoryFixture(options: MemoryFixtureOptions = {}): MemoryFixture {
   const made = Date.now();
   const files = new Map<string, { text: string; modified: number }>();
-  if (options.state !== "empty") for (const [path, text, minutesAgo] of makeFiles()) files.set(path, { text, modified: made - minutesAgo * MINUTE });
+  // A file meant to be from today (under a day old) is never dated before local midnight: tests read it as
+  // `today HH:MM`, and `made - 70 minutes` taken in the first 70 minutes of a day lands on yesterday (CI runs
+  // in UTC, so that was every run from 00:00 to 01:10 UTC). Older files keep their whole-day offsets.
+  const midnight = new Date(made);
+  midnight.setHours(0, 0, 0, 0);
+  const modifiedOf = (minutesAgo: number): number =>
+    minutesAgo * MINUTE < DAY ? Math.max(made - minutesAgo * MINUTE, midnight.getTime()) : made - minutesAgo * MINUTE;
+  if (options.state !== "empty") for (const [path, text, minutesAgo] of makeFiles()) files.set(path, { text, modified: modifiedOf(minutesAgo) });
   const puts: MemoryWriteBody[] = [];
   const fileReads: string[] = [];
   let reads = 0;
