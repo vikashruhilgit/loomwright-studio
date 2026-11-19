@@ -551,20 +551,15 @@
   align-items: center;
   gap: var(--space-2, 8px);
 }
-/* A deferred switch (23u): the note takes the line, and Keep sits at its own size beside it, wrapping under it when the
-   pane is narrow. Not `.settings-row`: that is the 112px label grid, which squeezed the note and stretched the button. */
+/* A deferred switch (23u): two rows, the note across the full width and Keep under it at its own size. Not
+   `.settings-row`: that is the 112px label grid, which squeezed the note and stretched the button. */
 .settings-choice-pending {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2, 8px) var(--space-4, 16px);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2, 8px);
   margin-top: var(--space-2, 8px);
 }
 .settings-choice-pending > .settings-cap {
-  flex: 1 1 32ch;
-  min-width: 0;
   margin: 0;
-}
-.settings-choice-pending > button {
-  flex: none;
 }

@@ -581,7 +581,7 @@ test("item 18 AC4: an account equal to the provider's id reads 'personal subscri
   expect(await textOf(page, IDS.account)).toBe("personal subscription");
 });
 
-test("23u: a pending switch reads as a full-width note with the Keep button at its own size beside or under it, never squeezed into the label column", async () => {
+test("23u: a pending switch reads as two rows, the note across the row and the Keep button under it at its own size, never squeezed into the label column", async () => {
   const fx = settingsFixture();
   const routes = fx.options.routes as Record<string, (req: FixtureRequest) => Promise<FixtureAnswer>>;
   const inner = routes["GET /settings"] as (req: FixtureRequest) => Promise<FixtureAnswer>;
@@ -614,6 +614,8 @@ test("23u: a pending switch reads as a full-width note with the Keep button at i
   // The bug: the row's 112px label column held the sentence and the button stretched over the rest.
   expect(note.width, "the note's text is not squeezed into a label column").toBeGreaterThan(block.width / 2);
   expect(keep.width, "Keep is its own size, not stretched across the row").toBeLessThan(block.width / 2);
+  expect(keep.y, "Keep is on its own row, under the note").toBeGreaterThanOrEqual(note.y + note.height);
+  expect(Math.abs(keep.x - note.x), "Keep lines up with the note's left edge").toBeLessThanOrEqual(1);
 });
 
 test("item 18 AC5: each command block is one line at the default window size and at the smallest, and scrolls sideways rather than wrapping", async () => {
