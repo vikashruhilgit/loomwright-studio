@@ -529,3 +529,22 @@
     transition-duration: 0s;
   }
 }
+
+/* D42: the provider choice under the Auth provider rows. */
+.settings-choice {
+  display: grid;
+  gap: var(--space-2, 8px);
+  margin-top: var(--space-3, 12px);
+}
+.settings-choice-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1, 4px);
+}
+.settings-choice-list > .settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+}

@@ -33,7 +33,7 @@
 import { isMcpKind, mcpRow, storedToolsOf } from "../integrations/mcp/rows.js";
 import type { McpKind } from "../integrations/mcp/rows.js";
 import { appendEvent, clip, errorMessage } from "../loop/internal.js";
-import { AUTOMATE_RUN_KEY, continuePayloadOf, runLaunchOf } from "../automate/run-sessions.js";
+import { AUTOMATE_RUN_KEY, continuePayloadOf, runContinuationPrompt, runLaunchOf } from "../automate/run-sessions.js";
 import { enqueueEvent } from "../loop/queue.js";
 import { recordNotification } from "../notifications/record.js";
 import { ALWAYS_HELD_TOOLS } from "../sessions/policy.js";
@@ -680,7 +680,7 @@ export function decideApproval(store: Store, input: DecisionInput, now: Date, ap
     const launch = row.requesting_session === null ? undefined : runLaunchOf(store, row.requesting_session);
     const payload =
       launch !== undefined && row.requesting_session !== null
-        ? { agent: launch.agent, approval_id: id, [AUTOMATE_RUN_KEY]: continuePayloadOf(launch, row.requesting_session, text) }
+        ? { agent: launch.agent, approval_id: id, [AUTOMATE_RUN_KEY]: continuePayloadOf(launch, row.requesting_session, runContinuationPrompt(text, decision === "deny")) }
         : { text, agent: messageAgent(store, row), approval_id: id };
     enqueueEvent(store, { kind: "message", payload, sourceRef: `approval:${id}` }, now);
     return getApproval(store, id) as ApprovalRow;

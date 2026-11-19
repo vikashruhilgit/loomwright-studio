@@ -338,6 +338,27 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
     const g = reader(p);
     return `${g("by") === "owner" ? "You" : (g("by") ?? "Someone")} asked ${sessionNo(r).toLowerCase()} to stop${paren(g("mode"))}.`;
   },
+  run_required_checks: (p) => {
+    const f = fields(p);
+    const written = Array.isArray(f.written) ? f.written.filter((c): c is string => typeof c === "string") : undefined;
+    const repo = typeof f.repo === "string" ? f.repo : "the repo";
+    return written === undefined
+      ? `The kernel did not hand ${repo}'s required checks to its run${withText(typeof f.skipped === "string" ? f.skipped : undefined, ": ")}.`
+      : `The kernel handed ${repo}'s required checks (${written.join(", ")}) to its run's review.`;
+  },
+  run_reply_sent: (p, r) => {
+    const g = reader(p);
+    return `You replied to ${sessionNo(r).toLowerCase()}${withText(g("run_id"), ", run ")}; the run carries on from where it stopped.`;
+  },
+  auth_provider_chosen: (p) => {
+    const g = reader(p);
+    return `You chose ${g("to") ?? "an auth provider"} for every session${withText(g("from"), " (was ")}${g("from") === undefined ? "" : ")"}.`;
+  },
+  auth_api_key_set: () => "You stored an API key in the Keychain.",
+  auth_provider_restart_deferred: (p) => {
+    const g = reader(p);
+    return `The kernel did not restart for ${g("to") ?? "the new auth provider"}: a session started meanwhile, so the choice applies at the next start.`;
+  },
   stop_all_completed: (p) => {
     const sessions = fields(p).sessions;
     return Array.isArray(sessions) ? `Stop all finished for ${sessions.length} ${sessions.length === 1 ? "session" : "sessions"}.` : "Stop all finished.";

@@ -15,7 +15,7 @@ import { ApiTokenError } from "../src/api/token.js";
 import { KeychainError } from "../src/auth/keychain.js";
 import { AuthProviderError } from "../src/auth/types.js";
 import { ContributionConflictError, InvalidContributionError, UnknownEventKindError } from "../src/features/contribution.js";
-import { DAEMON_NAME, DaemonArgumentError, parseArgs, startFailureExit, startFailureKind, stopFailureExit, underLaunchd } from "../src/daemon-exit.js";
+import { DAEMON_NAME, DaemonArgumentError, RESTART_EXIT_STATUS, parseArgs, restartAfterStop, restartExit, startFailureExit, startFailureKind, stopFailureExit, underLaunchd } from "../src/daemon-exit.js";
 import { LAUNCHD_ARGUMENT, THROTTLE_INTERVAL_SECONDS } from "../src/service/index.js";
 import { DB_FILENAME, Store, StoreIntegrityError, StoreLockedError, StoreSchemaTooNewError } from "../src/store/index.js";
 import { buildKernel } from "./crash-helpers.js";
@@ -254,4 +254,44 @@ describe("the built daemon (end to end, no Keychain)", () => {
     expect(r.status).toBe(0);
     expect(r.stderr).toBe(`${DAEMON_NAME}: failed to start (not restarting: bad argument): unknown argument: --bogus\n`);
   }, daemonTestTimeout(1));
+});
+
+// ---- D42: the auth switch's restart ------------------------------------------------------------------------
+//
+// Under launchd, KeepAlive {SuccessfulExit: false} starts the kernel again only after a non-zero exit, so the switch
+// must exit 1 whatever its teardown did, while a requested SIGTERM stop keeps exiting 0 (PR #292 review).
+
+describe("the auth-switch restart (D42)", () => {
+  it("stops the kernel once, then exits non-zero so launchd starts it again", async () => {
+    const order: string[] = [];
+    const exits: { status: number; line: string }[] = [];
+    await restartAfterStop(
+      async () => void order.push("stop"),
+      (exit) => {
+        order.push("exit");
+        exits.push(exit);
+      },
+    );
+    expect(order).toEqual(["stop", "exit"]);
+    expect(exits).toEqual([{ status: 1, line: "loomwright-studio-kernel: stopped to switch the auth provider; launchd starts it again" }]);
+    expect(RESTART_EXIT_STATUS).toBe(1);
+  });
+
+  it("a teardown that throws still exits non-zero, naming the error, so the switch never leaves the kernel down", async () => {
+    const exits: { status: number; line: string }[] = [];
+    await restartAfterStop(
+      async () => {
+        throw new Error("store close failed\nsecond line");
+      },
+      (exit) => void exits.push(exit),
+    );
+    expect(exits).toEqual([
+      { status: 1, line: "loomwright-studio-kernel: error while stopping to switch the auth provider (launchd starts it again; the next start reaps what was left): store close failed" },
+    ]);
+  });
+
+  it("a requested SIGTERM stop that fails under launchd still exits 0: only the switch restarts", () => {
+    expect(stopFailureExit(new Error("x"), "SIGTERM", true).status).toBe(0);
+    expect(restartExit(new Error("x")).status).toBe(1);
+  });
 });

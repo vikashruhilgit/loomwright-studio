@@ -52,6 +52,7 @@ import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedRo
 import type { ConnectorKind } from "../integrations/types.js";
 import { NO_REF, appendEvent, errorMessage } from "../loop/internal.js";
 import type { Store } from "../store/store.js";
+import { admissionRefusalPatterns } from "../sessions/types.js";
 import {
   CHARTER_PERMISSION_MODES,
   CREW_MEMORY_FILES,
@@ -444,6 +445,22 @@ function wrightFieldReserved(dataDir: string): ContributedRouteResponse {
   return refusal(409, "reserved", `Wright is not a crew member: set takes only ${fields} for it; edit the rest in ${agentSettingsPath(dataDir, WRIGHT_ID)}`);
 }
 
+/**
+ * Release the crew member's events parked on its daily token limit, so the loop's next tick checks them against the
+ * limit the owner just set (it may still refuse them). Without it a raised limit waited out the park's `not_before`
+ * (live 2026-11-18: p8-22's limit raised to 4,000,000, its parked resume still due only at the next budget day). A
+ * park's reason is in its `last_error` (`loop.ts`). Returns how many were released.
+ */
+export function releaseDailyLimitParks(store: Store, agent: string, at: string): number {
+  const [withTime, withoutTime] = admissionRefusalPatterns("agent_daily_limit");
+  return store
+    .prepare(
+      `UPDATE event_queue SET not_before = ? WHERE status = 'pending' AND not_before IS NOT NULL AND not_before > ?
+         AND (last_error LIKE ? OR last_error LIKE ?) AND json_valid(payload_json) AND json_extract(payload_json, '$.agent') = ?`,
+    )
+    .run(at, at, withTime, withoutTime, agent).changes;
+}
+
 async function set(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
   // Wright is not a crew member (`memberOf` refuses it), but the owner sets its
   // `WRIGHT_SET_FIELDS` here through the one write path below (phase 5 item 07).
@@ -515,7 +532,12 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
   // A connectors change replaces only its own kind's key in the grant the file holds now (the same read as the `old` above).
   const next = "change" in parsed ? (mergeConnectorsGrant(json[CONNECTORS_FIELD], parsed.change) as SetValue) : parsed.value;
   // Scalars compare by value; the connectors list by content (a stored `[]` is the same as no grant: `valueAt` reads it null).
-  if (JSON.stringify(old) === JSON.stringify(next)) return { status: 200, body: { agent: agentOf(), field, old, new: next, changed: false } };
+  // A daily limit set (changed or re-affirmed) lets the member's runs parked on it check again now.
+  const released = (): { released_parked?: number } => {
+    if (field !== "limits.tokens_per_day" || isWright) return {};
+    return { released_parked: releaseDailyLimitParks(req.store, id, req.now().toISOString()) };
+  };
+  if (JSON.stringify(old) === JSON.stringify(next)) return { status: 200, body: { agent: agentOf(), field, old, new: next, changed: false, ...released() } };
   const text = `${JSON.stringify(withValue(json, field, next), null, 2)}\n`;
   if (Buffer.byteLength(text) > MAX_SETTINGS_BYTES) return refusal(409, "settings_invalid", `${file}: the change would make it over ${MAX_SETTINGS_BYTES} bytes`, { file, field: "the file" });
 
@@ -543,7 +565,7 @@ async function set(req: ContributedRouteRequest): Promise<ContributedRouteRespon
     if (err instanceof ConcurrentEditError) return refusal(409, "settings_changed", `${file} changed while it was being set; nothing was written; try again`, { file });
     throw err;
   }
-  return { status: 200, body: { agent: agentOf(), field, old, new: next, changed: true } };
+  return { status: 200, body: { agent: agentOf(), field, old, new: next, changed: true, ...released() } };
 }
 
 export const rosterRoutes: readonly ContributedRoute[] = Object.freeze([

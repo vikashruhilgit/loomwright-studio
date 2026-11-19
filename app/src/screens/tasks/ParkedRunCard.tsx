@@ -9,12 +9,16 @@
 //   when the kernel says nothing blocks it (`blocked === null`); otherwise the card says why in plain words, and the
 //   kernel checks it all again on the POST (a 409 or 404 is shown in the card). Off while the kernel is away.
 // - Mechanism only: the kernel queues its own resume run; when to resume is the owner's click.
+// - Reply: a run session can end its turn on a question to the owner. The card shows the run's newest session's last
+//   message (`last_session`, model text: untrusted, a text child with its line breaks) and a reply box; Send is
+//   `POST /automate/paused-runs/:run_id/reply`, which continues THAT session with the owner's words. A Resume would
+//   start a new session that asks the same question again.
 //
 // Every string from the run file (the title, the pause reason, the item, the PR URL) and the checkout path is
 // untrusted: it passes through `printable` and is a text child only. The PR URL is shown as text, never an `href`
 // (the window opens no links, as `../chat/integrationCards.tsx` does it).
-import { useState } from "react";
-import type { ApiResult, PausedRunBlock, PausedRunResumeResponse, PausedRunView, PausedRunsResponse, StudioBridge } from "../../api/contract";
+import { useId, useState } from "react";
+import type { ApiResult, PausedRunBlock, PausedRunReplyResponse, PausedRunResumeResponse, PausedRunView, PausedRunsResponse, StudioBridge } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarAgent } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
@@ -56,6 +60,23 @@ export async function resumePausedRun(api: StudioBridge, run: Pick<PausedRunView
   }
 }
 
+/** The longest reply the kernel takes (`RUN_REPLY_MAX`). */
+export const RUN_REPLY_MAX = 4000;
+
+/** Reply to the run's last message: the body is exactly `{agent, checkout, text}`, the run id a path param. */
+export async function replyToRun(api: StudioBridge, run: Pick<PausedRunView, "agent" | "checkout" | "run_id">, text: string): Promise<ApiResult<PausedRunReplyResponse>> {
+  try {
+    return await api.request<PausedRunReplyResponse>({
+      method: "POST",
+      path: "/automate/paused-runs/:run_id/reply",
+      params: { run_id: run.run_id },
+      body: { agent: run.agent, checkout: run.checkout, text },
+    });
+  } catch {
+    return NO_ANSWER;
+  }
+}
+
 // ---- the words -----------------------------------------------------------------------------------
 
 /** Why Resume is off, in the owner's words. */
@@ -85,6 +106,23 @@ export function resumeErrorText(result: ApiResult<unknown>): string {
   return `The kernel refused (${result.status} ${printable(code)})${message}.`;
 }
 
+/** What a refused or failed reply says in the card. */
+export function replyErrorText(result: ApiResult<unknown>): string {
+  if (result.ok) return "";
+  if ("connection" in result) return "Couldn't reach the kernel; the reply was not sent.";
+  const code = String(result.body.error);
+  if (code === "no_run_session") return "Couldn't send: Studio started no session for this run to reply to.";
+  if (result.status === 409) return `Couldn't send: ${blockText(code)}.`;
+  if (result.status === 404) return "Couldn't send: this run is no longer paused here.";
+  return `The kernel refused the reply (${result.status} ${printable(code)}).`;
+}
+
+/** Whether the card offers a reply: the kernel started a session for this run, it has ended, and nothing but a settling lock blocks. */
+export function canReply(run: PausedRunView): boolean {
+  const last = run.last_session;
+  return last !== undefined && last !== null && last.status !== "running" && last.status !== "starting" && (run.blocked === null || run.blocked === "lock_settling");
+}
+
 /** The card's React key: a run id is unique only within its agent's checkout. */
 export function parkedRunKey(run: Pick<PausedRunView, "agent" | "checkout" | "run_id">): string {
   return `paused:${run.agent}:${run.checkout}:${run.run_id}`;
@@ -99,12 +137,33 @@ export interface ParkedRunCardProps {
   readonly offline: boolean;
   /** Sends the Resume (`resumePausedRun`) and, when it was queued, reads the board again. */
   readonly onResume: (run: PausedRunView) => Promise<ApiResult<unknown>>;
+  /** Sends a reply (`replyToRun`) and, when it was queued, reads the board again. Absent: no reply box. */
+  readonly onReply?: (run: PausedRunView, text: string) => Promise<ApiResult<unknown>>;
 }
 
 /** The Parked run card: what the run is, whose and where, why it paused, and Resume (or why not). */
-export function ParkedRunCard({ run, agent, offline, onResume }: ParkedRunCardProps) {
+export function ParkedRunCard({ run, agent, offline, onResume, onReply }: ParkedRunCardProps) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [replyNote, setReplyNote] = useState<{ readonly ok: boolean; readonly text: string } | undefined>();
+  const replyId = useId();
+  const last = run.last_session ?? null;
+  const replyable = onReply !== undefined && canReply(run);
+
+  const send = async (): Promise<void> => {
+    const text = draft.trim();
+    if (onReply === undefined || offline || !replyable || sending || text === "" || text.length > RUN_REPLY_MAX) return;
+    setSending(true);
+    setReplyNote(undefined);
+    const result = await onReply(run, text);
+    setSending(false);
+    if (result.ok) {
+      setDraft("");
+      setReplyNote({ ok: true, text: "Sent. The run carries on from where it stopped." });
+    } else setReplyNote({ ok: false, text: replyErrorText(result) });
+  };
   const title = run.title.trim() === "" ? `Run ${printable(run.run_id)}` : printable(run.title);
   const where = printable(run.repo ?? run.checkout);
   const blocked = run.blocked;
@@ -150,6 +209,14 @@ export function ParkedRunCard({ run, agent, offline, onResume }: ParkedRunCardPr
             {`PR: ${printable(run.pr)}`}
           </span>
         )}
+        {last === null || last.message === null ? null : (
+          <span className="tasks-card-meta parked-run-last" data-testid="parked-run-last">
+            <span className="parked-run-last-head">{`Last message (session #${last.id})`}</span>
+            <span className="parked-run-last-text" data-testid="parked-run-last-text">
+              {printable(last.message, true)}
+            </span>
+          </span>
+        )}
         <span className="tasks-card-meta">
           <Avatar agent={agent} state="parked" size={20} />
           <span className="parked-run-text" data-testid="parked-run-where">{`${agent.name} · ${where}`}</span>
@@ -175,6 +242,39 @@ export function ParkedRunCard({ run, agent, offline, onResume }: ParkedRunCardPr
         {error === undefined ? null : (
           <span className="ticket-foot-note ticket-foot-full" role="status" data-testid="parked-run-error">
             {error}
+          </span>
+        )}
+        {!replyable ? null : (
+          <form
+            className="parked-run-reply ticket-foot-full"
+            data-testid="parked-run-reply"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void send();
+            }}
+          >
+            <label className="field-label" htmlFor={replyId}>
+              Reply to the run
+            </label>
+            <textarea
+              id={replyId}
+              className="field-control parked-run-reply-text"
+              rows={2}
+              maxLength={RUN_REPLY_MAX}
+              disabled={sending || offline}
+              placeholder="Answer its last message, for example: Redo it."
+              value={draft}
+              data-testid="parked-run-reply-text"
+              onChange={(event) => setDraft(event.currentTarget.value)}
+            />
+            <Button variant="secondary" size="row" type="submit" loading={sending} disabled={offline || draft.trim() === ""} data-testid="parked-run-reply-send">
+              Send reply
+            </Button>
+          </form>
+        )}
+        {replyNote === undefined ? null : (
+          <span className="ticket-foot-note ticket-foot-full" role="status" data-tone={replyNote.ok ? "ok" : "danger"} data-testid="parked-run-reply-note">
+            {replyNote.text}
           </span>
         )}
       </div>

@@ -73,10 +73,26 @@ export const SETTINGS_TEST_IDS = {
   threadsFile: "settings-threads-file",
   threadsNote: "settings-threads-note",
   threadsSample: "settings-threads-sample",
+  choice: "settings-choice",
+  choiceRow: "settings-choice-row",
+  choiceUse: "settings-choice-use",
+  choiceInUse: "settings-choice-in-use",
+  choiceOverridden: "settings-choice-overridden",
+  choiceNote: "settings-choice-note",
+  apiKey: "settings-api-key",
+  apiKeyInput: "settings-api-key-input",
+  apiKeySave: "settings-api-key-save",
+  apiKeyNote: "settings-api-key-note",
 } as const;
 
 /** The Keychain item the subscription token is kept in (`SUBSCRIPTION_KEYCHAIN_SERVICE` in the kernel). A name, never a value. */
 export const KEYCHAIN_ITEM = "loomwright-studio-oauth";
+
+/** The Keychain item the API key is kept in (`API_KEY_KEYCHAIN_SERVICE` in the kernel). A name, never a value. */
+export const API_KEY_KEYCHAIN_ITEM = "loomwright-studio-api-key";
+
+/** The kernel's API-key provider id (`API_KEY_PROVIDER_ID`). */
+export const API_KEY_PROVIDER = "api-key";
 
 /** How long a subscription token lives, in days (`TOKEN_LIFETIME_DAYS` in the kernel). */
 export const TOKEN_LIFETIME_DAYS = 365;
@@ -102,6 +118,10 @@ export interface SettingsView {
     readonly health: HealthState;
     readonly tokenCreatedAt: string | null;
   };
+  /** D42: every provider the build has, the in-use one first. Empty from an older kernel. */
+  readonly providers: readonly { readonly id: string; readonly account: string | null; readonly health: HealthState; readonly inUse: boolean }[];
+  /** D42: what picked the in-use provider; `flag` and `env` override the owner's choice. `null` when unknown. */
+  readonly providerSource: "flag" | "env" | "choice" | "default" | null;
   readonly dataDir: string;
   /** `terminal-notifier`, `osascript` or `none`; a word this build does not know is kept as inert text. */
   readonly notifier: string;
@@ -132,6 +152,36 @@ function healthOf(raw: unknown): HealthState | undefined {
   }
 }
 
+/** D42's provider list, field by field: an entry that is not the contract's shape is left out. */
+function providersOf(raw: unknown): SettingsView["providers"] {
+  if (!Array.isArray(raw)) return [];
+  const out: SettingsView["providers"][number][] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.in_use !== "boolean") continue;
+    const health = healthOf(entry.health);
+    if (health === undefined) continue;
+    const account = typeof entry.account === "string" ? safe(entry.account) : null;
+    out.push({ id: safe(entry.id), account, health, inUse: entry.in_use });
+  }
+  return out;
+}
+
+function sourceOf(raw: unknown): SettingsView["providerSource"] {
+  return raw === "flag" || raw === "env" || raw === "choice" || raw === "default" ? raw : null;
+}
+
+/** The words for a provider id in the choice list; an id this build does not know is shown as it is. */
+export function providerName(id: string): string {
+  if (id === API_KEY_PROVIDER) return "Anthropic API key";
+  if (id === SUBSCRIPTION_PROVIDER) return "Claude subscription token";
+  return id;
+}
+
+/** Whether a provider's credential is usable, so switching to it would not fail every session. */
+export function providerReady(health: HealthState): boolean {
+  return health.status === "ok" || health.status === "expiring";
+}
+
 /**
  * The view of a `GET /settings` body, built field by field; `undefined` when the body is not the shape the
  * contract declares (so the screen says it could not understand the answer, never throws on it).
@@ -150,6 +200,8 @@ export function parseSettings(body: unknown): SettingsView | undefined {
       health,
       tokenCreatedAt: typeof created === "string" ? created : null,
     },
+    providers: providersOf(body.providers),
+    providerSource: sourceOf(body.provider_source),
     dataDir: safe(body.data_dir),
     notifier: typeof body.notifier === "string" ? safe(body.notifier) : "none",
     loomwright:

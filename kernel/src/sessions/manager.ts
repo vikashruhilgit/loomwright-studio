@@ -59,6 +59,7 @@ import {
 } from "./spawner.js";
 import {
   AdmissionRefusedError,
+  admissionRefusalMessage,
   DEFAULT_RESUME_PROMPT,
   DEFAULT_STOP_GRACE_MS,
   MAX_RESUME_ATTEMPTS,
@@ -2014,8 +2015,7 @@ export class SessionManager {
     throw new AdmissionRefusedError(
       decision.reason,
       decision.retryAt,
-      `${request.kind} refused for agent ${String(request.agent)} on account ${request.account}: ${decision.reason}` +
-        (decision.retryAt === null ? " (retry time unknown)" : ` until ${decision.retryAt}`),
+      admissionRefusalMessage(request.kind, String(request.agent), request.account, decision.reason, decision.retryAt),
     );
   }
 

@@ -18,9 +18,9 @@ describe("CONTRACT_ROUTES", () => {
     }
   });
 
-  it("holds a PUT only on the memory write, `PUT /memory/file`", () => {
+  it("holds a PUT only on the memory write and the two Settings auth writes (D42)", () => {
     const puts = CONTRACT_ROUTES.filter((r) => r.method === "PUT");
-    expect(puts.map((r) => `${r.method} ${r.path} ${r.origin}`)).toEqual(["PUT /memory/file p7-item-06"]);
+    expect(puts.map((r) => `${r.method} ${r.path} ${r.origin}`)).toEqual(["PUT /memory/file p7-item-06", "PUT /settings/auth-provider d42", "PUT /settings/api-key d42"]);
   });
 
   it("is frozen", () => {

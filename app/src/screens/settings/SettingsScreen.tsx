@@ -34,6 +34,7 @@ import { useLiveStore } from "../../store/react";
 import { failureDetail } from "../schedules/model";
 import { useFeedRefetch } from "../schedules/useSchedule";
 import { AuthSection, CommandsSection, KernelSection } from "./AuthSection";
+import { ProviderChoice } from "./ProviderChoice";
 import { SETTINGS_OWNER, settingsCommands } from "./commands";
 import {
   LOGIN_DESCRIPTION,
@@ -170,7 +171,7 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
         </p>
       ) : null}
       <div className="settings-pad">
-        <AuthSection view={view} placeholder={placeholder} now={now} offline={offline} />
+        <AuthSection view={view} placeholder={placeholder} now={now} offline={offline} choice={view === undefined ? null : <ProviderChoice api={api} view={view} offline={offline} onChanged={refetch} />} />
         {failed !== undefined && view === undefined ? null : <CommandsSection view={view} />}
         {showKernelSection ? (
           <KernelSection view={view} home={home} offline={offline} canReveal={preferences.available} onReveal={() => void reveal()} revealFailed={revealFailed} />

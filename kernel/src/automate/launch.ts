@@ -92,6 +92,7 @@ import { resolve, sep } from "node:path";
 import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
 import { isRepoName, loomwrightMergeFlags, TRUST_UNPROTECTED_FLAG } from "../integrations/github/repo-policy.js";
+import { handRequiredChecks } from "../loomwright/required-checks.js";
 import { isPositiveId, messageOf } from "../loop/internal.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
 import { resolvedPath } from "../protected-paths.js";
@@ -103,7 +104,7 @@ import { automateInvocation } from "./tickets-to-items.js";
 
 // The payload key that marks a `message` event as a kernel-started Loomwright run (any kind); it lives in the
 // SQL-only leaf `./run-sessions.ts` so the approvals store can name it without importing this module.
-import { AUTOMATE_RUN_KEY } from "./run-sessions.js";
+import { AUTOMATE_RUN_KEY, laterRunSessionOf, runLaunchOf } from "./run-sessions.js";
 export { AUTOMATE_RUN_KEY };
 
 /** The kinds of kernel-started run, closed in code. An `automate_run` payload with no `kind` is a `backlog` run. */
@@ -587,6 +588,11 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
     }
     resumeInterrupted = earlier.status === "interrupted";
     if (!resumeInterrupted && !isContinuableStatus(earlier.status)) return skip(`continue_session_live: session ${continuation.session} can repeat the call itself`);
+    // 23s gap 3: a later run session of the same run (a later Resume, or a continuation already carrying it) means the
+    // run moved on; continuing this one again would fork it from a stale point (live: approval 56 of session 226).
+    const launch = runLaunchOf(store, continuation.session);
+    const later = launch === undefined ? undefined : laterRunSessionOf(store, continuation.session, launch);
+    if (later !== undefined) return skip(`continue_session_superseded: session ${continuation.session}'s run went on in session ${later}`);
   }
 
   // D46 (23n): a run lock whose holder is dead. The kernel's own (a run session of ours that has ended) is released
@@ -628,11 +634,25 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   const live = liveRunSession(store, sessions, run.agent, checkout, resumeInterrupted ? continuation?.session : undefined);
   if (live !== undefined) return skip(`run_session_live: session ${live}`);
 
+  // 23t: the repo's required checks, which the session's down-scoped token can't read from branch protection, handed to
+  // the run's drain through the checkout's own Loomwright config (`required-checks.ts`). Recorded either way.
+  const checks = handRequiredChecks(store, run.repo, checkout);
+  if (!(checks.kind === "skipped" && (checks.reason === "no_detection" || checks.reason === "not_protected" || checks.reason === "no_required_checks"))) {
+    store
+      .prepare("INSERT INTO events (at, kind, actor, payload_json) VALUES (?, 'run_required_checks', 'kernel', ?)")
+      .run(new Date().toISOString(), JSON.stringify({ repo: run.repo, checkout, ...(checks.kind === "written" ? { written: checks.checks } : { skipped: checks.reason }) }));
+  }
+
   // The session is the step's last effect, so an admission refusal leaves nothing to repeat. The manager's
   // Loomwright refusal (no install, or no readable `scripts/`) wrote no row, so it is stored, never retried as is.
   let handle: SessionHandle;
   const policy = { ...runPolicy, ...(settings.never !== undefined ? { never: settings.never } : {}) };
-  const playbookVersion = caller.playbook_version === null || caller.playbook_version === undefined ? {} : { playbookVersion: caller.playbook_version };
+  // An enabled playbook's run runs under the version the owner enabled, not the one the run was first prepared under: a
+  // resume or continuation carried the source session's version forward, so after the owner re-enabled playbook 18 at
+  // v3 its run sessions were still v2, and "always" on their held calls was refused as not the current version (live:
+  // approval 62, 2026-11-18). A draft keeps the source session's version (`pausedPlaybook` already refused a newer one).
+  const version = pb.status === "enabled" ? pb.version : caller.playbook_version;
+  const playbookVersion = version === null || version === undefined ? {} : { playbookVersion: version };
   try {
     handle = resumeInterrupted && continuation !== undefined
       ? await sessions.resumeSession(continuation.session, { prompt, permissionMode: settings.permissionMode, cwd: checkout, policy, playbook: run.playbook, ...playbookVersion })

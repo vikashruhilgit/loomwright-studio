@@ -8,6 +8,18 @@
 //                                               file in a crew member's workspaces
 //   POST /automate/paused-runs/:run_id/resume   {agent, checkout} → {queue_id}: queue
 //                                               the kernel's resume run for it
+//   POST /automate/paused-runs/:run_id/reply    {agent, checkout, text} → {queue_id,
+//                                               session}: continue the run's newest
+//                                               session with the owner's reply
+//
+// Reply: a run session can end its turn on a question to the owner (live: session
+// 235 asked "redo, reopen or drop?" after the owner closed its PR). A Resume starts
+// a new session that sees the same facts and asks again, so the question could
+// never be answered. Each listed run carries its newest kernel run session and that
+// session's last message (`last_session`, model text: untrusted, shown as data);
+// the reply continues THAT session (the same `continue` event an approval decision
+// queues, 23o), with the owner's words framed by the kernel (`runReplyPrompt`).
+// The launch refuses a gone, live or superseded session as it does for a decision.
 //
 // Why: a run that parks (here `trail_pr_open`, the 23h cause, at its first step)
 // could only start again through a crew session's `kernel_automate_prepare`, and a
@@ -42,6 +54,7 @@ import type { Store } from "../store/index.js";
 import { AUTOMATE_RUN_KEY, pausedPlaybook, type ResumeRunPayload } from "../automate/launch.js";
 import { deadLockOf } from "../loomwright/run-lock.js";
 import { isRunId, pausedRuns, readRunState, resumeWouldDoubleDrain } from "../automate/run-state.js";
+import { RUN_REPLY_MAX, continuePayloadOf, lastSessionMessage, latestRunSessionOf, runLaunchOf, runReplyPrompt } from "../automate/run-sessions.js";
 import type { GuiPart } from "./types.js";
 
 /** The newest kernel run events read per agent when looking for a checkout's attribution. */
@@ -70,6 +83,11 @@ export interface PausedRunView {
    * blocks: the launch releases it first.
    */
   readonly resume_at: string | null;
+  /**
+   * The run's newest kernel run session and the last thing it said, or `null` when the kernel started none for this
+   * run id (a backlog launch names none). `message` is model text: untrusted data, never interpreted.
+   */
+  readonly last_session: { readonly id: number; readonly status: string; readonly message: string | null } | null;
 }
 
 /** The attribution a resume copies: the newest kernel run event's for the agent and checkout. */
@@ -198,10 +216,19 @@ export function listPausedRuns(store: Store): { runs: PausedRunView[]; unreadabl
     for (const run of listed) {
       const live = sessionLive || resumeWouldDoubleDrain(read, run.run_id);
       const blocked = blockOf(store, status, live, settling, run.run_id, checkout, owner.source);
-      runs.push({ agent, checkout, repo: owner.source?.repo ?? null, ...run, blocked, resume_at: blocked === "lock_settling" ? resumeAt : null });
+      runs.push({ agent, checkout, repo: owner.source?.repo ?? null, ...run, blocked, resume_at: blocked === "lock_settling" ? resumeAt : null, last_session: lastSessionOf(store, checkout, run.run_id) });
     }
   }
   return { runs, unreadable };
+}
+
+/** The run's newest kernel run session, its status and last message (`last_session`), or `null`. */
+function lastSessionOf(store: Store, checkout: string, runId: string): PausedRunView["last_session"] {
+  const id = latestRunSessionOf(store, checkout, runId);
+  if (id === undefined) return null;
+  const status = store.prepare<[number], string>("SELECT status FROM sessions WHERE id = ?").pluck().get(id);
+  if (status === undefined) return null;
+  return { id, status, message: lastSessionMessage(store, id) };
 }
 
 /** Among `members`, the one whose kernel run event for `checkout` is newest, with that event's attribution. */
@@ -243,12 +270,47 @@ async function resumeRoute(req: ContributedRouteRequest): Promise<ContributedRou
   });
 }
 
+/**
+ * `POST /automate/paused-runs/:run_id/reply {agent, checkout, text}`: 200 `{queue_id, session}`, or why not. 400
+ * `invalid_run_id` / `invalid_body` (text 1 to `RUN_REPLY_MAX` characters after trimming); 404 `not_found`; 409 the
+ * same blocks as Resume (a live run, a queued resume, the kill switch, the crew member or playbook off; a settling
+ * lock does not block, since the continuation's own launch releases or waits on it), `no_run_session` (the kernel
+ * started no session for this run) or `not_kernel_run` (that session's launch is unreadable).
+ */
+async function replyRoute(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
+  const runId = req.params.run_id ?? "";
+  if (!isRunId(runId)) return { status: 400, body: { error: "invalid_run_id" } };
+  const body = req.body;
+  if (!isBodyObject(body) || typeof body.agent !== "string" || typeof body.checkout !== "string" || typeof body.text !== "string" || Object.keys(body).length !== 3) {
+    return { status: 400, body: { error: "invalid_body", message: "the body is {agent, checkout, text}" } };
+  }
+  const text = body.text.trim();
+  if (text === "" || text.length > RUN_REPLY_MAX) return { status: 400, body: { error: "invalid_body", message: `the reply is 1 to ${RUN_REPLY_MAX} characters` } };
+  const { agent, checkout } = body as { agent: string; checkout: string };
+  return req.store.transaction((): ContributedRouteResponse => {
+    const view = listPausedRuns(req.store).runs.find((r) => r.agent === agent && r.checkout === checkout && r.run_id === runId);
+    if (view === undefined) return { status: 404, body: { error: "not_found", message: `no paused run ${runId} for ${agent} in ${checkout}` } };
+    if (view.blocked !== null && view.blocked !== "lock_settling") return { status: 409, body: { error: view.blocked } };
+    if (view.last_session === null) return { status: 409, body: { error: "no_run_session" } };
+    const session = view.last_session.id;
+    const launch = runLaunchOf(req.store, session);
+    if (launch === undefined) return { status: 409, body: { error: "not_kernel_run" } };
+    const payload = { agent: launch.agent, [AUTOMATE_RUN_KEY]: continuePayloadOf(launch, session, runReplyPrompt(text)) };
+    const queued = enqueueEvent(req.store, { kind: "message", payload }, req.now());
+    req.store
+      .prepare("INSERT INTO events (at, kind, actor, session_id, payload_json) VALUES (?, 'run_reply_sent', 'api', ?, ?)")
+      .run(req.now().toISOString(), session, JSON.stringify({ run_id: runId, checkout, queue_id: queued.id, chars: text.length }));
+    return { status: 200, body: { queue_id: queued.id, session, run_id: runId, agent, checkout } };
+  });
+}
+
 export const resumeRoutes: readonly ContributedRoute[] = Object.freeze([
   { method: "GET", path: "/automate/paused-runs", handler: async (req: ContributedRouteRequest) => ({ status: 200, body: listPausedRuns(req.store) }) },
   { method: "POST", path: "/automate/paused-runs/:run_id/resume", handler: resumeRoute },
+  { method: "POST", path: "/automate/paused-runs/:run_id/reply", handler: replyRoute },
 ]);
 
-/** The paused-runs part (23j): two owner routes, no tool, no handler. */
+/** The paused-runs part (23j): three owner routes (list, resume, reply), no tool, no handler. */
 export const pausedRunsPart: GuiPart = Object.freeze({
   name: "paused-runs",
   tools: Object.freeze([]),

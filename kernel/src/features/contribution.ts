@@ -17,6 +17,7 @@
 // never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the module graph).
 import { z } from "zod";
+import type { AuthControl } from "../auth/choice.js";
 import type { KillSwitchState } from "../api/kill-switch.js";
 import type { AuthHealth } from "../auth/types.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
@@ -326,6 +327,13 @@ export interface ContributedRouteRequest {
    * throw. Optional in the type for the same reason as `sessions`.
    */
   readonly origin?: string;
+  /**
+   * The owner's auth provider controls (D42): the in-use provider, the build's
+   * providers, the Keychain calls that store an API key, and the restart that
+   * applies a new choice. Only the Settings auth routes read it. Absent in a
+   * composition that wires none: those routes then answer a typed refusal.
+   */
+  readonly auth?: AuthControl;
 }
 
 /** A contributed route's read-only view of the kill switch: it can read the state, never change it. */

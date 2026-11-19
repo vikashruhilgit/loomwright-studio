@@ -332,7 +332,7 @@ describe("handleAutomateRun starts the review-pr and merge-parked sessions", () 
           never: ["gh_pr_close"],
         },
         playbook: pb,
-        playbookVersion: 2,
+        playbookVersion: 1, // the version the owner enabled, not the calling session's v2 (approval 62, 2026-11-18)
         task: 9,
       },
     ]);
@@ -348,7 +348,7 @@ describe("handleAutomateRun starts the review-pr and merge-parked sessions", () 
     const id = queue(mergeRun(pb));
     await loopOver(r.sessions).tick();
     expect(r.starts).toHaveLength(1);
-    expect(r.starts[0]).toMatchObject({ agent: "mason", prompt: MERGE_PROMPT, model: PLAYBOOK_MODEL, cwd: env.checkout, playbook: pb, playbookVersion: 2 });
+    expect(r.starts[0]).toMatchObject({ agent: "mason", prompt: MERGE_PROMPT, model: PLAYBOOK_MODEL, cwd: env.checkout, playbook: pb, playbookVersion: 1 });
     expect(r.starts[0]?.policy).toEqual({
       allowedTools: [...MERGE_PARKED_RUN_POLICY.allowedTools],
       allowedBashPrefixes: [...MERGE_PARKED_RUN_POLICY.allowedBashPrefixes],

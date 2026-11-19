@@ -325,7 +325,7 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
     }
   });
 
-  it("passes no never list when the crew member has none, and no task or version when the calling session has none", async () => {
+  it("passes no never list when the crew member has none, no task when the calling session has none, and the enabled version when it records none", async () => {
     const u = unit();
     try {
       u.callers.set(CALLER.id, { ...CALLER, task_id: null, playbook_version: null });
@@ -335,7 +335,8 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
       const params = u.starts[0] as StartSessionParams;
       expect(params.policy).not.toHaveProperty("never");
       expect(params).not.toHaveProperty("task");
-      expect(params).not.toHaveProperty("playbookVersion");
+      // An enabled playbook's run runs under the enabled version even when the calling session recorded none.
+      expect(params.playbookVersion).toBe(2);
       expect(params.playbook).toBe(5);
     } finally {
       u.store.close();

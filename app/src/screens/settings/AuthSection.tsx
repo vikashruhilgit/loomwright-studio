@@ -1,11 +1,12 @@
 // The Settings screen's two kernel-fed sections and the terminal commands between them
 // (phase 7 item 08), as the mockup's `settingsScreen` draws them.
 //
-// - "Auth provider" (read-only): the provider, its account, health, and when a token
+// - "Auth provider": the provider in use, its account, health, and when a token
 //   exists its creation day and life. The Token row says where the value is kept and that
-//   it is never shown. There is no input, no sign-in and no way to enter a credential
-//   anywhere in this file (invariants 6 and 7); changing the provider is done in the
-//   owner's own terminal.
+//   it is never shown. There is no sign-in and no field for the subscription token in this
+//   file (invariants 6 and 7, D27): that token is made in the owner's own terminal. Below
+//   the rows, `ProviderChoice` (D42) lets the owner pick the provider every session runs on
+//   and store an API key.
 // - "Change it in your terminal": the three commands of the first-run screen
 //   (`SETUP_STEPS`, reused, never copied), each with a Copy button.
 // - "Kernel" (read-only): the data location with Reveal in Finder, the notifier and the
@@ -19,7 +20,7 @@ import { Button } from "../../components/Button/Button";
 import { formatHomePath } from "../../shell/home-path";
 import { SETUP_STEPS } from "../../shell/KernelStates";
 import { LAST_KNOWN } from "../../shell/last-known";
-import { KEYCHAIN_ITEM, NOTIFIER_CAPTION, SETTINGS_TEST_IDS as IDS, type SettingsView, accountLabel, commandsHeading, hasToken, healthViewOf, tokenLife } from "./model";
+import { API_KEY_KEYCHAIN_ITEM, API_KEY_PROVIDER, KEYCHAIN_ITEM, NOTIFIER_CAPTION, SETTINGS_TEST_IDS as IDS, type SettingsView, accountLabel, commandsHeading, hasToken, healthViewOf, tokenLife } from "./model";
 import { Dot } from "./parts";
 
 function Row({ term, children, testId }: { readonly term: string; readonly children: ReactNode; readonly testId?: string }) {
@@ -52,9 +53,11 @@ export interface AuthSectionProps {
   readonly now: Date;
   /** The kernel is unreachable (the screen's own flag, the one that disables Reveal): a held Health is drawn neutral and marked last known. */
   readonly offline: boolean;
+  /** D42: the provider choice drawn under the rows (`ProviderChoice`); `null` while there is no view. */
+  readonly choice?: ReactNode;
 }
 
-export function AuthSection({ view, placeholder, now, offline }: AuthSectionProps) {
+export function AuthSection({ view, placeholder, now, offline, choice = null }: AuthSectionProps) {
   let body: ReactNode = placeholder;
   if (view !== undefined) {
     const { provider } = view;
@@ -103,7 +106,7 @@ export function AuthSection({ view, placeholder, now, offline }: AuthSectionProp
         ) : null}
         <Row term="Token" testId={IDS.token}>
           <span>
-            {provider.health.status === "missing" ? "Expected in" : "Kept in"} the Keychain as <code className="settings-mono">{KEYCHAIN_ITEM}</code>. The value is never shown, and this app has no field for it.
+            {provider.health.status === "missing" ? "Expected in" : "Kept in"} the Keychain as <code className="settings-mono">{provider.id === API_KEY_PROVIDER ? API_KEY_KEYCHAIN_ITEM : KEYCHAIN_ITEM}</code>. The value is never shown{provider.id === API_KEY_PROVIDER ? "." : ", and this app has no field for it."}
           </span>
         </Row>
       </dl>
@@ -111,8 +114,9 @@ export function AuthSection({ view, placeholder, now, offline }: AuthSectionProp
   }
   return (
     <section className="settings-blk" aria-labelledby="settings-h-auth">
-      <SectionHead id="settings-h-auth" title="Auth provider" badge="read-only" />
+      <SectionHead id="settings-h-auth" title="Auth provider" />
       {body}
+      {view === undefined ? null : choice}
     </section>
   );
 }
