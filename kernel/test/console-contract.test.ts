@@ -366,7 +366,7 @@ describe("the PR tracker's mirrored sets and the card's ticket_pr (contract.ts, 
 
   it("TaskTicketPr declares the card's ticket_pr keys in order, and TaskBoardItem ends with ticket_pr", () => {
     expect(interfaceFields(contractText, "TaskTicketPr")).toEqual(["ticket", "repo", "number", "url", "state", "head_sha", "approvals", "ci", "owner_kind", "merged_by_gate", "updated"]);
-    expect(interfaceFields(contractText, "TaskBoardItem").slice(-3)).toEqual(["creator_agent", "creator_session", "ticket_pr"]);
+    expect(interfaceFields(contractText, "TaskBoardItem").slice(-4)).toEqual(["creator_agent", "creator_session", "ticket_pr", "auth_recovered_by"]);
     expect(contractText).toContain("readonly ticket_pr: TaskTicketPr | null;");
     expect(contractText).toMatch(/export interface PrTrack \{[^}]*readonly state: PrTrackState;[^}]*readonly ci_state: PrCiState \| null;/);
   });

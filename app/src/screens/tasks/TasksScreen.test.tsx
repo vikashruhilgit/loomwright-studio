@@ -30,6 +30,7 @@ import type {
   TaskBoardGroup,
   TaskBoardItem,
   TaskHistoryResponse,
+  TasksResponse,
 } from "../../api/contract";
 import { installKeyboardMap } from "../../commands/keyboard";
 import { createCommandRegistry } from "../../commands/registry";
@@ -57,7 +58,7 @@ function stamp(minutes: number): string {
 }
 
 function card(kind: TaskBoardItem["kind"], id: number, state: string, overrides: Partial<TaskBoardItem> = {}): TaskBoardItem {
-  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: stamp(30), ended: null, updated: stamp(5), creator_agent: null, creator_session: null, ticket_pr: null, ...overrides };
+  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: stamp(30), ended: null, updated: stamp(5), creator_agent: null, creator_session: null, ticket_pr: null, auth_recovered_by: null, ...overrides };
 }
 
 function summary(id: number, overrides: Partial<SessionSummary> = {}): SessionSummary {
@@ -106,6 +107,8 @@ interface Kernel {
   agents: RosterEntry[];
   output: Map<number, SessionOutputRow[]>;
   events: Map<string, EventFrame[]>;
+  /** What `GET /tasks` answers as `skipped`; `null` (the default) for none counted. */
+  skipped?: TasksResponse["skipped"];
 }
 
 function board(): TaskBoardItem[] {
@@ -154,7 +157,7 @@ interface Mounted {
 async function mount(initial: Partial<Kernel> = {}, registry: CommandRegistry = createCommandRegistry(), connection?: FakeBridge["connectionAnswer"]): Promise<Mounted> {
   const kernel: Kernel = { items: board(), next_before: null, agents: [roster("mason"), roster("ada"), roster("wright")], sessions: [summary(41), summary(42), summary(44, { agent: "wright" })], output: new Map(), events: new Map(), ...initial };
   const fake = fakeBridge(connection);
-  fake.route(TASKS, () => ok({ groups: groupsOf(kernel.items), next_before: kernel.next_before }));
+  fake.route(TASKS, () => ok({ groups: groupsOf(kernel.items), next_before: kernel.next_before, skipped: kernel.skipped ?? null }));
   fake.route(HISTORY, (req) => history(kernel, req));
   fake.route("GET /agents", () => ok({ agents: kernel.agents }));
   fake.route("GET /status", () => ok({}));
@@ -338,7 +341,9 @@ describe("the board", () => {
   it("reads GET /tasks once with the largest page", async () => {
     const { fake } = await mount();
     expect(reads(fake, TASKS)).toHaveLength(1);
-    expect(reads(fake, TASKS)[0]?.query).toEqual({ limit: "200" });
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    expect(reads(fake, TASKS)[0]?.query).toEqual({ limit: "200", skipped_since: midnight.toISOString() });
   });
 });
 
@@ -398,6 +403,28 @@ describe("the agent on a card", () => {
     expect(meta("task:22")).toMatch(/^No agent recorded · /);
     await waitFor(() => expect(meta("task:21")).toMatch(/^Wright · /));
     expect(document.body.textContent).not.toContain("unknown agent");
+  });
+});
+
+describe("today's skipped runs", () => {
+  it("asks for skips from local midnight, counted instead of carded", async () => {
+    const { fake } = await mount();
+    const query = fake.requestsTo(TASKS)[0]?.req.query as Record<string, string> | undefined;
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    expect(query).toMatchObject({ limit: "200", skipped_since: midnight.toISOString() });
+  });
+
+  it("shows one line for them, in words, and no card for any", async () => {
+    await mount({ skipped: { since: "2026-10-30T00:00:00.000Z", count: 324, by_status: { skipped_duplicate: 320, skipped_not_enabled: 4 } } });
+    expect(screen.getByTestId("tasks-skipped").textContent).toBe(
+      "324 runs skipped today without starting anything (320 already done, 4 playbook off). They are in each playbook's history.",
+    );
+  });
+
+  it("shows no line when none were skipped, or when the kernel counted none", async () => {
+    await mount({ skipped: { since: "2026-10-30T00:00:00.000Z", count: 0, by_status: {} } });
+    expect(screen.queryByTestId("tasks-skipped")).toBeNull();
   });
 });
 

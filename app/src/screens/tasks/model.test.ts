@@ -23,6 +23,8 @@ import {
   refetchMark,
   refetchWanted,
   sessionTitles,
+  skippedText,
+  startOfToday,
   toneOf,
 } from "./model";
 import type { ColumnId } from "./model";
@@ -35,7 +37,7 @@ const NOW = new Date(2026, 9, 30, 14, 22, 0).getTime();
 const at = (h: number, m: number, day = 30): string => new Date(2026, 9, day, h, m, 0).toISOString();
 
 function item(kind: TaskBoardKind, id: number, state: string, overrides: Partial<TaskBoardItem> = {}): TaskBoardItem {
-  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: at(13, 0), ended: null, updated: at(14, 0), creator_agent: null, creator_session: null, ticket_pr: null, ...overrides };
+  return { kind, id, title: kind === "session" ? null : `Title ${id}`, state, agent: "mason", playbook: null, item_ref: null, session: null, tokens: null, started: at(13, 0), ended: null, updated: at(14, 0), creator_agent: null, creator_session: null, ticket_pr: null, auth_recovered_by: null, ...overrides };
 }
 
 describe("the columns", () => {
@@ -46,6 +48,44 @@ describe("the columns", () => {
       ["park", "Parked", "Nothing is parked."],
       ["done", "Done today", "Nothing finished yet."],
     ]);
+  });
+});
+
+describe("a failed auth that a later session got past", () => {
+  it("waits on the owner until a session completes after it, then is Done, with its own word and tone kept", () => {
+    expect(columnOf({ kind: "session", state: "failed:auth" })).toBe("wait");
+    expect(columnOf({ kind: "session", state: "failed:auth", auth_recovered_by: null })).toBe("wait");
+    expect(columnOf({ kind: "session", state: "failed:auth", auth_recovered_by: 231 })).toBe("done");
+    expect(columnOf({ kind: "session", state: "running", auth_recovered_by: 231 })).toBe("work");
+    expect(toneOf("session", "failed:auth")).toBe("danger");
+  });
+
+  it("drops off the board the day after, like every Done card; until then nothing waits on the owner", () => {
+    const recovered = item("session", 230, "failed:auth", { ended: at(9, 0), updated: at(9, 0), auth_recovered_by: 231 });
+    const today = buildBoard([{ state: "failed:auth", items: [recovered] }], NOW);
+    expect(today.waiting).toBe(0);
+    expect(today.columns.find((c) => c.column.id === "done")?.cards.map((c) => c.item.id)).toEqual([230]);
+    const yesterday = item("session", 229, "failed:auth", { ended: at(9, 0, 29), updated: at(9, 0, 29), auth_recovered_by: 231 });
+    expect(buildBoard([{ state: "failed:auth", items: [yesterday] }], NOW).total).toBe(0);
+    const unresolved = item("session", 228, "failed:auth", { ended: at(9, 0, 29), updated: at(9, 0, 29) });
+    expect(buildBoard([{ state: "failed:auth", items: [unresolved] }], NOW).waiting).toBe(1);
+  });
+});
+
+describe("today's skipped runs", () => {
+  it("startOfToday is local midnight of now's day, as toISOString writes it", () => {
+    expect(startOfToday(NOW)).toBe(new Date(2026, 9, 30, 0, 0, 0, 0).toISOString());
+  });
+
+  it("skippedText says each status in words, names an unknown one by its word, and is null for none", () => {
+    expect(skippedText(null)).toBeNull();
+    expect(skippedText(undefined)).toBeNull();
+    expect(skippedText({ count: 0, by_status: {} })).toBeNull();
+    expect(skippedText({ count: 1, by_status: { skipped_duplicate: 1 } })).toBe("1 run skipped today without starting anything (1 already done). They are in each playbook's history.");
+    expect(skippedText({ count: 1203, by_status: { skipped_duplicate: 1200, skipped_new: 3 } })).toBe(
+      "1,203 runs skipped today without starting anything (1,200 already done, 3 skipped_new). They are in each playbook's history.",
+    );
+    expect(skippedText({ count: 1, by_status: { constructor: 1 } })).toContain("(1 constructor)");
   });
 });
 
@@ -334,6 +374,8 @@ describe("the words on a card", () => {
     expect(reasonText({ kind: "session", state: "failed:auth" })).toBe("Paused: the subscription token was refused.");
     expect(reasonText({ kind: "session", state: "failed" })).toBeNull();
     expect(reasonText({ kind: "task", state: "failed:auth" })).toBeNull();
+    expect(reasonText({ kind: "session", state: "failed:auth", auth_recovered_by: null })).toBe("Paused: the subscription token was refused.");
+    expect(reasonText({ kind: "session", state: "failed:auth", auth_recovered_by: 231 })).toBe("The token was refused; session #231 later ran fine.");
   });
 
   it("shows `since` for a working card and the time it last changed for the others", () => {

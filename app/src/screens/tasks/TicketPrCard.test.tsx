@@ -70,6 +70,7 @@ function ticketCard(overrides: Partial<TaskTicketPr> = {}, row: Partial<TaskBoar
     creator_agent: null,
     creator_session: null,
     ticket_pr: ticket,
+    auth_recovered_by: null,
     ...row,
   };
 }

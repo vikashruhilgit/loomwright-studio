@@ -70,6 +70,8 @@ A run is `done` when its session ends `completed`, or ends `stopped` after the s
 | `skipped_not_enabled` | the playbook was off, or at a newer version, when the event was handled; nothing started |
 | `parked` | a GitHub item's run whose agent lacked the GitHub grant or a usable connector (`result_json` `{"reason":"needs_github", …}`), or a crew member's ticket item's run whose member lacked that tracker's read grant (`{"reason":"needs_tracker", …}`); terminal, nothing started, and never a duplicate: the next poll's message for the item is checked afresh, and runs once what was missing is in place |
 
+Every skip is still written as a row, because the rows are the audit trail that dedupe worked. The Tasks board doesn't draw them as cards, though. It asks `GET /tasks` with `skipped_since` set to local midnight, so the skipped rows stay out of its card page and its 200-card limit, and it gets back one count by status (`skipped`) that it shows as a single line. A poll that re-finds already-done items every 10 minutes would otherwise fill the board with hundreds of skip cards a day and push real work off it. Without `skipped_since`, `GET /tasks` returns every run as a card, as before.
+
 `parked` is not the admission park. An event refused admission (a parked account cap, a daily limit) keeps its row `running`, with `parked` and `retry_at` in `result_json`, and the loop redelivers that same event. A `parked` row is final: no redelivery, and the item runs again only when the next poll queues it.
 
 A row's `kind` is `fire` or `run_now` here (`dry_run` is the dry run's).

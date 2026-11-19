@@ -70,6 +70,7 @@ export function item(kind: TaskBoardKind, id: number, state: string, overrides: 
     creator_agent: null,
     creator_session: null,
     ticket_pr: null,
+    auth_recovered_by: null,
     ...overrides,
   };
 }
@@ -177,7 +178,13 @@ function listHandler(kernel: TasksKernel, req: FixtureRequest): FixtureAnswer {
     if (!/^[1-9][0-9]*$/.test(rawLimit) || !Number.isSafeInteger(Number(rawLimit)) || Number(rawLimit) > MAX_LIMIT) return refused(400, "invalid_query");
     limit = Number(rawLimit);
   }
-  const ordered = [...kernel.items].sort(newestFirst);
+  // `skipped_since`, as the kernel answers it: a skipped run is not a card, it is counted (since that time) instead.
+  const since = req.query.skipped_since;
+  const isSkip = (row: TaskBoardItem): boolean => row.kind === "playbook_run" && (row.state === "skipped_duplicate" || row.state === "skipped_not_enabled");
+  const by_status: Record<string, number> = {};
+  if (since !== undefined) for (const row of kernel.items) if (isSkip(row) && (row.ended ?? row.started ?? row.updated) >= since) by_status[row.state] = (by_status[row.state] ?? 0) + 1;
+  const skipped = since === undefined ? null : { since, count: Object.values(by_status).reduce((a, b) => a + b, 0), by_status };
+  const ordered = [...kernel.items].filter((row) => since === undefined || !isSkip(row)).sort(newestFirst);
   let rows = ordered;
   const before = req.query.before;
   if (before !== undefined) {
@@ -194,7 +201,7 @@ function listHandler(kernel: TasksKernel, req: FixtureRequest): FixtureAnswer {
     else group.items.push(row);
   }
   const last = page[page.length - 1];
-  const body: TasksResponse = { groups: groups satisfies TaskBoardGroup[], next_before: rows.length > limit && last !== undefined ? cursorOf(last) : null };
+  const body: TasksResponse = { groups: groups satisfies TaskBoardGroup[], next_before: rows.length > limit && last !== undefined ? cursorOf(last) : null, skipped };
   return ok(body);
 }
 

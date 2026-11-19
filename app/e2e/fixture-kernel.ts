@@ -149,7 +149,7 @@ const DEFAULT_ROUTES: Partial<Record<RouteKey, FixtureRoute>> = {
   "GET /connectors": () => ({ status: 200, body: { connectors: [] } satisfies ConnectorsResponse }),
   "GET /connectors/github/repos": () => ({ status: 200, body: { repos: [], verified_at: null } satisfies ConnectorReposResponse }),
   "GET /drafts": () => ({ status: 200, body: { drafts: [] } satisfies DraftsResponse }),
-  "GET /tasks": () => ({ status: 200, body: { groups: [], next_before: null } satisfies TasksResponse }),
+  "GET /tasks": () => ({ status: 200, body: { groups: [], next_before: null, skipped: null } satisfies TasksResponse }),
   // The history of the item asked for: a bare card, nothing recorded against it.
   "GET /tasks/:kind/:id": ({ params }) => ({
     status: 200,
@@ -170,6 +170,7 @@ const DEFAULT_ROUTES: Partial<Record<RouteKey, FixtureRoute>> = {
         creator_agent: null,
         creator_session: null,
         ticket_pr: null,
+        auth_recovered_by: null,
       },
       events: [],
       runs: [],

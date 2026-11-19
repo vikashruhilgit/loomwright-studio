@@ -69,7 +69,10 @@ const RUN_COLUMNS = table<ColumnId>({
   skipped_not_enabled: "done",
 });
 
-/** `SessionStatus`. `failed:auth` is paused on the token: it waits on the owner. */
+/**
+ * `SessionStatus`. `failed:auth` is paused on the token: it waits on the owner, until a later session proves the
+ * auth works again (`auth_recovered_by`, see `columnOf`).
+ */
 const SESSION_COLUMNS = table<ColumnId>({
   "failed:auth": "wait",
   starting: "work",
@@ -87,13 +90,38 @@ const SESSION_COLUMNS = table<ColumnId>({
  * not heard of (a task's free text; a run or session status a newer kernel adds)
  * goes to Other, shown verbatim with a neutral badge. No synonym is guessed.
  */
-export function columnOf(item: Pick<TaskBoardItem, "kind" | "state">): ColumnId {
+export function columnOf(item: Pick<TaskBoardItem, "kind" | "state"> & Partial<Pick<TaskBoardItem, "auth_recovered_by">>): ColumnId {
   const { kind, state } = item;
+  // A refused token that a later session got past waits on no one: the failure is history (Done, kept to its day).
+  if (kind === "session" && state === "failed:auth" && typeof item.auth_recovered_by === "number") return "done";
   if (kind === "task") {
     return TASK_COLUMNS[state] ?? "other";
   }
   if (kind === "playbook_run") return RUN_COLUMNS[state] ?? "other";
   return SESSION_COLUMNS[state] ?? "other";
+}
+
+// ---- skipped runs ------------------------------------------------------------------------
+
+/** Local midnight of `now`'s day, as `GET /tasks`' `skipped_since` takes it: the board's "today". */
+export function startOfToday(now: number): string {
+  const day = new Date(now);
+  day.setHours(0, 0, 0, 0);
+  return day.toISOString();
+}
+
+/**
+ * The one line that stands for today's skipped runs (they are not cards), or `null` for none. Each status is said in
+ * words; one this app does not know is named by its own word, never hidden.
+ */
+export function skippedText(skipped: { readonly count: number; readonly by_status: Readonly<Record<string, number>> } | null | undefined): string | null {
+  if (skipped === null || skipped === undefined || skipped.count <= 0) return null;
+  const words: Readonly<Record<string, string>> = { skipped_duplicate: "already done", skipped_not_enabled: "playbook off" };
+  const parts = Object.entries(skipped.by_status)
+    .filter(([, n]) => n > 0)
+    .map(([status, n]) => `${countText(n)} ${Object.hasOwn(words, status) ? words[status] : printable(status)}`);
+  const runs = skipped.count === 1 ? "1 run" : `${countText(skipped.count)} runs`;
+  return `${runs} skipped today without starting anything (${parts.join(", ")}). They are in each playbook's history.`;
 }
 
 // ---- tones -----------------------------------------------------------------------------------
@@ -290,8 +318,11 @@ export function metaText(card: BoardCard): string {
  * A one-line note for the states whose word alone is not enough. Only what the
  * mapping above states: `failed:auth` is a session paused on the token.
  */
-export function reasonText(item: Pick<TaskBoardItem, "kind" | "state">): string | null {
-  if (item.kind === "session" && item.state === "failed:auth") return "Paused: the subscription token was refused.";
+export function reasonText(item: Pick<TaskBoardItem, "kind" | "state"> & Partial<Pick<TaskBoardItem, "auth_recovered_by">>): string | null {
+  if (item.kind === "session" && item.state === "failed:auth") {
+    if (typeof item.auth_recovered_by === "number") return `The token was refused; session #${item.auth_recovered_by} later ran fine.`;
+    return "Paused: the subscription token was refused.";
+  }
   return null;
 }
 

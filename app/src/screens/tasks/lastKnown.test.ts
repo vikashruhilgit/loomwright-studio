@@ -4,7 +4,7 @@ import type { TasksResponse } from "../../api/contract";
 import { fakeBridge } from "../../store/fake-bridge";
 import { getLastBoard, resetLastBoards, setLastBoard } from "./lastKnown";
 
-const board = (next_before: string | null = null): TasksResponse => ({ groups: [], next_before });
+const board = (next_before: string | null = null): TasksResponse => ({ groups: [], next_before, skipped: null });
 
 afterEach(() => resetLastBoards());
 
