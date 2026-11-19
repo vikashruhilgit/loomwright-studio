@@ -313,6 +313,9 @@ describe("studio CLI", () => {
     expect(formatStatus(withHealth({ status: "expiring", days: 7 }))).toContain(
       "auth: subscription-token (owner): expiring (7 days left)\n",
     );
+    expect(formatStatus(withHealth({ status: "rejected", at: "2026-11-19T03:24:02.828Z" }))).toContain(
+      "auth: subscription-token (owner): rejected (the server refused this credential at 2026-11-19T03:24:02.828Z; replace it)\n",
+    );
   });
 
   it("status lists a session's unsettled tool groups (H08) under its kill-unconfirmed line", async () => {
