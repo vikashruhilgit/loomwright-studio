@@ -652,7 +652,8 @@ test("phase 5 polish: the document never scrolls, on any screen", async () => {
     }
   };
 
-  for (const id of ["chat", "team", "approvals", "sessions", "menubar"]) {
+  // Every screen, not a sample: Settings was left out and its workspaces live region grew the document (live 2026-11-19).
+  for (const id of ["chat", "team", "approvals", "sessions", "menubar", "tasks", "playbooks", "schedules", "memory", "budget", "integrations", "settings", "keymap"]) {
     await page.evaluate((screen) => {
       window.location.hash = `#/${screen}`;
     }, id);
