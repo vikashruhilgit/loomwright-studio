@@ -25,7 +25,10 @@ body {
 /* The window's one row is the viewport, never its content: `minmax(0, 1fr)`, not the implicit `auto`
    row, so `.main` (and every screen in it) cannot grow the document past the window. Each screen
    scrolls inside its own pane (`.content`, or the screen's own scroller), and the document has
-   nothing to scroll. */
+   nothing to scroll. Both panes (`.sidebar`, `.content`) are positioned, so an absolutely placed
+   element inside them (a screen-reader live region, a popover) has the pane as its containing
+   block and is clipped by it: without that it took the document as its block and grew it past the
+   window, and the wheel scrolled the whole window (live 2026-11-19, Settings' workspaces region). */
 .window {
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
@@ -39,6 +42,7 @@ body {
   padding: 0 var(--space-2) var(--space-2);
   background: var(--sidebar);
   border-right: 1px solid var(--hairline);
+  position: relative;
   overflow: auto;
 }
 .sidebar-titlebar {
@@ -172,6 +176,7 @@ body {
   color: var(--ink-tertiary);
 }
 .content {
+  position: relative;
   min-height: 0;
   overflow: auto;
 }
