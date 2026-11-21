@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
 import { PROPOSED_ALLOWED_TOOLS } from "../src/brain/index.js";
 import { decideToolUse, freezePolicy } from "../src/sessions/index.js";
 import { DRAFT_PAYLOAD_KINDS, MAX_DRAFT_TEXT_CHARS, draftDecision, draftPayloadOf, githubCliDecision } from "../src/sessions/draft-mode.js";
@@ -200,11 +201,12 @@ describe("decideToolUse: Loomwright driver scripts by exact path (AC15)", () => 
       "bash automate-next-step.sh",
       `bash '${next}'`,
       `bash "${next}"x`,
-      `bash "${next}`,
       `bash ${next}\t--resume`,
     ]) {
       expect(runBash(command), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
     }
+    // An unterminated quote is a form the parser does not model: refused before the script matcher (D48).
+    expect(runBash(`bash "${next}`)).toEqual({ decision: "deny", reason: "bash_unparsed" });
   });
 
   it("denies an admitted script's merging, pushing or spawning subcommand however it is spelled (review iteration 1)", () => {
@@ -313,19 +315,23 @@ describe("decideToolUse: automate-next-step.sh's merge, mode and trust options b
       `${runFile} --start run --mode=safe`,
       `${runFile} --start run --mode`,
       `${runFile} --start run --mode '' safe`,
-      // Unreadable words fail closed: glob, brace, tilde, unterminated quote, trailing backslash.
+      // Unreadable words fail closed: glob, brace, tilde.
       `${runFile} --start run --trust-unprotecte?`,
       `${runFile} --start run --trust-unprotecte[d]`,
       `${runFile} --start run {--trust-unprotected,}`,
       `${runFile} --start run --mode safe ~`,
-      `${runFile} --start run "--mode safe`,
-      `${runFile} --start run \\`,
       `${runFile} --start run --session-id s1 # --trust-unprotected`,
       `${runFile} --start run ^--mode`,
       `${runFile} --start run --trust-unprotecte!`,
+      // A quoted metacharacter is text, but a denied option is still read however it is quoted (D48).
+      `${runFile} --result '{"note": "a; b (c) $d"}' '--trust-unprotected'`,
+      `${runFile} --result '{"note": "x | y"}' --mode "auto-merge"`,
     ];
+    // An unterminated quote or a trailing backslash is a form the parser does not model: refused first (D48).
+    const unparsed = [`${runFile} --start run "--mode safe`, `${runFile} --start run \\`];
     for (const profile of [undefined, "automate_run"] as const) {
       for (const args of denied) expect(decide(profile, `bash ${next} ${args}`), `${profile} ${args}`).toEqual(DENY);
+      for (const args of unparsed) expect(decide(profile, `bash ${next} ${args}`), `${profile} ${args}`).toEqual({ decision: "deny", reason: "bash_unparsed" });
       expect(decide(profile, `bash "${next}" --merge-parked /w/.supervisor/automate --run r1 --session-id s`), `${profile} quoted path`).toEqual(DENY);
       // The ticket run's own calls (skills/automate-loop SKILL.md "Coordinator loop", per-item-loop.md): start, pick, run, report, answer.
       for (const args of [
@@ -1065,9 +1071,9 @@ describe("the inline phases' scripts: the owner's skip flags are never the sessi
     expect(decide(driver, `--session-id auto-2026-11-17-resume --result '{"confirmed": true}'`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     expect(decide(driver, `--session-id auto-2026-11-17-resume --result "{\\"confirmed\\": true}"`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
     expect(decide(guard, `write-marker --result '{"ok": true}'`)).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
-    // Unquoted braces may expand: refused unread (seq 114), as is an unterminated quote.
+    // Unquoted braces may expand: refused unread (seq 114); an unterminated quote is refused before, unparsed (D48).
     expect(decide(driver, `--session-id s1 --result {\\"confirmed\\":true}`)).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
-    expect(decide(driver, `--session-id s1 --result '{"a": 1}`)).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    expect(decide(driver, `--session-id s1 --result '{"a": 1}`)).toEqual({ decision: "deny", reason: "bash_unparsed" });
   });
 
   it("still denies a skip flag spelled through quotes, a glob or a brace", () => {
@@ -1179,5 +1185,177 @@ describe("classifyToolCall: an admitted Loomwright script's own path is not an o
 
   it("keeps the merge block and the outward git forms in an admitted call's other words", () => {
     expect(classifyToolCall("Bash", { command: "gh pr merge 7 --squash" }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
+  });
+});
+
+// Phase 8 item 25b (D48): the policy reads a Bash command by its shell meaning (`parseBashCommand`). A metacharacter
+// inside quotes is text; an unquoted one, a `$` or backtick in double quotes and a line break anywhere stay
+// `bash_shell_metacharacter`; a form the parser does not model is `bash_unparsed`.
+describe("decideToolUse: quoted text is text, compound forms stay refused (25b, D48)", () => {
+  const git: ToolPolicy = { allowedTools: [], allowedBashPrefixes: ["git commit", "git status", "echo", "cat", "gh pr"] };
+  const decide = (command: string, p: ToolPolicy = git) => decideToolUse(p, "Bash", { command });
+  const ALLOW = { decision: "allow", reason: "bash_prefix_allowed" };
+  const METACHARACTER = { decision: "deny", reason: "bash_shell_metacharacter" };
+  const UNPARSED = { decision: "deny", reason: "bash_unparsed" };
+
+  it("AC1: judges a command whose metacharacters sit inside single quotes on its parsed words, and admits it", () => {
+    for (const command of ["git commit -m 'fix (x); a | b'", "git commit -m 'a && b || c > d < e & f'", "echo '$HOME `id` $(touch x)'", "git commit -m 'a'\"b\"'(c)'"]) {
+      expect(decide(command), command).toEqual(ALLOW);
+    }
+    // The words still decide: the program is read from them, and an unlisted one is refused for its prefix.
+    expect(decide("touch 'a (b)'")).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    expect(decide("'git commit' -m x")).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+  });
+
+  it("AC2: refuses a $ or a backtick inside double quotes, and reads any other double-quoted metacharacter as text", () => {
+    for (const command of ['git commit -m "a $HOME"', 'git commit -m "a `id`"', 'git commit -m "a $(id)"', 'git commit -m "a \\$HOME"', `git commit -m 'ok' "\${x}"`]) {
+      expect(decide(command), command).toEqual(METACHARACTER);
+    }
+    for (const command of ['git commit -m "a; b"', 'git commit -m "a & b"', 'git commit -m "a | b"', 'git commit -m "<a>"', 'git commit -m "(a)"', 'git commit -m "fix(kernel): a (b); c | d & e < f > g"']) {
+      expect(decide(command), command).toEqual(ALLOW);
+    }
+  });
+
+  it("AC3: refuses every unquoted metacharacter exactly as before, and a newline or CR inside quotes too", () => {
+    for (const command of [
+      "git commit -m x; touch y", "git commit -m x & touch y", "git commit -m x && touch y", "git commit -m x || touch y", "git commit -m x | sh",
+      "git commit -F - < /etc/passwd", "git commit -m x > out", "git commit -m (x", "git commit -m x)", "git commit -m $HOME", "git commit -m `id`",
+      "git commit -m x\ntouch y", "git commit -m x\rtouch y",
+      // A quoted part next to an unquoted metacharacter does not hide it.
+      "git commit -m 'a';touch y", "git commit -m 'a'|sh", "git commit -m \"a\">out",
+      // Quoted line breaks: the rail refuses every control character but tab, so the policy refuses them with the same reason.
+      "git commit -m 'a\nb'", 'git commit -m "a\nb"', "git commit -m 'a\rb'", 'git commit -m "a\rb"',
+    ]) {
+      expect(decide(command), JSON.stringify(command)).toEqual(METACHARACTER);
+    }
+  });
+
+  it("AC4: refuses an unterminated quote, an unquoted trailing or metacharacter-escaping backslash, $'…', $\"…\" and a heredoc, unparsed (fail closed)", () => {
+    for (const command of [
+      // Allowed under the plain `echo` prefix before 25b (the policy's narrowing (b), D48).
+      "echo 'x", 'echo "x', "echo x\\",
+      "echo a\\;b", "echo a\\&b", "echo a\\|b", "echo a\\<b", "echo a\\>b", "echo a\\(b", "echo a\\)b", "echo a\\$b", "echo a\\`b`", "echo a\\\nb", "echo a\\\rb",
+      "echo $'x'", 'echo $"x"', "echo $'a\\nb'",
+      "cat <<EOF", "cat <<-EOF", "cat <<<x", "cat <<'EOF'",
+      // Unparsed wins over a metacharacter elsewhere in the command.
+      "echo hi; echo 'x", "echo $(x) $'y'",
+    ]) {
+      expect(decide(command), JSON.stringify(command)).toEqual(UNPARSED);
+    }
+    // An unquoted backslash before an ordinary character, a space or a quote is modelled: judged on the words.
+    for (const command of ["echo a\\ b", 'echo \\"hi\\"', "echo \\'x", "echo a\\*b", "echo a\\\\b"]) expect(decide(command), command).toEqual(ALLOW);
+  });
+
+  it("AC5: a policy prefix matches only when the command's parsed leading words are the prefix's own words", () => {
+    // A prefix whose quoting is open admits nothing: its quote would run into the command's arguments (narrowing (a), D48).
+    for (const [prefix, command] of [
+      ['echo "a', 'echo "a b"'],
+      ["echo 'a", "echo 'a b'"],
+      ["git -c '", "git -c ' ' push origin main"],
+      ["git -C \\", "git -C \\  push origin main"],
+    ] as const) {
+      expect(decide(command, { allowedTools: [], allowedBashPrefixes: [prefix] }), `${prefix} | ${command}`).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+    // A closed quoted prefix still matches its own words, and the raw-text prefix form is still required.
+    expect(decide("echo 'a b' c", { allowedTools: [], allowedBashPrefixes: ["echo 'a b'"] })).toEqual(ALLOW);
+    expect(decide('echo "a b" c', { allowedTools: [], allowedBashPrefixes: ["echo 'a b'"] })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    expect(decide("git' 'commit -m x")).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+  });
+
+  it("AC5: the Loomwright-script reader reads the parsed words: a quoted denied subcommand or option stays refused, a quoted --result note is one word", () => {
+    const install = "/Users/o/.claude/plugins/cache/atelier/loomwright/17.38.0";
+    const next = `${install}/scripts/automate-next-step.sh`;
+    const helpers = `${install}/scripts/automate-helpers.sh`;
+    const run: ToolPolicy = { allowedTools: ["Bash"], allowedBashPrefixes: [], loomwrightScripts: ["automate-next-step.sh", "automate-helpers.sh"], admittedScriptPaths: [next, helpers] };
+    const runFile = "/w/.supervisor/automate/r1.md";
+    for (const command of [
+      `bash ${helpers} "gate-eval" 'https://github.com/o/r/pull/1 (x)'`,
+      `bash ${helpers} 'gate-eval' "a; b"`,
+      `bash ${next} ${runFile} --result '{"note": "a (b)"}' '--trust-unprotected'`,
+      `bash ${next} ${runFile} --result '{"note": "a; b"}' "--merge-parked" /w/.supervisor/automate`,
+      `bash ${next} ${runFile} --result "{\\"note\\": \\"(x)\\"}" --mode 'auto-merge'`,
+    ]) {
+      expect(decide(command, run), command).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    }
+    for (const command of [
+      `bash ${next} ${runFile} --result '{"note": "a; b (c) $d"}' --session-id s1`,
+      `bash ${next} ${runFile} --result "{\\"note\\": \\"a; b (c) <d>\\"}" --session-id s1`,
+      `bash ${helpers} progress-append ${runFile} 'gate (x); y | z'`,
+    ]) {
+      expect(decide(command, run), command).toEqual(ALLOW);
+    }
+    // A double-quoted $ in a driver answer is still refused before the script matcher.
+    expect(decide(`bash ${next} ${runFile} --result "{\\"note\\": \\"$d\\"}"`, run)).toEqual(METACHARACTER);
+  });
+
+  it("AC5: the rail still reads a quoted ~/.claude path as ~/.claude/ (settings_write, agent_boundary under never)", () => {
+    const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
+    for (const command of ["cat '~/.claude/settings.json'", 'cat "~/.claude/settings.json"', "cat '~/.claude/a (b); c.md'", "cat '/home/o/.claude/CLAUDE.md'"]) {
+      expect(decide(command), command).toEqual(ALLOW);
+      const c = classifyToolCall("Bash", { command }, rail);
+      expect(c, command).toMatchObject({ kind: "outward", action: "Bash naming ~/.claude/" });
+      if (c.kind !== "outward") throw new Error("not outward");
+      expect(boundaryDecision({ allowedTools: [], allowedBashPrefixes: ["cat"], never: ["settings_write"] }, c), command).toEqual({ kind: "boundary", category: "settings_write" });
+    }
+  });
+});
+
+// AC6 (requirement Validation 1): the observed denials, replayed under the ticket run's own policy. Reverting the
+// policy to the pre-25b raw-text refusal (`/[;&|<>()$`\n\r]/`) turns the trailer and `--result` replays red.
+describe("decideToolUse: the observed quoted-text denials, replayed under AUTOMATE_RUN_POLICY (25b, AC6)", () => {
+  const scripts = "/Users/o/.claude/plugins/cache/atelier/loomwright/17.38.0/scripts";
+  const run: ToolPolicy = { ...AUTOMATE_RUN_POLICY, admittedScriptPaths: (AUTOMATE_RUN_POLICY.loomwrightScripts ?? []).map((n) => `${scripts}/${n}`) };
+  const decide = (command: string) => decideToolUse(run, "Bash", { command });
+  const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work", admittedScriptPaths: run.admittedScriptPaths };
+  const ALLOW = { decision: "allow", reason: "bash_prefix_allowed" };
+  const runFile = "/w/.supervisor/automate/automate-2026-11-20-174137.md";
+
+  it("the policy under test is the ticket run's, with launch-pad-phase.sh admitted", () => {
+    expect(run.allowedBashPrefixes).toEqual(expect.arrayContaining(["git commit", "gh pr", "gh api", "ls", "cat"]));
+    expect(run.admittedScriptPaths).toEqual(expect.arrayContaining([`${scripts}/supervisor-next-step.sh`, `${scripts}/automate-next-step.sh`, `${scripts}/launch-pad-phase.sh`]));
+  });
+
+  it("admits the commit with its Co-Authored-By trailer (one line, -m twice: session 231's lost trailer)", () => {
+    const command = 'git commit -m "fix(kernel): keep the trailer" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"';
+    expect(decide(command)).toEqual(ALLOW);
+    expect(classifyToolCall("Bash", { command }, rail)).toEqual({ kind: "ordinary" });
+  });
+
+  it("admits the driver answers whose --result note holds (, ; or $ (events 29820 → 38082)", () => {
+    for (const command of [
+      `bash ${scripts}/supervisor-next-step.sh --session-id s1 --result '{"reason": "tests pass (attempt 2) after the fix"}'`,
+      `bash ${scripts}/automate-next-step.sh ${runFile} --result '{"note": "a; b (c) $d"}' --session-id s1`,
+      `bash ${scripts}/automate-next-step.sh ${runFile} --result '{"answers": ["continue"], "note": "PR body: a (b) <c>"}' --mode safe --session-id s1`,
+    ]) {
+      expect(decide(command), command).toEqual(ALLOW);
+      expect(classifyToolCall("Bash", { command }, rail), command).toEqual({ kind: "ordinary" });
+    }
+  });
+
+  it("admits launch-pad-phase.sh with a quoted PASS (attempt 1/3) (event 33441)", () => {
+    expect(decide(`bash ${scripts}/launch-pad-phase.sh 5.5 'PASS (attempt 1/3)'`)).toEqual(ALLOW);
+    expect(decide(`bash ${scripts}/launch-pad-phase.sh 5.5 "PASS (attempt 1/3)"`)).toEqual(ALLOW);
+    // Unquoted, as the session first wrote it, it is still a metacharacter.
+    expect(decide(`bash ${scripts}/launch-pad-phase.sh 5.5 PASS (attempt 1/3)`)).toEqual({ decision: "deny", reason: "bash_shell_metacharacter" });
+  });
+
+  it("admits gh pr create with a ( in its title and <…> in its body, and the rail still holds it (event 31706)", () => {
+    const command = 'gh pr create --title "fix(kernel): x" --body "a (b) <c>"';
+    expect(decide(command)).toEqual(ALLOW);
+    expect(classifyToolCall("Bash", { command }, rail)).toMatchObject({ kind: "outward", action: "gh pr create" });
+  });
+
+  it("still refuses every genuine compound form in the denial inventory", () => {
+    for (const command of ["P=/x; bash $P/y.sh", `P=${scripts}; bash $P/automate-helpers.sh meta-entry`, "ls && cat -A f", "cat f > out 2>&1", "git status | cat"]) {
+      expect(decide(command), command).toEqual({ decision: "deny", reason: "bash_shell_metacharacter" });
+    }
+  });
+
+  it("keeps the rail's answers on quoted text the policy now admits: a quoted merge mutation is merge_blocked, a quoted push word over-holds", () => {
+    const merge = "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'";
+    expect(decide(merge)).toEqual(ALLOW);
+    expect(classifyToolCall("Bash", { command: merge }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
+    expect(decide("git commit -m 'push'")).toEqual(ALLOW);
+    expect(classifyToolCall("Bash", { command: "git commit -m 'push'" }, rail)).toMatchObject({ kind: "outward", action: "git push" });
   });
 });
