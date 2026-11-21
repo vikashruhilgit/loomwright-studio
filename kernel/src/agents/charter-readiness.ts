@@ -857,6 +857,15 @@ function isNeverLine(it: ReadinessItem): boolean {
   return it.subject === "permission" && it.line.endsWith(NEVER_FORBIDS);
 }
 
+/**
+ * Whether `readiness` has a never line: the charter's `never` list defeats at
+ * least one granted job (item 25g). The one signal a message naming a blocked
+ * job as its reason is conditional on, never a second matcher.
+ */
+export function readinessNeverConflict(readiness: Pick<ReadinessResult, "items">): boolean {
+  return readiness.items.some(isNeverLine);
+}
+
 /** The job of `jobs` with the shortest label (the first of the shortest). */
 function shortestLabelled(jobs: readonly ToolJob[]): ToolJob {
   return jobs.reduce((a, b) => (TOOL_JOBS[b].length < TOOL_JOBS[a].length ? b : a));

@@ -38,7 +38,10 @@ import {
   wrightDutyRefusal,
 } from "../src/agents/charter-readiness.js";
 import type { ReadinessGrant, ReadinessResult, TrackerEnv } from "../src/agents/charter-readiness.js";
-import { AFTER_MEMBER_APPROVAL, AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME, UPDATE_ASK_LESS_NEVER } from "../src/agents/charter-tools.js";
+import { AFTER_MEMBER_APPROVAL, AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME, UPDATE_ASK_LESS_NEVER, UPDATE_ASK_LESS_NEVER_CHOICE } from "../src/agents/charter-tools.js";
+import { AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, REVIEW_PR_RUN_POLICY } from "../src/automate/launch.js";
+import { neverCategoriesAdmitted } from "../src/sessions/policy.js";
+import type { NeverCategory } from "../src/sessions/policy.js";
 import { CHARTER_JSON_SCHEMA, TICKET_SOURCES } from "../src/agents/charter-files.js";
 import { agentSettingsPath, createAgent, getAgent, readAgentSettings, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
@@ -1087,6 +1090,31 @@ describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, 
     const fits = await h.update(A21, { never: [] }, "u2");
     expect(fits.permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
     expect(h.display(1).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+  });
+
+  it("item 25g: a never-only update over the cut whose never list defeats no granted job is asked for a shorter never list as the owner's choice, never told it blocks the member's jobs", async () => {
+    const h = await boot();
+    const base = approval21Policy();
+    // approval21Policy's never list: no category of it is one a granted job's kernel run admits, so it defeats no job.
+    const never = base.never as NeverCategory[];
+    const admitted = new Set([AUTOMATE_RUN_POLICY, REVIEW_PR_RUN_POLICY, MERGE_PARKED_RUN_POLICY].flatMap((p) => neverCategoriesAdmitted(p)));
+    expect(never.filter((c) => admitted.has(c))).toEqual([]);
+    const wide = Array.from({ length: 10 }, (_, i) => `mcp__wide__${"a".repeat(135)}_${String(i).padStart(2, "0")}`);
+    // Grow the member one short tool at a time until the request's display is over the cut while a shorter never list still fits.
+    let reason: string | undefined;
+    for (let k = 0; k < 200 && reason === undefined; k += 1) {
+      const id = `pad-${String(k).padStart(3, "0")}`;
+      const pad = Array.from({ length: k }, (_, i) => `mcp__pad__${String(i).padStart(3, "0")}`);
+      h.ownerCreate(approval21({ id, display_name: `Pad ${String(k).padStart(3, "0")}`, tool_policy: { ...base, allowedTools: [...(base.allowedTools as string[]), ...wide, ...pad], never: [] } }));
+      const r = await h.update(id, { never }, `n${k}`);
+      // Held while the display fits; the first refusal is the one over the cut.
+      if (!r.permissionDecisionReason.startsWith("approval_required: held")) reason = r.permissionDecisionReason;
+    }
+    expect(reason).toBeDefined();
+    expect(reason).toMatch(/^kernel_agent_update: invalid_input: the display .* over the 4000 the owner is shown; ask for less at once \(/);
+    expect(reason?.endsWith(`ask for less at once (${UPDATE_ASK_LESS_NEVER_CHOICE}) (nothing was held for the owner)`)).toBe(true);
+    expect(reason).not.toContain("blocks fewer of the member's own jobs");
+    expect(reason).not.toContain(UPDATE_ASK_LESS_NEVER);
   });
 
   it("AC5: a stored bare-string duty (an update's legacy line) is quoted by its excerpt too", async () => {

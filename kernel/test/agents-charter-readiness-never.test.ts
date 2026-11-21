@@ -16,9 +16,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { NEVER_FORBIDS, READINESS_FLAG_PREFIX, charterReadiness, readinessFloorLines } from "../src/agents/charter-readiness.js";
+import { NEVER_FORBIDS, READINESS_FLAG_PREFIX, charterReadiness, readinessFloorLines, readinessNeverConflict } from "../src/agents/charter-readiness.js";
 import type { ReadinessResult } from "../src/agents/charter-readiness.js";
-import { UPDATE_ASK_LESS_NEVER, createDisplay, updateAskLess } from "../src/agents/charter-tools.js";
+import { UPDATE_ASK_LESS_NEVER, UPDATE_ASK_LESS_NEVER_CHOICE, createDisplay, updateAskLess } from "../src/agents/charter-tools.js";
 import { validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
@@ -367,7 +367,7 @@ describe("property: readinessFloorLines is a lower bound for every combination o
 
 describe("the update's ask-for-less names only the fields the request sets", () => {
   const ch = (never: readonly string[]) => ({ tool_policy: { allowedTools: [], allowedBashPrefixes: [], never: never as NeverCategory[] } });
-  const ask = (fields: string[], never: readonly string[] = []) => updateAskLess({ changes: fields.map((field) => ({ field })), charter: ch(never) });
+  const ask = (fields: string[], never: readonly string[] = [], conflict = true) => updateAskLess({ changes: fields.map((field) => ({ field })), charter: ch(never) }, conflict);
 
   it("every combination of tool_policy, workspaces and never", () => {
     expect(ask(["tool_policy"])).toBe("fewer or shorter tools or prefixes");
@@ -377,9 +377,10 @@ describe("the update's ask-for-less names only the fields the request sets", () 
     expect(ask(["tool_policy", "never"], ["gh_pr_create"])).toBe(`fewer or shorter tools or prefixes; ${UPDATE_ASK_LESS_NEVER}`);
     expect(ask(["workspaces", "never"], ["gh_pr_create"])).toBe(`fewer or shorter workspaces; ${UPDATE_ASK_LESS_NEVER}`);
     expect(ask(["tool_policy", "workspaces", "never"], ["gh_pr_create"])).toBe(`fewer or shorter tools, prefixes or workspaces; ${UPDATE_ASK_LESS_NEVER}`);
-    // An empty never can't be shortened: it is not named.
+    // An empty never can't be shortened: it is not named, whatever the conflict signal.
     expect(ask(["tool_policy", "never"], [])).toBe("fewer or shorter tools or prefixes");
     expect(ask(["never"], [])).toBe("shorter new values for the fields it changes");
+    expect(ask(["never"], [], false)).toBe("shorter new values for the fields it changes");
   });
 
   it("a request setting none of those names its own fields, never tools, prefixes or workspaces", () => {
@@ -389,7 +390,35 @@ describe("the update's ask-for-less names only the fields the request sets", () 
   });
 
   it("the never advice is the owner's choice, never Wright's own change to the never list", () => {
-    expect(UPDATE_ASK_LESS_NEVER).toContain("the owner's decision, never a change you make to the never list on your own");
-    expect(UPDATE_ASK_LESS_NEVER).not.toMatch(/tools|prefixes|workspaces/);
+    for (const text of [UPDATE_ASK_LESS_NEVER, UPDATE_ASK_LESS_NEVER_CHOICE]) {
+      expect(text).toContain("the owner's decision, never a change you make to the never list on your own");
+      expect(text).not.toMatch(/tools|prefixes|workspaces/);
+    }
+  });
+
+  it("a never list that defeats no granted job is asked for a shorter list with no claim about the member's jobs", () => {
+    expect(UPDATE_ASK_LESS_NEVER_CHOICE).not.toMatch(/job/);
+    expect(ask(["never"], ["settings_write"], false)).toBe(UPDATE_ASK_LESS_NEVER_CHOICE);
+    expect(ask(["tool_policy", "never"], ["settings_write"], false)).toBe(`fewer or shorter tools or prefixes; ${UPDATE_ASK_LESS_NEVER_CHOICE}`);
+    expect(ask(["never", "model"], ["hooks_write"], false)).toBe(`${UPDATE_ASK_LESS_NEVER_CHOICE}; shorter values for model`);
+  });
+
+  it("the conflict signal is the request's readiness never line: a never-only update defeating a granted job gets the job-blocking wording, one defeating none the owner's-choice wording", () => {
+    const duties = [duty("Hand tickets over", "automate_tickets")];
+    const never = (list: string[]) => ({ changes: [{ field: "never" }], charter: charterOf(duties, ["automate_tickets"], list) });
+    const ticketRun = neverCategoriesAdmitted(AUTOMATE_RUN_POLICY)[0] as NeverCategory;
+    const defeats = never([ticketRun]);
+    expect(readinessNeverConflict(readiness(defeats.charter, "update"))).toBe(true);
+    const blocked = updateAskLess(defeats, readinessNeverConflict(readiness(defeats.charter, "update")));
+    expect(blocked).toBe(UPDATE_ASK_LESS_NEVER);
+    expect(blocked).toContain("blocks fewer of the member's own jobs");
+    const admitted = new Set([AUTOMATE_RUN_POLICY, REVIEW_PR_RUN_POLICY, MERGE_PARKED_RUN_POLICY].flatMap((p) => neverCategoriesAdmitted(p)));
+    const harmless = NEVER_CATEGORIES.filter((c) => !admitted.has(c));
+    expect(harmless.length).toBeGreaterThan(0);
+    const none = never([...harmless]);
+    expect(readinessNeverConflict(readiness(none.charter, "update"))).toBe(false);
+    const choice = updateAskLess(none, readinessNeverConflict(readiness(none.charter, "update")));
+    expect(choice).toBe(UPDATE_ASK_LESS_NEVER_CHOICE);
+    expect(choice).not.toContain("blocks fewer of the member's own jobs");
   });
 });
