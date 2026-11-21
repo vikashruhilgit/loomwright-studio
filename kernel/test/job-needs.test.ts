@@ -30,7 +30,7 @@ import {
   resolveJobNeeds,
 } from "../src/features/job-needs.js";
 import type { CommandNeeds, LoomwrightCommandNeedsTable } from "../src/features/job-needs.js";
-import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
+import { AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, REVIEW_PR_RUN_POLICY } from "../src/automate/launch.js";
 import { GITHUB_WRITE_TOOLS, NEVER_CATEGORIES, neverCategoriesAdmitted } from "../src/sessions/policy.js";
 import { parseLoomwrightContract } from "../src/loomwright/contract.js";
 import type { LoomwrightContractEntry } from "../src/loomwright/contract.js";
@@ -321,6 +321,42 @@ describe("item 25g: neverCategoriesAdmitted reads a policy's outward reach throu
       "gh_issue_close",
       "gh_api_write",
     ]);
+  });
+
+  it("a prefix more specific than the rail's form is read as the command a session could start with", () => {
+    expect(admits(["git push origin"])).toEqual(["git_push"]);
+    expect(admits(["git push origin main"])).toEqual(["git_push"]);
+    expect(admits(["gh pr create --draft"])).toEqual(["gh_pr_create"]);
+    expect(admits(["gh pr new --fill"])).toEqual(["gh_pr_create"]);
+    expect(admits(["gh issue comment 12"])).toEqual(["gh_issue_comment"]);
+    expect(admits(["gh api -X POST"])).toEqual(["gh_api_write"]);
+    expect(admits(["gh api --method PATCH"])).toEqual(["gh_api_write"]);
+    expect(admits(["gh api --method=DELETE repos/o/r/issues/1"])).toEqual(["gh_api_write"]);
+    expect(admits(["gh api repos/o/r/issues -f title=x"])).toEqual(["gh_api_write"]);
+    // Read-only prefixes the rail reads as no outward form admit nothing.
+    expect(admits(["gh api repos/x"])).toEqual([]);
+    expect(admits(["gh api -X GET repos/x"])).toEqual([]);
+    expect(admits(["git status", "git log --oneline", "gh pr view 12"])).toEqual([]);
+    expect(admits(["gh prx"])).toEqual([]);
+    expect(admits(["gh prx create"])).toEqual([]);
+  });
+
+  it("the three run policies admit exactly what their prefixes held before the both-directions read", () => {
+    for (const policy of [AUTOMATE_RUN_POLICY, REVIEW_PR_RUN_POLICY, MERGE_PARKED_RUN_POLICY]) {
+      expect(neverCategoriesAdmitted(policy)).toEqual([
+        "git_push",
+        "gh_pr_create",
+        "gh_pr_comment",
+        "gh_pr_review",
+        "gh_pr_edit",
+        "gh_pr_close",
+        "gh_issue_create",
+        "gh_issue_comment",
+        "gh_issue_edit",
+        "gh_issue_close",
+        "gh_api_write",
+      ]);
+    }
   });
 
   it("a GitHub write tool in allowedTools admits its category; an empty or blank prefix, or a file tool, admits nothing", () => {
