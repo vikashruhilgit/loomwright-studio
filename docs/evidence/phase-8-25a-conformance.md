@@ -11,7 +11,8 @@ The rail checks shell metacharacters before prefixes, so a command holding `$`, 
 - **Extractor:** [`kernel/test/fixtures/loomwright-instructions/extract.ts`](../../kernel/test/fixtures/loomwright-instructions/extract.ts). It reads shell fences, backtick spans, `scripts/<name>.sh` references, tool names (backticks, `Name(`, "the Name tool", front-matter `tools:`), slash commands, and the drivers' printed text. A shape it cannot parse is kept as `unparsed`, never dropped.
 - **Fixture:** [`kernel/test/fixtures/loomwright-18.1.2-instructions.json`](../../kernel/test/fixtures/loomwright-18.1.2-instructions.json). It holds 1494 entries (566 script calls, 334 commands, 325 slash commands, 233 tool names, 36 unparsed) from 46 files, the 345 script names, every script's facts, and the cited lines. Paths are install-relative. Entries are sorted by file, then line, then text.
 - **Modes:** plain `npm test` reads the fixture, so CI needs no install and no test reads `installed_plugins.json`. `STUDIO_LIVE=1` reads the install `resolveLoomwrightInstall()` returns. [`scripts/refresh-loomwright-fixture.sh`](../../scripts/refresh-loomwright-fixture.sh) runs the test's update mode (`LOOMWRIGHT_FIXTURE_UPDATE=1`), which rewrites the fixture, then prints `git diff -M --stat` on it.
-- **Table:** 60 exclusion rows. 20 are known gaps: 2 `filed: 25b`, 17 `filed: 25c` and 1 `filed: 25d`. The rest are denied on purpose (a refused subcommand, a `claude` process, an outward post, a memory write) or are text that is not an instruction (`advisory, never instructed`). A row filed to a story whose criteria do not yet name the command says "not in 25x's list".
+- **Table:** 61 exclusion rows. 20 are known gaps: 2 `filed: 25b`, 17 `filed: 25c` and 1 `filed: 25d`. The rest are denied on purpose (a refused subcommand, a `claude` process, an outward post, a memory write) or are text that is not an instruction (`advisory, never instructed`). A row filed to a story whose criteria do not yet name the command says "not in 25x's list".
+- **Rows match only what their reason describes.** Every command row other than the shell-composition rows (whose parts are decided on their own) matches the exact shapes it records and names the files they come from. A new command in a listed file, or a recorded shape in another file, has no row and fails. Synthetic cases pin this: `git -C ../wt push --force origin main`, `git -C . reset --hard origin/main`, `git reset --hard origin/main`, `git merge --abort`, `rm -rf ~/.claude`, `cp ~/.ssh/id_rsa /tmp/x`, `cp .supervisor/state.md ~/.ssh/authorized_keys`, a `claude -p` with a permission-bypass flag and `npm run deploy` each fail, both in a synthetic file and in the file the old, wider row listed. Against the iteration-1 table every one of those 19 cases, and a recorded `claude -p` / `npm test` in an unlisted file, is absorbed by a row and so red; the recorded shapes in their own files still pass. Narrowing also re-filed prose mentions the wide `git-file-and-worktree-ops` and `git-subcommands-unlisted` rows had absorbed: the reviewer's scratch-dir `rm -rf` and `git -C <checkout> archive HEAD` now sit in `reviewer-scratch-repro`, and the `rm -rf`, `git reset`, `mv` and `git mv` the text forbids ("never `rm -rf`", "No `git reset`", "never a hand-rolled `mv`/`git mv`") sit in the new `never-hand-rolled-file-ops` row.
 - **Facts:** 3 rows carry `reason_fact_false: "filed: 25c"`. The test asserts their stated fact IS false. `gate-auto.sh` ("starts a claude process", `launch.ts:232`) and `run-benchmark.sh` ("runs eval / bash -c", `launch.ts:236`) were expected. The test also found `run-pin-mutations.sh`: 18.1.2 holds no `eval` and no `bash -c` in it. It runs pinned test files with `bash "$1"` (`run-pin-mutations.sh:262`).
 - **Past the rail:** `PAST_THE_RAIL` lists 7 commands that admitted scripts run themselves. Each row has a line anchor:
   - `review-heal-next-step.sh`:
@@ -39,10 +40,10 @@ These are recorded as `filed: 25c` rows; the policies are unchanged here:
 ## Commands
 
 ```bash
-cd kernel && npm ci && npm test                              # 147 files passed, 1 skipped; 5039 tests passed
-cd kernel && npx vitest run test/loomwright-conformance.test.ts                 # fixture mode: 11 passed
-cd kernel && STUDIO_LIVE=1 npx vitest run test/loomwright-conformance.test.ts   # live 18.1.2: 11 passed
-bash scripts/refresh-loomwright-fixture.sh                   # update mode: 11 passed; fixture regenerated, unchanged
+cd kernel && npm ci && npm test                              # 147 files passed, 1 skipped; 5060 tests passed
+cd kernel && npx vitest run test/loomwright-conformance.test.ts                 # fixture mode: 32 passed
+cd kernel && STUDIO_LIVE=1 npx vitest run test/loomwright-conformance.test.ts   # live 18.1.2: 32 passed
+bash scripts/refresh-loomwright-fixture.sh                   # update mode: 32 passed; fixture regenerated, unchanged
 cd kernel && npm run typecheck                               # clean
 ```
 
@@ -58,7 +59,7 @@ npx vitest run test/loomwright-conformance.test.ts
 ```
 
 ```text
-Tests  1 failed | 10 passed (11)
+Tests  1 failed | 31 passed (32)
 AssertionError: 15 denied instruction(s) without exactly one exclusion row:
 backlog: `git commit` (command) denied bash_prefix_not_allowed at agents/code-reviewer.md:66: no exclusion row
 resume: `git commit` (command) denied bash_prefix_not_allowed at agents/code-reviewer.md:66: no exclusion row
@@ -79,7 +80,7 @@ resume: part of `git commit -m '```bash\nfeat(auth): add jwt token refresh endpo
 
 The last six lines are the part-by-part decision: the composition rows still match the multi-line and heredoc commits, and their `git commit` parts fail on their own.
 
-After restoring `launch.ts`, the same command passes: `Tests  11 passed (11)`.
+After restoring `launch.ts`, the same command passes: `Tests  32 passed (32)`.
 
 ### 2. Delete the `reason_fact_false` marker on the `gate-auto.sh` row: the reason check fails
 
@@ -90,7 +91,7 @@ npx vitest run test/loomwright-conformance.test.ts
 ```
 
 ```text
-Tests  1 failed | 10 passed (11)
+Tests  1 failed | 31 passed (32)
 +   "gate-auto: \"starts a claude process\" is false for gate-auto.sh in Loomwright 18.1.2",
 ```
 

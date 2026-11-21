@@ -629,3 +629,46 @@ describe("a shell-composition row never hides the program it composes (review it
     expect(conformanceFailures([at('git log --oneline -1 "origin/$BASE_BRANCH"')], root, scripts, RUN_EXCLUSIONS)).toEqual([]);
   });
 });
+
+describe("a row matches only the shapes its reason describes (review iteration 2)", () => {
+  const scripts = new Set<string>();
+  const at = (file: string, text: string): Entry => ({ file, line: 9, type: "command", source: "fence", text, kinds: ["backlog"] });
+  const SYN = "skills/synthetic/SKILL.md";
+  // Each shape once in a file no row lists, and once in a file the row that used to absorb it lists (so the text bites, not only `files`).
+  const shapes: readonly (readonly [string, string])[] = [
+    ["git -C ../wt push --force origin main", "skills/async-orchestration/finalize.md"],
+    ["git -C . reset --hard origin/main", "skills/async-orchestration/finalize.md"],
+    ["git reset --hard origin/main", "skills/automate-loop/per-item-loop.md"],
+    ["git merge --abort", "skills/workflow-management/SKILL.md"],
+    ["rm -rf ~/.claude", "agents/code-reviewer.md"],
+    ["rm -rf ~/.claude", "skills/automate-loop/helpers.md"],
+    ["cp ~/.ssh/id_rsa /tmp/x", "skills/state-management/SKILL.md"],
+    ["cp .supervisor/state.md ~/.ssh/authorized_keys", "skills/state-management/SKILL.md"],
+    ["claude -p --dangerously-skip-permissions \"fix it\"", "skills/review-heal/SKILL.md"],
+    ["npm run deploy", "skills/workflow-management/SKILL.md"],
+  ];
+
+  const cases = [...new Map(shapes.flatMap(([text, listed]) => [[text, SYN], [text, listed]]).map((c) => [c.join("\t"), c] as const)).values()];
+
+  it.each(cases)("`%s` in %s has no exclusion row", (text, file) => {
+    const failures = conformanceFailures([at(file, text)], root, scripts, RUN_EXCLUSIONS);
+    expect(failures).toEqual([expect.stringMatching(new RegExp(` denied [a-z_]+ at ${file.replace(/[.]/g, "\\.")}:9: no exclusion row$`))]);
+  });
+
+  it("a recorded shape in a file its row does not list has no exclusion row (`claude -p`, `npm test`)", () => {
+    for (const text of ["claude -p", "npm test"]) {
+      expect(conformanceFailures([at(SYN, text)], root, scripts, RUN_EXCLUSIONS)).toEqual([expect.stringMatching(/: no exclusion row$/)]);
+    }
+  });
+
+  it("the shapes the rows record still match in their own files", () => {
+    const real = [
+      at("skills/async-orchestration/finalize.md", "git -C ../project-{subtask_a} add -A"),
+      at("skills/workflow-management/SKILL.md", "git merge feature/BD-XXa --no-ff"),
+      at("agents/code-reviewer.md", "rm -rf"),
+      at("skills/review-heal/SKILL.md", "claude -p"),
+      at("skills/workflow-management/SKILL.md", "npm run lint"),
+    ];
+    expect(conformanceFailures(real, root, scripts, RUN_EXCLUSIONS)).toEqual([]);
+  });
+});

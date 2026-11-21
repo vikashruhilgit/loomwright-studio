@@ -310,7 +310,12 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   // ---- Not instructions: Loomwright's own tests, sourced libraries, usage synopses, prose ----
   {
     id: "loomwright-own-tests",
-    match: { type: "script", deny: NOT_LISTED, text: "(^|/)test-[A-Za-z0-9_.-]+\\.sh" },
+    match: {
+      type: "script",
+      deny: NOT_LISTED,
+      text: "^(scripts/)?test-[A-Za-z0-9_.-]+\\.sh$",
+      files: ["skills/automate-loop/SKILL.md", "skills/automate-loop/helpers.md", "skills/automate-loop/invariants.md", "skills/review-heal/SKILL.md", "skills/state-management/SKILL.md"],
+    },
     kinds: ALL,
     reason_class: "advisory, never instructed",
     reason: "Loomwright's own repo tests (`test-*.sh`), named as the proof behind a contract; a run never runs them.",
@@ -326,7 +331,7 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "usage-synopsis",
-    match: { type: "script", deny: SHELL_META, text: "\\S\\|\\S|\\| --" },
+    match: { type: "script", deny: SHELL_META, text: "\\S\\|\\S|\\| --", files: ["skills/automate-loop/helpers.md", "skills/automate-loop/per-item-loop.md", "skills/review-heal/SKILL.md"] },
     kinds: ALL,
     reason_class: "advisory, never instructed",
     reason: "a usage synopsis (`a|b|c` alternatives, `[--opt]` optional parts), not a command line; the rail refuses the unquoted `|` and `[` it holds.",
@@ -358,7 +363,14 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "claude-usage",
-    match: { type: "command", text: "^claude\\b" },
+    match: {
+      type: "command",
+      text: "^claude (--agent (loomwright|…):(launch-pad|review-pr|supervisor)-runner|-p|\"<prompt>\")$",
+      files: [
+        "agents/launch-pad.md", "commands/launch-pad.md", "commands/review-pr.md", "commands/supervisor.md", "skills/automate-loop/SKILL.md",
+        "skills/review-heal/SKILL.md", "skills/review-heal/dispatch.md",
+      ],
+    },
     kinds: ALL,
     reason_class: "advisory, never instructed",
     reason: "`claude --agent …-runner` is the owner's way to run a phase standalone, and `claude -p` / `claude \"<prompt>\"` describe what Loomwright's own dispatchers start; a kernel run never starts `claude` (invariant 2).",
@@ -366,7 +378,7 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "process-wait-advice",
-    match: { type: "command", text: "^(pgrep|pkill) -f\\b" },
+    match: { type: "command", text: "^(pgrep -f|pkill -f <pattern>)$", files: ["agents/worker.md", "skills/automate-loop/per-item-loop.md"] },
     kinds: AUTOMATE,
     reason_class: "advisory, never instructed",
     reason: "the worker and per-item loop name `pgrep -f` / `pkill -f` to warn against waiting on them (the wait matches its own shell).",
@@ -382,7 +394,11 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "prose-misread",
-    match: { type: "command", text: "^(diff review\\)|diff sample \\{fixable, each bot-sourced|git worktree \\(the sole-writer)" },
+    match: {
+      type: "command",
+      text: "^(diff review\\)|diff sample \\{fixable, each bot-sourced|git worktree \\(the sole-writer)",
+      files: ["skills/review-heal/SKILL.md", "skills/self-heal-advisory/completion-tail.md"],
+    },
     kinds: [...AUTOMATE, ...REVIEW],
     reason_class: "advisory, never instructed",
     reason: "prose in backticks that starts with a program word (`diff review): …`, `git worktree (the sole-writer …`), not a command; the first is also matched as the part the test decides (`diff sample {fixable, …`).",
@@ -390,10 +406,27 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "never-do-this",
-    match: { type: "command", text: "^(PATHS=|grep -rnE? \"(gh pr merge --squash|800 changed))" },
+    match: {
+      type: "command",
+      text: "^(PATHS=|grep -rnE? \"(gh pr merge --squash|800 changed))",
+      files: ["skills/automate-loop/invariants.md", "skills/preflight-sync/SKILL.md", "skills/supervisor-readiness/SKILL.md"],
+    },
     kinds: [...AUTOMATE, ...MERGE],
     reason_class: "advisory, never instructed",
     reason: "a counter-example the text marks NEVER, or an invariant grep Loomwright's maintainers run over the plugin repo, not over the host checkout.",
+    consequence: "consequence if denied: none.",
+  },
+  {
+    id: "never-hand-rolled-file-ops",
+    match: {
+      type: "command",
+      deny: NOT_LISTED,
+      text: "^(rm -rf|git reset|git mv|git mv -k …|mv …)$",
+      files: ["skills/automate-loop/helpers.md", "skills/automate-loop/per-item-loop.md", "skills/self-heal-advisory/completion-tail.md"],
+    },
+    kinds: [...AUTOMATE, ...MERGE],
+    reason_class: "advisory, never instructed",
+    reason: "a file or git operation the text names to forbid it: `sweep` removes a worktree \"never `rm -rf`\" (helpers.md:38), the trail sync does \"No `git reset`\" (per-item-loop.md:60), and a job move is \"never a hand-rolled `mv`/`git mv`\" (completion-tail.md:277).",
     consequence: "consequence if denied: none.",
   },
   {
@@ -420,6 +453,7 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
       type: "command",
       deny: SHELL_META,
       text: "^(git commit -m \"feat\\(auth\\)|jq 'has\\()",
+      files: ["commands/automate.md", "skills/commit/SKILL.md"],
     },
     kinds: [...AUTOMATE, ...MERGE],
     reason_class: "quoted text the rail reads as shell",
@@ -429,7 +463,7 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "quoted-metacharacters-scripts",
-    match: { type: "script", deny: SHELL_META, text: "(\\(attempt N/3\\)|\"reconcile-status: would stamp)" },
+    match: { type: "script", deny: SHELL_META, text: "(\\(attempt N/3\\)|\"reconcile-status: would stamp)", files: ["commands/launch-pad.md", "skills/automate-loop/resume.md"] },
     kinds: [...AUTOMATE, ...MERGE],
     reason_class: "quoted text the rail reads as shell",
     reason: "a driver or marker call whose note holds `(`…`)`: `launch-pad-phase.sh 5.5 PASS (attempt 1/3)` (observed, event 33441) and a quoted progress note.",
@@ -464,7 +498,12 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "composition-builtins",
-    match: { type: "command", deny: NOT_LISTED, text: "^(printf |\\[ sample = true \\]$|true$)" },
+    match: {
+      type: "command",
+      deny: NOT_LISTED,
+      text: "^(printf (-- '--(repeat-check-failure|unresolved-bot-feedback)'|'%s' sample)|\\[ sample = true \\]|true)$",
+      files: ["skills/autonomous-loop/SKILL.md", "skills/review-heal/dispatch.md", "skills/self-heal-advisory/escalation.md"],
+    },
     kinds: [...AUTOMATE, ...REVIEW],
     reason_class: "shell composition",
     reason: "a part that only feeds or guards another: `printf '%s' \"$BLOCK_TEXT\" |` feeding the Launch Pad validator, `$( [ \"$x\" = true ] && printf -- '--flag' )` building a postmortem flag, and `|| true` after a best-effort `gh pr close`.",
@@ -472,7 +511,7 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "driver-shell-quoting",
-    match: { type: "command", deny: NOT_LISTED, text: "^ns_sq ", files: ["scripts/automate-next-step.sh"] },
+    match: { type: "command", deny: NOT_LISTED, text: "^ns_sq sample$", files: ["scripts/automate-next-step.sh"] },
     kinds: [...AUTOMATE, ...MERGE],
     reason_class: "shell composition",
     reason: "the driver's own quoting function (`ns_sq`, automate-next-step.sh:1993) in the source of a line it prints; the session receives the line expanded (`bash '<path>' '<run file>' --session-id …`), which is decided as the driver call.",
@@ -491,25 +530,41 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   // ---- Gaps: programs and subcommands the run needs (25c) ----
   {
     id: "git-file-and-worktree-ops",
-    match: { type: "command", deny: NOT_LISTED, text: "^(git -C |git merge |git mv\\b|mv |rm -rf\\b|cp )" },
-    kinds: ALL,
+    match: {
+      type: "command",
+      deny: NOT_LISTED,
+      text: "^(git -C \\.\\./\\S+ (add -A|commit -m \"subtask: \\{subtask_a\\} — \\{title\\}\"|merge --no-ff feature/\\S+)|git merge feature/\\S+ --no-ff( -m \"merge: \\{subtask_[abc]\\} \\{title\\}\")?|mv \\.supervisor/jobs/pending/<this-session-id>-\\*\\.md \\.supervisor/jobs/failed/|cp \\.supervisor/state\\.md (\"\\.supervisor/history/sample-sample\\.md\"|\\{scratchpad\\}/supervisor-state\\.md))$",
+      files: [
+        "agents/execute-manager.md", "agents/supervisor.md", "skills/async-orchestration/SKILL.md", "skills/async-orchestration/finalize.md",
+        "skills/autonomous-loop/SKILL.md", "skills/state-management/SKILL.md", "skills/workflow-management/SKILL.md",
+      ],
+    },
+    kinds: AUTOMATE,
     reason_class: "program or subcommand not admitted",
-    reason: "the parallel path's `git -C <worktree> add|commit|merge`, a local `git merge`, and `mv` / `rm -rf` / `cp` of `.supervisor/` files: 25c admits these confined to the checkout (`cp` is not in 25c's list).",
-    consequence: "consequence if denied: an item that renames or deletes a file, or uses the Supervisor's parallel path, cannot finish (stale brief left in in-progress/, session 238).",
+    reason: "the parallel path's `git -C ../<worktree> add -A|commit -m|merge --no-ff feature/…`, a local `git merge feature/<subtask> --no-ff`, and `mv` / `cp` of `.supervisor/` files: 25c admits these confined to the checkout (`cp` is not in 25c's list).",
+    consequence: "consequence if denied: an item that moves a `.supervisor/` file, or uses the Supervisor's parallel path, cannot finish (stale brief left in in-progress/, session 238).",
     filed: "25c",
   },
   {
     id: "git-subcommands-unlisted",
-    match: { type: "command", deny: NOT_LISTED, text: "^git (pull|reset|restore|check-ref-format|remote set-head|ls-tree|check-ignore)\\b" },
+    match: {
+      type: "command",
+      deny: NOT_LISTED,
+      text: "^git (pull( --ff-only)?|restore --staged -- <path>|check-ref-format --branch <value>|remote set-head origin -a|ls-tree -r --name-only sample|check-ignore -q --no-index sample)$",
+      files: [
+        "agents/launch-pad.md", "skills/automate-loop/helpers.md", "skills/automate-loop/per-item-loop.md", "skills/preflight-sync/SKILL.md",
+        "skills/state-management/SKILL.md", "skills/supervisor-config/SKILL.md",
+      ],
+    },
     kinds: [...AUTOMATE, ...MERGE],
     reason_class: "program or subcommand not admitted",
-    reason: "git subcommands the 18.1.2 helpers, per-item loop and Launch Pad use (`pull --ff-only`, `restore --staged`, `reset`, `check-ref-format`, `remote set-head`, `ls-tree -r --name-only \"origin/$BASE_BRANCH\"` for a cited ref, `check-ignore -q --no-index` in the `.supervisor/` gitignore probe) that RUN_BASH_PREFIXES does not list (found by 25a, not in 25c's list).",
+    reason: "git subcommands the 18.1.2 helpers, per-item loop and Launch Pad use (`pull --ff-only`, `restore --staged`, `check-ref-format`, `remote set-head`, `ls-tree -r --name-only \"origin/$BASE_BRANCH\"` for a cited ref, `check-ignore -q --no-index` in the `.supervisor/` gitignore probe) that RUN_BASH_PREFIXES does not list (found by 25a, not in 25c's list).",
     consequence: "consequence if denied: the session cannot fast-forward its base, unstage a path, validate a branch name, resolve a cited ref by suffix (`resolves: no`) or probe `.supervisor/`'s ignore state with git.",
     filed: "25c",
   },
   {
     id: "git-branch-glob",
-    match: { type: "command", deny: ["loomwright_run_state"], text: "^git branch --list " },
+    match: { type: "command", deny: ["loomwright_run_state"], text: "^git branch --list sdk-spike/subtask-\\*$", files: ["agents/supervisor.md", "commands/supervisor.md"] },
     kinds: AUTOMATE,
     reason_class: "program or subcommand not admitted",
     reason: "`git branch --list sdk-spike/subtask-*`: the run-state guard refuses any git word with a glob (a pathspec could reach `.supervisor/automate/`), though here it is a branch pattern (found by 25a, not in 25c's list).",
@@ -518,16 +573,24 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "reviewer-scratch-repro",
-    match: { type: "command", deny: NOT_LISTED, text: "^(git -c |git init\\b|mktemp -d|sed -i|tar -x |cd sample$)", files: ["agents/code-reviewer.md", "agents/worker.md"] },
+    match: { type: "command", deny: NOT_LISTED, text: "^(git -c user\\.name=r -c user\\.email=r@x …|git init|mktemp -d|sed -i|tar -x -C sample|cd sample|git -C sample archive HEAD|rm -rf)$", files: ["agents/code-reviewer.md", "agents/worker.md"] },
     kinds: ALL,
     reason_class: "program or subcommand not admitted",
-    reason: "the reviewer's and worker's scratch-dir repro (`mktemp -d`, `git init`, `git -c user.name=…`, `sed -i`, `cd \"$SCRATCH\"`, `git archive | tar -x -C \"$SCRATCH/tree\"`): outside the checkout 25c's confinement still refuses them (not in 25c's list).",
+    reason: "the reviewer's and worker's scratch-dir repro (`mktemp -d`, `git init`, `git -c user.name=…`, `sed -i`, `cd \"$SCRATCH\"`, `git -C <checkout> archive HEAD | tar -x -C \"$SCRATCH/tree\"`, `rm -rf` of the scratch dir only): outside the checkout 25c's confinement still refuses them (not in 25c's list).",
     consequence: "consequence if denied: the self-review and code review skip their adversarial repro in a kernel run.",
     filed: "25c",
   },
   {
     id: "text-and-runtime-tools",
-    match: { type: "command", deny: NOT_LISTED, text: "^(awk|find|python3|sed -n)( |$)" },
+    match: {
+      type: "command",
+      deny: NOT_LISTED,
+      text: "^(awk (-v|sample sample)|sed -n|python3 sample --raw|find (\"sample/FETCH_HEAD\" -mmin \\+1440|… -mmin|\\.supervisor/jobs/done \\.supervisor/jobs/failed -name \"\\*\\.md\" -mtime \\+30 -delete))$",
+      files: [
+        "agents/launch-pad.md", "agents/rubric-grader.md", "skills/automate-loop/SKILL.md", "skills/autonomous-loop/SKILL.md", "skills/preflight-sync/SKILL.md",
+        "skills/supervisor-readiness/SKILL.md",
+      ],
+    },
     kinds: ALL,
     reason_class: "program or subcommand not admitted",
     reason: "`awk` (`has_rubric()`'s rubric check, `awk -v` in the loop), `sed -n` (the rubric grader's line reads), `find` (`-mmin +1440` for FETCH_HEAD's age; `-mtime +30 -delete` for old briefs) and `python3` (the inline Launch Pad result validator) are not in RUN_BASH_PREFIXES: `awk`, `sed` and `find` can run or write (`system()`, `w`, `-exec`) and `python3` runs any code (found by 25a, not in 25c's list).",
@@ -545,7 +608,7 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "sdk-runner-spike",
-    match: { type: "command", deny: NOT_LISTED, text: "^(npm install$|node sample --brief )", files: ["agents/supervisor.md", "commands/supervisor.md", "skills/supervisor-config/SKILL.md"] },
+    match: { type: "command", deny: NOT_LISTED, text: "^(npm install|node sample --brief sample --branch sample)$", files: ["agents/supervisor.md", "commands/supervisor.md", "skills/supervisor-config/SKILL.md"] },
     kinds: AUTOMATE,
     reason_class: "program or subcommand not admitted",
     reason: "the Supervisor's `--sdk-runner` spike (experimental, off by default): `npm install` in the plugin's `sdk-spike/` and `node …/sdk-spike/dist/runner.js`, an Agent SDK runner that drives worker sessions the kernel does not own (invariant 2). The spike's `npm run build` part is counted under project-checks.",
@@ -553,7 +616,11 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "gh-run-rerun",
-    match: { type: "command", text: "^gh run rerun\\b" },
+    match: {
+      type: "command",
+      text: "^gh run rerun( sample --failed| \" \\+ \\(\\.run_id // \"<run_id>\"\\) \\+ \" --failed)?$",
+      files: ["scripts/review-heal-next-step.sh", "skills/review-heal/escalation.md"],
+    },
     kinds: [...AUTOMATE, ...REVIEW],
     reason_class: "program or subcommand not admitted",
     reason: "the drain's escalation re-runs a failed CI run; RUN_BASH_PREFIXES lists only `gh run view` (an outward write; found by 25a, not in 25c's list).",
@@ -590,7 +657,15 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   // ---- Gaps: running the repo's code (25d) ----
   {
     id: "project-checks",
-    match: { type: "command", deny: NOT_LISTED, text: "^(npm (test|run)\\b|tsc\\b|go vet\\b|bash scripts/ci-local\\.sh\\b)" },
+    match: {
+      type: "command",
+      deny: NOT_LISTED,
+      text: "^(npm (test|run (build|lint))|tsc --noEmit|go vet|bash scripts/ci-local\\.sh --affected)$",
+      files: [
+        "agents/code-reviewer.md", "agents/supervisor.md", "agents/worker.md", "commands/supervisor.md", "skills/supervisor-config/SKILL.md",
+        "skills/workflow-management/SKILL.md",
+      ],
+    },
     kinds: [...AUTOMATE, ...REVIEW],
     reason_class: "runs project code",
     reason: "the worker and reviewer run the project's own checks (`npm test`, `npm run build|lint`, `tsc --noEmit`, `go vet`, `scripts/ci-local.sh`). 25d admits exactly the repo's declared checks.",
@@ -599,7 +674,15 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "bash-c",
-    match: { type: "command", deny: NOT_LISTED, text: "^bash -c\\b" },
+    match: {
+      type: "command",
+      deny: NOT_LISTED,
+      text: "^bash -c( '\\.\\.\\.')?$",
+      files: [
+        "agents/code-reviewer.md", "skills/preflight-sync/SKILL.md", "skills/self-heal-advisory/completion-tail.md", "skills/self-heal-advisory/on-entry.md",
+        "skills/supervisor-readiness/SKILL.md",
+      ],
+    },
     kinds: [...AUTOMATE, ...REVIEW],
     reason_class: "runs eval / bash -c",
     reason: "`bash -c` runs any command line past the rail; `bash` is never a prefix (launch.ts:266-270).",
