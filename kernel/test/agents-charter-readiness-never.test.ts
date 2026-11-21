@@ -16,7 +16,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { NEVER_FORBIDS, READINESS_FLAG_PREFIX, charterReadiness } from "../src/agents/charter-readiness.js";
+import { NEVER_FORBIDS, READINESS_FLAG_PREFIX, charterReadiness, readinessFloorLines } from "../src/agents/charter-readiness.js";
 import type { ReadinessResult } from "../src/agents/charter-readiness.js";
 import { createDisplay } from "../src/agents/charter-tools.js";
 import { validateCharter } from "../src/agents/index.js";
@@ -199,5 +199,36 @@ describe("display bound: one never line per granted job, never one per category"
     const head = display.slice(0, display.indexOf(`\nconfig/agents/${charter.id}.json:\n`));
     expect(head.length).toBeGreaterThan(0);
     expect(head.length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+  });
+});
+
+describe("the update floor: a request that sets never is bounded by an empty never list", () => {
+  const FORBIDS = ["git_push", "gh_pr_create", "gh_pr_close", "gh_issue_create"];
+  const total = (lines: readonly string[]) => lines.join("\n").length;
+
+  it("a never-only request's floor is exactly the block an empty never gives: the duty lines it covers and no never line", () => {
+    const charter = ticketCharter(FORBIDS);
+    const actual = readiness(charter, "update");
+    expect(neverLines(actual)).toHaveLength(1);
+    const empty = readiness(ticketCharter([]), "update");
+    const floor = readinessFloorLines(charter, CATALOGUE, actual, { tools: false, workspaces: false, never: true });
+    expect(floor).toEqual(empty.lines);
+    // The request's own block is longer: counting it as the floor (a never-blind floor) would not be a lower bound.
+    expect(total(actual.lines)).toBeGreaterThan(total(empty.lines));
+  });
+
+  it("with the tools or the workspaces set too, the floor is still no longer than the block an empty never gives", () => {
+    const charter = ticketCharter(FORBIDS);
+    const actual = readiness(charter, "update");
+    const empty = readiness(ticketCharter([]), "update");
+    for (const sets of [
+      { tools: true, workspaces: false, never: true },
+      { tools: false, workspaces: true, never: true },
+      { tools: true, workspaces: true, never: true },
+    ]) {
+      const floor = readinessFloorLines(charter, CATALOGUE, actual, sets);
+      expect(neverLines({ ...actual, lines: floor }), JSON.stringify(sets)).toEqual([]);
+      expect(total(floor), JSON.stringify(sets)).toBeLessThanOrEqual(total(empty.lines));
+    }
   });
 });

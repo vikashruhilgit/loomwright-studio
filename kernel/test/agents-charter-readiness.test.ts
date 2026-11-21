@@ -1065,6 +1065,27 @@ describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, 
     expect(h.display(1).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
   });
 
+  it("item 25g: a never-only update's floor counts the duty lines as an empty never list gives them and no never line, so a long never request is asked for less (never 'no request to these fields fits'), and never [] is held", async () => {
+    const h = await boot();
+    const base = approval21Policy();
+    // Ten long tools: before the floor counted the never input, it was 4,005 here (the request's own never lines), over the cut.
+    const wide = Array.from({ length: 10 }, (_, i) => `mcp__wide__${"a".repeat(135)}_${String(i).padStart(2, "0")}`);
+    h.ownerCreate(approval21({ tool_policy: { ...base, allowedTools: [...(base.allowedTools as string[]), ...wide] } }));
+    // The ticket run needs these: two duties naming it read not covered, and the job gets its never line.
+    const never = [...(base.never as string[]), "git_push", "gh_pr_create", "gh_pr_close", "gh_issue_create"];
+    const over = await h.update(A21, { never }, "u1");
+    expect(over.permissionDecision).toBe("deny");
+    expect(over.permissionDecisionReason).toMatch(
+      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(fewer or shorter tools, prefixes or workspaces\) \(nothing was held for the owner\)$/,
+    );
+    expect(over.permissionDecisionReason).not.toContain("no request to these fields fits");
+    expect(h.approvals()).toBe(0);
+    // A shorter request to the same field fits: the floor was a real lower bound.
+    const fits = await h.update(A21, { never: [] }, "u2");
+    expect(fits.permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
+    expect(h.display(1).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+  });
+
   it("AC5: a stored bare-string duty (an update's legacy line) is quoted by its excerpt too", async () => {
     const h = await boot();
     h.ownerCreate(crew(LONG_DUTIES.map((d) => d.text), []));

@@ -836,13 +836,26 @@ function noteText(p: NoteParts): string {
   return sentences.join(" ");
 }
 
-/** What a request to the same fields may change: the granted tools (`tool_policy`), the workspaces. */
+/** What a request to the same fields may change: the granted tools (`tool_policy`), the workspaces, the `never` list. */
 export interface ReadinessFloorSets {
   readonly tools: boolean;
   readonly workspaces: boolean;
+  /** The request sets `never` (item 25g): which granted jobs it defeats can change, so the duty lines and the never lines can. */
+  readonly never: boolean;
 }
 
-/** The shortest duty line a request setting `tool_policy` can give `duty` (number `n`), from its real line `actual`. */
+/** Whether `it` is a job's never line (`neverItem`, the only line ending `NEVER_FORBIDS`). */
+function isNeverLine(it: ReadinessItem): boolean {
+  return it.subject === "permission" && it.line.endsWith(NEVER_FORBIDS);
+}
+
+/**
+ * The shortest duty line a request setting `tool_policy` can give `duty`
+ * (number `n`), from its real line `actual`: covered by all its jobs, or not
+ * covered for its shortest job label alone (a `never` reason, `the charter's
+ * never list forbids what <label> needs`, is longer than `needs <label>, which
+ * this charter does not grant`, so it never undercuts this).
+ */
 function shortestDutyLine(duty: Charter["duties"][number], n: number, actual: string, catalogue: ToolCatalogue | undefined): string {
   // A bare line, a duty needing no tool, or no catalogue: the line does not depend on the tools.
   if (typeof duty === "string" || duty.jobs.length === 0 || catalogue === undefined) return actual;
@@ -857,21 +870,30 @@ function shortestDutyLine(duty: Charter["duties"][number], n: number, actual: st
 /**
  * A lower bound on the readiness lines of any update to the same fields as
  * the one whose readiness is `actual` (`updateFloor`): the lines themselves
- * when the request sets neither the tools nor the workspaces (nothing else
- * changes them); otherwise the heading (always the same), each duty's line at
- * its shortest (exact when it can't vary: a bare line, a duty needing no tool,
- * no catalogue; else the shorter of covered by all its jobs and not covered
- * for its shortest job label), and, unless the tools change (a request can
- * grant no kernel tool, so no job line), each prerequisite line: a connector
- * line as it is (the grant and the tools stay), the code jobs' workspace line
- * at its shortest ready form (`shortestWorkspaceLine`). A ticket duty's tracker
- * line (`subject: "tracker"`) is the same whatever the request sets, so it is
- * always counted as it is.
+ * when the request sets none of the tools, the workspaces and the `never` list
+ * (nothing else changes them: since item 25g the never list decides which
+ * granted jobs it defeats, so it is an input too); otherwise the heading
+ * (always the same), each duty's line at its shortest: when the tools change,
+ * `shortestDutyLine` (exact when it can't vary, a bare line, a duty needing no
+ * tool, no catalogue; else the shorter of covered by all its jobs and not
+ * covered for its shortest job label); when only the `never` list changes, the
+ * line an empty `never` gives (no job defeated, the shortest form any never
+ * list gives, exact); else as it is. And, unless the
+ * tools change (a request can grant no kernel tool, so no job line), each
+ * prerequisite and permission line: a connector or permission line as it is
+ * (the grant and the tools stay), the code jobs' workspace line at its
+ * shortest ready form (`shortestWorkspaceLine`) when the workspaces change, and
+ * no never line when the `never` list changes (an empty one has none). A ticket
+ * duty's tracker line (`subject: "tracker"`) is the same whatever the request
+ * sets, so it is always counted as it is.
  */
 export function readinessFloorLines(charter: Charter, catalogue: ToolCatalogue | undefined, actual: ReadinessResult, sets: ReadinessFloorSets): string[] {
-  if (!sets.tools && !sets.workspaces) return [...actual.lines];
+  if (!sets.tools && !sets.workspaces && !sets.never) return [...actual.lines];
   const lines = [READINESS_HEADING];
-  const duties = actual.items.filter((i) => i.subject === "duty");
+  // The tools stay but the never list may change: each duty line as an empty never list gives it (no job defeated), exact.
+  const duties = (!sets.tools && sets.never ? dutyFindings(charter, catalogue, new Set(charter.tool_policy.allowedTools), new Map()).items : actual.items).filter(
+    (i) => i.subject === "duty",
+  );
   for (const [i, duty] of charter.duties.entries()) {
     const real = duties[i]?.line ?? "";
     lines.push(sets.tools ? shortestDutyLine(duty, i + 1, real, catalogue) : real);
@@ -880,7 +902,8 @@ export function readinessFloorLines(charter: Charter, catalogue: ToolCatalogue |
   if (sets.tools) return [...lines, ...actual.items.filter((i) => i.subject === "tracker").map((i) => i.line)];
   for (const it of actual.items) {
     if (it.subject === "duty") continue;
-    lines.push(it.subject === "workspace" && it.jobs !== undefined ? shortestWorkspaceLine(it.jobs) : it.line);
+    if (sets.never && isNeverLine(it)) continue;
+    lines.push(sets.workspaces && it.subject === "workspace" && it.jobs !== undefined ? shortestWorkspaceLine(it.jobs) : it.line);
   }
   return lines;
 }

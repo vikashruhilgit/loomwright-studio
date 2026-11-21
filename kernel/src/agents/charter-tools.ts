@@ -865,16 +865,17 @@ function shortestNewShown(field: string): string {
  * that leaves `tool_policy` alone adds no tool (its job lines carry no mark),
  * and one that sets it is bounded with no job line at all. The readiness
  * block is bounded by `readinessFloorLines` from this request's own readiness
- * (`readiness`): exact when the change sets neither `tool_policy` nor
- * `workspaces` (nothing else changes it), else each line that can vary at
- * its shortest (every update shows the member's stored duties).
+ * (`readiness`): exact when the change sets none of `tool_policy`,
+ * `workspaces` and `never` (nothing else changes it; `never` decides which
+ * granted jobs it defeats, item 25g), else each line that can vary at its
+ * shortest (every update shows the member's stored duties).
  */
 function updateFloor(m: Merged, catalogue: ToolCatalogue | undefined, readiness: ReadinessResult): string {
   const tp = m.charter.tool_policy;
   const sets = new Set(m.changes.map((c) => c.field));
   return [
     updateHead(m),
-    ...readinessFloorLines(m.charter, catalogue, readiness, { tools: sets.has("tool_policy"), workspaces: sets.has("workspaces") }),
+    ...readinessFloorLines(m.charter, catalogue, readiness, { tools: sets.has("tool_policy"), workspaces: sets.has("workspaces"), never: sets.has("never") }),
     ...jobDisplayLines(sets.has("tool_policy") ? [] : tp.allowedTools, catalogue, false),
     ...m.changes.map((c) => (c.field === "tool_policy" ? fieldLine(c, true) : `${c.field}: ${shownValue(c.old)} → ${shortestNewShown(c.field)}`)),
     enforcedLine(sets.has("never") ? [] : tp.never, sets.has("tool_policy") ? ["x"] : tp.allowedTools, sets.has("tool_policy") ? ["x"] : tp.allowedBashPrefixes),
