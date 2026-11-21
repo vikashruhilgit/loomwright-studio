@@ -730,7 +730,7 @@ describe("kernel_agent_update (AC5, AC6)", () => {
     // Phase 8 item 19a (AC8): the characters over the cut, and only what an update can change (never duties: an update can't change the stored duties).
     const m = new RegExp(
       `^kernel_agent_update: invalid_input: the display \\(its readiness lines, job lines, field lines and enforced line\\) would be (\\d+) characters, (\\d+) over the ${MAX_APPROVAL_DISPLAY} the owner is shown; ` +
-        "ask for less at once \\(fewer or shorter tools, prefixes or workspaces\\) \\(nothing was held for the owner\\)$",
+        "ask for less at once \\(fewer or shorter tools or prefixes\\) \\(nothing was held for the owner\\)$",
     ).exec(d.permissionDecisionReason);
     expect(m).not.toBeNull();
     expect(Number(m?.[2])).toBe(Number(m?.[1]) - MAX_APPROVAL_DISPLAY);

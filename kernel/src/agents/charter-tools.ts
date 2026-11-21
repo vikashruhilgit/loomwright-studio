@@ -90,7 +90,7 @@ import { z } from "zod";
 import { MAX_APPROVAL_DISPLAY } from "../approvals/store.js";
 import type { AppliedApproval, ApprovalApplyOutcome, OwnerGrant } from "../approvals/store.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
-import { CONNECTOR_LABELS, jobDisplayLines } from "../features/catalogue.js";
+import { CONNECTOR_LABELS, andList, jobDisplayLines } from "../features/catalogue.js";
 import type { ToolCatalogue } from "../features/catalogue.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedToolContext } from "../features/contribution.js";
@@ -882,6 +882,30 @@ function updateFloor(m: Merged, catalogue: ToolCatalogue | undefined, readiness:
   ].join("\n");
 }
 
+/** What an update's ask-for-less names for a request that sets a non-empty `never` list: the owner's choice, never Wright's own change. */
+export const UPDATE_ASK_LESS_NEVER =
+  "if the owner chooses it, fewer never entries, so the never list blocks fewer of the member's own jobs: the owner's decision, never a change you make to the never list on your own";
+
+/**
+ * What the update hold's ask-for-less names, from the fields this request sets
+ * and nothing else (an update can't change the stored duties, and a field it
+ * leaves alone is not Wright's to shrink here): fewer or shorter tools or
+ * prefixes (`tool_policy`), fewer or shorter workspaces (`workspaces`), a
+ * non-empty `never` list as `UPDATE_ASK_LESS_NEVER`, and shorter values for any
+ * other field it sets. A request whose every set field is already at its
+ * shortest (`never: []`) is asked for shorter new values in general.
+ */
+export function updateAskLess(m: { readonly changes: readonly Pick<FieldChange, "field">[]; readonly charter: Pick<Charter, "tool_policy"> }): string {
+  const sets = new Set(m.changes.map((c) => c.field));
+  const parts: string[] = [];
+  const shrinkable = [...(sets.has("tool_policy") ? ["tools", "prefixes"] : []), ...(sets.has("workspaces") ? ["workspaces"] : [])];
+  if (shrinkable.length > 0) parts.push(`fewer or shorter ${shrinkable.length === 3 ? "tools, prefixes or workspaces" : shrinkable.join(" or ")}`);
+  if (sets.has("never") && m.charter.tool_policy.never.length > 0) parts.push(UPDATE_ASK_LESS_NEVER);
+  const others = [...sets].filter((f) => f !== "tool_policy" && f !== "workspaces" && f !== "never");
+  if (others.length > 0) parts.push(`shorter values for ${andList(others)}`);
+  return parts.length > 0 ? parts.join("; ") : "shorter new values for the fields it changes";
+}
+
 /** What the update hold's fit refusal names: the display the owner must see whole. */
 const UPDATE_DISPLAY_TEXT = "the display (its readiness lines, job lines, field lines and enforced line)";
 
@@ -898,8 +922,8 @@ const UPDATE_DISPLAY_TEXT = "the display (its readiness lines, job lines, field 
 function updateFitRefusal(m: Merged, display: string, catalogue: ToolCatalogue | undefined, readiness: ReadinessResult): Refused | undefined {
   if (display.length <= MAX_APPROVAL_DISPLAY) return undefined;
   const floor = updateFloor(m, catalogue, readiness).length;
-  // An update never changes the stored duties: only what it can change is asked for less of.
-  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal(UPDATE_DISPLAY_TEXT, display, "fewer or shorter tools, prefixes or workspaces");
+  // An update never changes the stored duties: only what this request changes is asked for less of.
+  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal(UPDATE_DISPLAY_TEXT, display, updateAskLess(m));
   return refused(
     "invalid_input",
     `${UPDATE_DISPLAY_TEXT} would be ${display.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, ` +

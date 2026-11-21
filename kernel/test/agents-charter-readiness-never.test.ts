@@ -12,17 +12,17 @@
 // and the ticket job's outward needs must still resolve when `launch.ts`
 // loads first (the run policies are read lazily, never at module load).
 import { AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, REVIEW_PR_RUN_POLICY } from "../src/automate/launch.js";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NEVER_FORBIDS, READINESS_FLAG_PREFIX, charterReadiness, readinessFloorLines } from "../src/agents/charter-readiness.js";
 import type { ReadinessResult } from "../src/agents/charter-readiness.js";
-import { createDisplay } from "../src/agents/charter-tools.js";
+import { UPDATE_ASK_LESS_NEVER, createDisplay, updateAskLess } from "../src/agents/charter-tools.js";
 import { validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
 import { MAX_APPROVAL_DISPLAY } from "../src/approvals/store.js";
-import { TOOL_JOBS, buildToolCatalogue } from "../src/features/catalogue.js";
+import { TOOL_JOBS, TOOL_JOB_IDS, buildToolCatalogue } from "../src/features/catalogue.js";
 import type { ToolJob } from "../src/features/catalogue.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import { resolveJobNeeds } from "../src/features/job-needs.js";
@@ -230,5 +230,166 @@ describe("the update floor: a request that sets never is bounded by an empty nev
       expect(neverLines({ ...actual, lines: floor }), JSON.stringify(sets)).toEqual([]);
       expect(total(floor), JSON.stringify(sets)).toBeLessThanOrEqual(total(empty.lines));
     }
+  });
+});
+
+describe("the update floor is a true lower bound: a never-only request on a duty naming several granted jobs", () => {
+  // The review's case: five granted jobs on every duty. Its covered line names all five labels, longer than the
+  // not-covered line naming one defeated job, so the line an empty never gives is not the shortest any never gives.
+  const JOBS: ToolJob[] = ["ask_for_approval", "message_agents", "notify_owner", "manage_playbooks", "automate_tickets"];
+  const total = (lines: readonly string[]) => lines.join("\n").length;
+  const many = (count: number, never: readonly string[]) =>
+    charterOf(
+      Array.from({ length: count }, (_, i) => duty(`Duty number ${i + 1} for the owner`, ...JOBS)),
+      JOBS,
+      never,
+    );
+
+  for (const count of [1, 4, 10, 20]) {
+    it(`${count} duties: the floor of every never request is no longer than the block of any never request`, () => {
+      const nevers: string[][] = [[], ["gh_pr_create"], ["git_push", "gh_pr_create"], [...NEVER_CATEGORIES]];
+      const blocks = nevers.map((never) => total(readiness(many(count, never), "update").lines));
+      for (const never of nevers) {
+        const charter = many(count, never);
+        const floor = total(readinessFloorLines(charter, CATALOGUE, readiness(charter, "update"), { tools: false, workspaces: false, never: true }));
+        for (const [k, block] of blocks.entries()) expect(floor, `never ${JSON.stringify(never)} vs ${JSON.stringify(nevers[k])}`).toBeLessThanOrEqual(block);
+      }
+      // From four duties the defeated block is the shorter one: the empty-never block is not the floor.
+      if (count >= 4) expect(blocks[1]).toBeLessThan(blocks[0] as number);
+    });
+  }
+
+  it("the floor's duty line is the defeated form readiness emits, word for word", () => {
+    const charter = many(1, ["gh_pr_create"]);
+    const actual = readiness(charter, "update");
+    const floor = readinessFloorLines(charter, CATALOGUE, readiness(many(1, []), "update"), { tools: false, workspaces: false, never: true });
+    expect(floor[1]).toBe(actual.lines[1]);
+    expect(floor[1]).toBe(`  flagged: duty 1 not covered (the charter's never list forbids what ${TICKETS} needs): Duty number 1 for the owner`);
+  });
+});
+
+/** A seeded PRNG (mulberry32), so a failure replays. */
+function prng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe("property: readinessFloorLines is a lower bound for every combination of tools, workspaces and never", () => {
+  const total = (lines: readonly string[]) => lines.join("\n").length;
+  const PREFIXES = ["git status", "git diff", "npm test", "gh pr view"];
+  const GRANTABLE = TOOL_JOB_IDS.filter((j) => (CATALOGUE.jobs.find((c) => c.id === j)?.tools.length ?? 0) > 0);
+
+  it("for 80 generated charters, every request changing only the set fields has a block no shorter than the floor", () => {
+    const usable = join(tmp, "ws-usable");
+    mkdirSync(join(usable, ".git"), { recursive: true });
+    writeFileSync(join(usable, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/owner/repo.git\n');
+    const plain = join(tmp, "ws-plain");
+    mkdirSync(plain);
+    const WORKSPACES: string[][] = [[], [usable], [plain], [plain, usable]];
+    const rnd = prng(0x25a9);
+    const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)] as T;
+    const subset = <T>(xs: readonly T[], p: number): T[] => xs.filter(() => rnd() < p);
+    const policy = () => {
+      // Often every job, or every job but the fix and the merge (one never line, not three), so duties whose jobs
+      // are all granted (the long covered lines a defeated line can undercut) are common.
+      const mode = rnd();
+      const granted =
+        mode < 0.3 ? [...GRANTABLE] : mode < 0.6 ? GRANTABLE.filter((j) => j !== "triage_pr_comments" && j !== "ask_for_merge") : subset(GRANTABLE, rnd());
+      return { tools: ["Read", ...(rnd() < 0.3 ? ["Bash"] : []), ...granted.flatMap(toolsOf)], prefixes: subset(PREFIXES, 0.3) };
+    };
+    const neverOf = (): string[] => (rnd() < 0.2 ? [] : rnd() < 0.2 ? [...NEVER_CATEGORIES] : rnd() < 0.3 ? [pick(NEVER_CATEGORIES)] : subset(NEVER_CATEGORIES, rnd()));
+    const build = (duties: unknown[], p: { tools: string[]; prefixes: string[] }, never: string[], workspaces: string[]): Charter | undefined => {
+      const r = validateCharter(
+        {
+          id: "dev",
+          display_name: "Dev",
+          avatar: { shape: "crab", hue: "crew-teal" },
+          persona: "A developer.",
+          duties,
+          boundaries: [],
+          model: "claude-sonnet-5",
+          permission_mode: "default",
+          tool_policy: { allowedTools: p.tools, allowedBashPrefixes: p.prefixes, never },
+          workspaces,
+        },
+        { dataDir },
+      );
+      return r.ok ? r.charter : undefined;
+    };
+    const SETS = [false, true].flatMap((tools) => [false, true].flatMap((workspaces) => [false, true].map((never) => ({ tools, workspaces, never }))));
+    let checked = 0;
+    for (let c = 0; c < 80; c += 1) {
+      const duties = Array.from({ length: 1 + Math.floor(rnd() * 16) }, (_, i) => {
+        // Most duties name the ticket job (which every outward never category defeats) among up to six jobs, mostly
+        // granted ones: the long covered lines a not-covered line naming one defeated job can undercut.
+        const jobs = [...new Set([...(rnd() < 0.6 ? (["automate_tickets"] as ToolJob[]) : []), ...Array.from({ length: 1 + Math.floor(rnd() * 6) }, () => pick(rnd() < 0.8 ? GRANTABLE : TOOL_JOB_IDS))])];
+        return duty(rnd() < 0.3 ? `Duty ${i + 1}` : `Duty ${i + 1}: ${"a long duty text that runs past the excerpt cut ".repeat(3)}`, ...jobs);
+      });
+      const base = { p: policy(), never: neverOf(), ws: pick(WORKSPACES) };
+      const charter = build(duties, base.p, base.never, base.ws);
+      expect(charter, `charter ${c}`).toBeDefined();
+      if (charter === undefined) continue;
+      const actual = readiness(charter, "update");
+      for (const sets of SETS) {
+        const floorLines = readinessFloorLines(charter, CATALOGUE, actual, sets);
+        const floor = total(floorLines);
+        // The request itself, the extremes of each set field, and random values of them.
+        const variants: { p: { tools: string[]; prefixes: string[] }; never: string[]; ws: string[] }[] = [base];
+        for (let v = 0; v < 6; v += 1) {
+          variants.push({
+            p: sets.tools ? (v === 0 ? { tools: [], prefixes: [] } : v === 1 ? { tools: ["Read", ...GRANTABLE.flatMap(toolsOf)], prefixes: [] } : policy()) : base.p,
+            // One category the ticket run admits: the shortest never line, and every duty naming the job defeated.
+            never: sets.never ? (v === 0 ? [] : v === 1 ? [...NEVER_CATEGORIES] : v === 2 ? [pick(neverCategoriesAdmitted(AUTOMATE_RUN_POLICY))] : neverOf()) : base.never,
+            ws: sets.workspaces ? (v < WORKSPACES.length ? (WORKSPACES[v] as string[]) : pick(WORKSPACES)) : base.ws,
+          });
+        }
+        for (const v of variants) {
+          const other = build(duties, v.p, v.never, v.ws);
+          if (other === undefined) continue;
+          checked += 1;
+          const lines = readiness(other, "update").lines;
+          const where = `charter ${c}, sets ${JSON.stringify(sets)}, request ${JSON.stringify(v)}`;
+          expect(floor, where).toBeLessThanOrEqual(total(lines));
+          // Line by line too, for the duty lines (right after the heading in both): each at most its real length.
+          for (let d = 1; d <= duties.length; d += 1) expect((floorLines[d] ?? "").length, `${where}, duty ${d}`).toBeLessThanOrEqual((lines[d] ?? "").length);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(2000);
+  }, 60_000);
+});
+
+describe("the update's ask-for-less names only the fields the request sets", () => {
+  const ch = (never: readonly string[]) => ({ tool_policy: { allowedTools: [], allowedBashPrefixes: [], never: never as NeverCategory[] } });
+  const ask = (fields: string[], never: readonly string[] = []) => updateAskLess({ changes: fields.map((field) => ({ field })), charter: ch(never) });
+
+  it("every combination of tool_policy, workspaces and never", () => {
+    expect(ask(["tool_policy"])).toBe("fewer or shorter tools or prefixes");
+    expect(ask(["workspaces"])).toBe("fewer or shorter workspaces");
+    expect(ask(["tool_policy", "workspaces"])).toBe("fewer or shorter tools, prefixes or workspaces");
+    expect(ask(["never"], ["gh_pr_create"])).toBe(UPDATE_ASK_LESS_NEVER);
+    expect(ask(["tool_policy", "never"], ["gh_pr_create"])).toBe(`fewer or shorter tools or prefixes; ${UPDATE_ASK_LESS_NEVER}`);
+    expect(ask(["workspaces", "never"], ["gh_pr_create"])).toBe(`fewer or shorter workspaces; ${UPDATE_ASK_LESS_NEVER}`);
+    expect(ask(["tool_policy", "workspaces", "never"], ["gh_pr_create"])).toBe(`fewer or shorter tools, prefixes or workspaces; ${UPDATE_ASK_LESS_NEVER}`);
+    // An empty never can't be shortened: it is not named.
+    expect(ask(["tool_policy", "never"], [])).toBe("fewer or shorter tools or prefixes");
+    expect(ask(["never"], [])).toBe("shorter new values for the fields it changes");
+  });
+
+  it("a request setting none of those names its own fields, never tools, prefixes or workspaces", () => {
+    expect(ask(["display_name"])).toBe("shorter values for display_name");
+    expect(ask(["model", "limits.tokens_per_day"])).toBe("shorter values for model and limits.tokens_per_day");
+    expect(ask(["never", "model"], ["git_push"])).toBe(`${UPDATE_ASK_LESS_NEVER}; shorter values for model`);
+  });
+
+  it("the never advice is the owner's choice, never Wright's own change to the never list", () => {
+    expect(UPDATE_ASK_LESS_NEVER).toContain("the owner's decision, never a change you make to the never list on your own");
+    expect(UPDATE_ASK_LESS_NEVER).not.toMatch(/tools|prefixes|workspaces/);
   });
 });

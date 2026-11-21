@@ -316,20 +316,28 @@ function dutyFindings(charter: Charter, catalogue: ToolCatalogue | undefined, al
     }
     const lacking = duty.jobs.filter((job) => !jobGranted(catalogue, job, allowed));
     const forbidden = duty.jobs.filter((job) => !lacking.includes(job) && defeated.has(job));
-    if (lacking.length === 0 && forbidden.length === 0) {
-      items.push(item("duty", "covered", `${n} by ${andList(duty.jobs.map((j) => TOOL_JOBS[j]))}: ${text}`, `${n} is covered`));
-      continue;
-    }
     for (const job of lacking) missing.add(job);
-    const needs = andList(lacking.map((j) => TOOL_JOBS[j]));
-    // Job labels only, never the forbidden actions (the job's never line names them): a duty line stays bounded.
-    const neverWhy = `the charter's never list forbids what ${andList(forbidden.map((j) => TOOL_JOBS[j]))} ${forbidden.length === 1 ? "needs" : "need"}`;
-    const why = [...(lacking.length > 0 ? [`needs ${needs}, which this charter does not grant`] : []), ...(forbidden.length > 0 ? [neverWhy] : [])].join("; ");
-    const brief = [...(lacking.length > 0 ? [`needs ${needs}`] : []), ...(forbidden.length > 0 ? [neverWhy] : [])].join("; ");
-    items.push(item("duty", "flagged", `${n} not covered (${why}): ${text}`, `${n} is not covered (${brief})`));
+    items.push(dutyJobsItem(n, duty.jobs, lacking, forbidden, text));
   }
   const missingJobs = (Object.keys(TOOL_JOBS) as ToolJob[]).filter((j) => missing.has(j));
   return { items, missingJobs, legacy };
+}
+
+/**
+ * The line of duty `n` (`duty <k>`) naming `jobs`, quoted by `text` (its
+ * excerpt): covered when no job is `lacking` (not granted) or `forbidden`
+ * (granted, and defeated by the never list), else not covered naming why. The
+ * one place a job-naming duty line is worded, so `readinessFloorLines`' shortest
+ * forms are the real lines' own text.
+ */
+function dutyJobsItem(n: string, jobs: readonly ToolJob[], lacking: readonly ToolJob[], forbidden: readonly ToolJob[], text: string): ReadinessItem {
+  if (lacking.length === 0 && forbidden.length === 0) return item("duty", "covered", `${n} by ${labels(jobs)}: ${text}`, `${n} is covered`);
+  const needs = labels(lacking);
+  // Job labels only, never the forbidden actions (the job's never line names them): a duty line stays bounded.
+  const neverWhy = `the charter's never list forbids what ${labels(forbidden)} ${forbidden.length === 1 ? "needs" : "need"}`;
+  const why = [...(lacking.length > 0 ? [`needs ${needs}, which this charter does not grant`] : []), ...(forbidden.length > 0 ? [neverWhy] : [])].join("; ");
+  const brief = [...(lacking.length > 0 ? [`needs ${needs}`] : []), ...(forbidden.length > 0 ? [neverWhy] : [])].join("; ");
+  return item("duty", "flagged", `${n} not covered (${why}): ${text}`, `${n} is not covered (${brief})`);
 }
 
 // ---- The workspaces --------------------------------------------------------------------
@@ -849,22 +857,55 @@ function isNeverLine(it: ReadinessItem): boolean {
   return it.subject === "permission" && it.line.endsWith(NEVER_FORBIDS);
 }
 
+/** The job of `jobs` with the shortest label (the first of the shortest). */
+function shortestLabelled(jobs: readonly ToolJob[]): ToolJob {
+  return jobs.reduce((a, b) => (TOOL_JOBS[b].length < TOOL_JOBS[a].length ? b : a));
+}
+
+/** The shorter of two lines (the first when they are as long). */
+function shorterLine(a: string, b: string): string {
+  return b.length < a.length ? b : a;
+}
+
 /**
  * The shortest duty line a request setting `tool_policy` can give `duty`
- * (number `n`), from its real line `actual`: covered by all its jobs, or not
- * covered for its shortest job label alone (a `never` reason, `the charter's
- * never list forbids what <label> needs`, is longer than `needs <label>, which
- * this charter does not grant`, so it never undercuts this).
+ * (number `n`), from its real line `actual`, whatever the `never` list: the
+ * shortest of covered by all its jobs, not covered for its shortest job label
+ * alone as ungranted, and not covered for its shortest job label alone as
+ * defeated by the never list. Every real form names at least one label in one
+ * of those reasons (two reasons, or more labels in one, only lengthen it), so
+ * none is shorter.
  */
 function shortestDutyLine(duty: Charter["duties"][number], n: number, actual: string, catalogue: ToolCatalogue | undefined): string {
   // A bare line, a duty needing no tool, or no catalogue: the line does not depend on the tools.
   if (typeof duty === "string" || duty.jobs.length === 0 || catalogue === undefined) return actual;
-  // The same excerpt `dutyFindings` quotes, so this stays a lower bound of the real line.
+  // The same excerpt and wording `dutyFindings` gives, so this stays a lower bound of the real line.
+  const n2 = `duty ${n}`;
   const excerpt = dutyExcerpt(duty.text);
-  const covered = `${READINESS_COVERED_PREFIX}duty ${n} by ${andList(duty.jobs.map((j) => TOOL_JOBS[j]))}: ${excerpt}`;
-  const label = duty.jobs.map((j) => TOOL_JOBS[j]).reduce((a, b) => (b.length < a.length ? b : a));
-  const flagged = `${READINESS_FLAG_PREFIX}duty ${n} not covered (needs ${label}, which this charter does not grant): ${excerpt}`;
-  return covered.length <= flagged.length ? covered : flagged;
+  const short = [shortestLabelled(duty.jobs)];
+  return [dutyJobsItem(n2, duty.jobs, [], [], excerpt), dutyJobsItem(n2, duty.jobs, short, [], excerpt), dutyJobsItem(n2, duty.jobs, [], short, excerpt)]
+    .map((i) => i.line)
+    .reduce(shorterLine);
+}
+
+/**
+ * The shortest duty line a request setting `never` but not `tool_policy` can
+ * give `duty` (number `n`), from the line an empty `never` gives it
+ * (`emptyNever`, no job defeated). A duty naming a job the tools leave
+ * ungranted keeps that reason whatever `never` is, and a never reason only
+ * lengthens it, so its `emptyNever` line is its shortest. A duty whose jobs are
+ * all granted is covered under an empty `never`, or not covered for any granted
+ * job some `never` list can defeat (its kernel run admits an outward action,
+ * `resolveJobNeeds(...).commands[].outward`): the shorter of the covered line
+ * and the not-covered line for the shortest such label alone (a longer covered
+ * line, naming every job, can be the longer one).
+ */
+function shortestNeverDutyLine(duty: Charter["duties"][number], n: number, emptyNever: string, catalogue: ToolCatalogue | undefined, allowed: ReadonlySet<string>): string {
+  if (typeof duty === "string" || duty.jobs.length === 0 || catalogue === undefined) return emptyNever;
+  if (duty.jobs.some((job) => !jobGranted(catalogue, job, allowed))) return emptyNever;
+  const defeatable = duty.jobs.filter((job) => resolveJobNeeds(job, catalogue).commands.some((c) => c.outward.length > 0));
+  if (defeatable.length === 0) return emptyNever;
+  return shorterLine(emptyNever, dutyJobsItem(`duty ${n}`, duty.jobs, [], [shortestLabelled(defeatable)], dutyExcerpt(duty.text)).line);
 }
 
 /**
@@ -875,10 +916,13 @@ function shortestDutyLine(duty: Charter["duties"][number], n: number, actual: st
  * granted jobs it defeats, so it is an input too); otherwise the heading
  * (always the same), each duty's line at its shortest: when the tools change,
  * `shortestDutyLine` (exact when it can't vary, a bare line, a duty needing no
- * tool, no catalogue; else the shorter of covered by all its jobs and not
- * covered for its shortest job label); when only the `never` list changes, the
- * line an empty `never` gives (no job defeated, the shortest form any never
- * list gives, exact); else as it is. And, unless the
+ * tool, no catalogue; else the shortest of covered by all its jobs and not
+ * covered for its shortest job label, as ungranted or as defeated); when the
+ * `never` list changes and the tools do not, `shortestNeverDutyLine` (the line
+ * an empty `never` gives, or, for a duty whose jobs are all granted, the
+ * not-covered line for its shortest job label a `never` list can defeat when
+ * that is shorter: a covered line names every job, so it can be the longer);
+ * else as it is. And, unless the
  * tools change (a request can grant no kernel tool, so no job line), each
  * prerequisite and permission line: a connector or permission line as it is
  * (the grant and the tools stay), the code jobs' workspace line at its
@@ -890,13 +934,13 @@ function shortestDutyLine(duty: Charter["duties"][number], n: number, actual: st
 export function readinessFloorLines(charter: Charter, catalogue: ToolCatalogue | undefined, actual: ReadinessResult, sets: ReadinessFloorSets): string[] {
   if (!sets.tools && !sets.workspaces && !sets.never) return [...actual.lines];
   const lines = [READINESS_HEADING];
-  // The tools stay but the never list may change: each duty line as an empty never list gives it (no job defeated), exact.
-  const duties = (!sets.tools && sets.never ? dutyFindings(charter, catalogue, new Set(charter.tool_policy.allowedTools), new Map()).items : actual.items).filter(
-    (i) => i.subject === "duty",
-  );
+  // The tools stay but the never list may change: each duty line from the one an empty never list gives it (no job defeated).
+  const allowed = new Set(charter.tool_policy.allowedTools);
+  const neverOnly = !sets.tools && sets.never;
+  const duties = (neverOnly ? dutyFindings(charter, catalogue, allowed, new Map()).items : actual.items).filter((i) => i.subject === "duty");
   for (const [i, duty] of charter.duties.entries()) {
     const real = duties[i]?.line ?? "";
-    lines.push(sets.tools ? shortestDutyLine(duty, i + 1, real, catalogue) : real);
+    lines.push(sets.tools ? shortestDutyLine(duty, i + 1, real, catalogue) : neverOnly ? shortestNeverDutyLine(duty, i + 1, real, catalogue, allowed) : real);
   }
   // A ticket duty's tracker line depends on the duty, the grant and the connection, never on the tools: it stays as it is.
   if (sets.tools) return [...lines, ...actual.items.filter((i) => i.subject === "tracker").map((i) => i.line)];

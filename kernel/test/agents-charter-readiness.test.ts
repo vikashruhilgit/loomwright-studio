@@ -38,7 +38,7 @@ import {
   wrightDutyRefusal,
 } from "../src/agents/charter-readiness.js";
 import type { ReadinessGrant, ReadinessResult, TrackerEnv } from "../src/agents/charter-readiness.js";
-import { AFTER_MEMBER_APPROVAL, AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME } from "../src/agents/charter-tools.js";
+import { AFTER_MEMBER_APPROVAL, AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME, UPDATE_ASK_LESS_NEVER } from "../src/agents/charter-tools.js";
 import { CHARTER_JSON_SCHEMA, TICKET_SOURCES } from "../src/agents/charter-files.js";
 import { agentSettingsPath, createAgent, getAgent, readAgentSettings, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
@@ -1055,7 +1055,7 @@ describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, 
     const over = await h.update(A21, { tool_policy: { allowedTools: [...held, ...wide(8, "b")], allowedBashPrefixes: base.allowedBashPrefixes } }, "u1");
     expect(over.permissionDecision).toBe("deny");
     expect(over.permissionDecisionReason).toMatch(
-      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(fewer or shorter tools, prefixes or workspaces\) \(nothing was held for the owner\)$/,
+      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(fewer or shorter tools or prefixes\) \(nothing was held for the owner\)$/,
     );
     expect(over.permissionDecisionReason).not.toContain("no request to these fields fits");
     expect(h.approvals()).toBe(0);
@@ -1075,9 +1075,12 @@ describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, 
     const never = [...(base.never as string[]), "git_push", "gh_pr_create", "gh_pr_close", "gh_issue_create"];
     const over = await h.update(A21, { never }, "u1");
     expect(over.permissionDecision).toBe("deny");
+    // The request sets only never: it is asked for a shorter never list, as the owner's choice, never for tools, prefixes or workspaces.
     expect(over.permissionDecisionReason).toMatch(
-      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(fewer or shorter tools, prefixes or workspaces\) \(nothing was held for the owner\)$/,
+      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(/,
     );
+    expect(over.permissionDecisionReason.endsWith(`ask for less at once (${UPDATE_ASK_LESS_NEVER}) (nothing was held for the owner)`)).toBe(true);
+    expect(over.permissionDecisionReason).not.toMatch(/tools|prefixes|workspaces/);
     expect(over.permissionDecisionReason).not.toContain("no request to these fields fits");
     expect(h.approvals()).toBe(0);
     // A shorter request to the same field fits: the floor was a real lower bound.
