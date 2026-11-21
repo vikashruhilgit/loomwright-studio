@@ -3,8 +3,9 @@
 // R1 and R2 were read from Loomwright's code on 2026-11-20 and never run. This file runs them against the REAL
 // Loomwright 18.1.2 driver, `scripts/automate-next-step.sh`, the way Loomwright's own suite does
 // (`scripts/test-automate-next-step.sh`, legs V7 / V8 / MP): a scratch git repo under `tmpdir()` (never this lane's
-// checkout, whose `.supervisor/lane.json` would make `--merge-parked` refuse `merge_parked_in_lane`), `HOME`
-// sandboxed, a table-driven stub `gh` first on PATH and named by `LOOMWRIGHT_GH_BIN` that fails on any call it has
+// checkout, whose `.supervisor/lane.json` would make `--merge-parked` refuse `merge_parked_in_lane`), every child
+// given the allow-listed `probeEnv` (`test/fixtures/loomwright-probe.ts`; no inherited GIT_DIR can point it at a real
+// repo), `HOME` sandboxed, a table-driven stub `gh` first on PATH and named by `LOOMWRIGHT_GH_BIN` that fails on any call it has
 // no row for, and the driver's documented test seams for the merge watcher, the notify and the run lock
 // (`NEXT_STEP_WATCH_CMD` / `NEXT_STEP_NOTIFY_CMD` / `NEXT_STEP_LOCK_CMD`, recorders). No network, no model, no
 // session. The phases a model would run (`/autonomous`, the owned drain) are answered with fixed RUN and DRAIN
@@ -37,11 +38,12 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, REVIEW_PR_RUN_POLICY } from "../src/automate/launch.js";
-import { resolveLoomwrightInstall } from "../src/loomwright/active-install.js";
 import { classifyToolCall, decideToolUse } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/types.js";
+import { probeEnv, probeInstall, writeGhStub, writeGhTable } from "./fixtures/loomwright-probe.js";
+import type { GhRow } from "./fixtures/loomwright-probe.js";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const RUNBOOK = join(REPO_ROOT, "docs", "evidence", "phase-8-exit-runbook.md");
@@ -74,27 +76,7 @@ const OBSERVED = Object.freeze({
 
 // ---- The install (AC3) -----------------------------------------------------------------------------------------
 
-/** The 18.1.2 plugin dir, or why the driver cases skip. */
-function probeInstall(): { readonly root: string } | { readonly skip: string } {
-  const forced = process.env.STUDIO_PROBE_LOOMWRIGHT;
-  if (forced === "none") return { skip: "STUDIO_PROBE_LOOMWRIGHT=none" };
-  let root: string;
-  let version: string;
-  try {
-    const install = resolveLoomwrightInstall(forced === undefined || forced === "" ? {} : { configured: forced });
-    root = install.installPath;
-    version = install.contract.plugin_version;
-  } catch (err) {
-    return { skip: `no Loomwright install resolves (${err instanceof Error ? err.message.split("\n")[0] : String(err)})` };
-  }
-  if (version !== PROBE_VERSION) return { skip: `the resolved Loomwright is ${version}, not ${PROBE_VERSION}` };
-  for (const tool of ["bash", "git", "jq"]) {
-    if (spawnSync(tool, ["--version"], { stdio: "ignore" }).status !== 0) return { skip: `${tool} is not on PATH` };
-  }
-  return { root };
-}
-
-const INSTALL = probeInstall();
+const INSTALL = probeInstall(PROBE_VERSION);
 const SKIP = "skip" in INSTALL ? INSTALL.skip : undefined;
 const LOOMWRIGHT = "root" in INSTALL ? INSTALL.root : "";
 
@@ -106,23 +88,6 @@ const ITEM_B = ".supervisor/requirements/walk/02-clickup-ticket.md";
 const PR_A = "https://github.com/vikashruhilgit/studio-sandbox/pull/31";
 const API = "repos/vikashruhilgit/studio-sandbox";
 const SID = "probe-coordinator";
-const GIT_ENV = {
-  GIT_CONFIG_NOSYSTEM: "1",
-  GIT_AUTHOR_NAME: "probe",
-  GIT_AUTHOR_EMAIL: "probe@example.invalid",
-  GIT_COMMITTER_NAME: "probe",
-  GIT_COMMITTER_EMAIL: "probe@example.invalid",
-};
-
-/** The stub: the first row whose glob matches the whole argv answers; no row ⇒ `UNMATCHED` logged and exit 1. */
-const GH_STUB = `#!/usr/bin/env bash
-all="$*"; printf 'gh %s\\n' "$all" >> "$GH_LOG"
-while IFS="\t" read -r rc pat out || [ -n "$rc" ]; do
-  case "$rc" in ""|"#"*) continue ;; esac
-  case "$all" in $pat) [ -n "$out" ] && printf "%s\\n" "$out"; exit "$rc" ;; esac
-done < "$GH_TABLE"
-echo "gh-stub: unmatched: $all" >&2; printf 'UNMATCHED %s\\n' "$all" >> "$GH_LOG"; exit 1
-`;
 const REC = `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$REC_LOG"\nexit 0\n`;
 
 const roots: string[] = [];
@@ -148,9 +113,8 @@ class Scratch {
     roots.push(this.work);
     this.repo = join(this.work, "repo");
     for (const d of [this.repo, join(this.work, "bin"), join(this.work, "home")]) mkdirSync(d, { recursive: true });
-    writeFileSync(join(this.work, "bin", "gh"), GH_STUB);
+    writeGhStub(join(this.work, "bin"));
     writeFileSync(join(this.work, "bin", "rec"), REC);
-    chmodSync(join(this.work, "bin", "gh"), 0o755);
     chmodSync(join(this.work, "bin", "rec"), 0o755);
     writeFileSync(join(this.work, "gh.log"), "");
     writeFileSync(join(this.work, "rec.log"), "");
@@ -196,33 +160,33 @@ class Scratch {
   }
 
   git(cwd: string, ...args: string[]): string {
-    const r = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, ...GIT_ENV, HOME: join(this.work, "home") } });
+    const r = spawnSync("git", args, { cwd, encoding: "utf8", env: probeEnv(join(this.work, "home")) });
     if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
     return r.stdout;
   }
 
   /** Replaces the stub's table: `[rc, glob, output]` rows, first match wins. */
-  table(rows: readonly (readonly [number, string, string])[]): void {
-    writeFileSync(join(this.work, "gh.table"), rows.map(([rc, pat, out]) => `${rc}\t${pat}\t${out}\n`).join(""));
+  table(rows: readonly GhRow[]): void {
+    writeGhTable(join(this.work, "gh.table"), rows);
   }
 
   /** One driver call in the sandbox. */
   call(...args: string[]): Call {
     const bin = join(this.work, "bin");
-    const env: Record<string, string> = {
-      PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-      HOME: join(this.work, "home"),
-      ...GIT_ENV,
-      GH_TABLE: join(this.work, "gh.table"),
-      GH_LOG: join(this.work, "gh.log"),
-      REC_LOG: join(this.work, "rec.log"),
-      LOOMWRIGHT_GH_BIN: join(bin, "gh"),
-      NEXT_STEP_WATCH_CMD: `${join(bin, "rec")} watch`,
-      NEXT_STEP_NOTIFY_CMD: `${join(bin, "rec")} notify`,
-      NEXT_STEP_LOCK_CMD: `${join(bin, "rec")} lock`,
-      NEXT_STEP_LOCK_RETRY_SECONDS: "0",
-      LOOMWRIGHT_PROC_REGISTRY_DIR: join(this.work, "procs"),
-    };
+    const env = probeEnv(join(this.work, "home"), {
+      bin,
+      extra: {
+        GH_TABLE: join(this.work, "gh.table"),
+        GH_LOG: join(this.work, "gh.log"),
+        REC_LOG: join(this.work, "rec.log"),
+        LOOMWRIGHT_GH_BIN: join(bin, "gh"),
+        NEXT_STEP_WATCH_CMD: `${join(bin, "rec")} watch`,
+        NEXT_STEP_NOTIFY_CMD: `${join(bin, "rec")} notify`,
+        NEXT_STEP_LOCK_CMD: `${join(bin, "rec")} lock`,
+        NEXT_STEP_LOCK_RETRY_SECONDS: "0",
+        LOOMWRIGHT_PROC_REGISTRY_DIR: join(this.work, "procs"),
+      },
+    });
     const r = spawnSync("bash", [join(LOOMWRIGHT, "scripts", "automate-next-step.sh"), ...args], { cwd: this.repo, env, encoding: "utf8", input: "", timeout: 120_000 });
     const out = r.stdout ?? "";
     let json: Record<string, unknown> | null = null;
@@ -293,7 +257,7 @@ function reviewHealReady(pr: string): string {
 }
 
 /** PR A open, at the scratch HEAD: the reads PICK, the owned-drain spawn, learning-emit and RECONCILE make. */
-function openRows(s: Scratch): (readonly [number, string, string])[] {
+function openRows(s: Scratch): GhRow[] {
   return [
     [0, "auth status*", ""],
     [0, `pr view ${PR_A} --json headRefOid`, JSON.stringify({ headRefOid: s.head })],
@@ -337,7 +301,7 @@ function after(iso: string): string {
 }
 
 /** PR A open for `--merge-parked`: its live head, one issue comment at `commentAt`, no review, the base not moved. */
-function mergeParkedRows(liveHead: string, commentAt: string): (readonly [number, string, string])[] {
+function mergeParkedRows(liveHead: string, commentAt: string): GhRow[] {
   return [
     [0, `pr view ${PR_A} --json state,mergedAt`, JSON.stringify({ state: "OPEN", mergedAt: null })],
     [0, `pr view ${PR_A} --json headRefOid,headRefName,baseRefName`, JSON.stringify({ headRefOid: liveHead, headRefName: "feature/walk-01-drum", baseRefName: "main" })],
@@ -416,7 +380,37 @@ describe.skipIf(SKIP !== undefined)(`walk order on the real Loomwright ${PROBE_V
   }, 180_000);
 });
 
-// ---- Step 6: which session reaches the rail (AC4) ------------------------------------------------------------------
+// ---- The probes' children are hermetic (runs in CI) ----------------------------------------------------------------
+
+describe("a probe's child process never inherits the caller's GIT_* environment", () => {
+  it("with GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE naming a decoy repo, probeEnv carries none of them and the scratch commits stay out of the decoy", () => {
+    const decoy = realpathSync(mkdtempSync(join(tmpdir(), "studio-walk-decoy-")));
+    roots.push(decoy);
+    const decoyEnv = probeEnv(join(decoy, "home"));
+    writeFileSync(join(decoy, "keep.txt"), "decoy\n");
+    for (const args of [["init", "-q", "."], ["add", "-A"], ["commit", "-q", "-m", "decoy seed"]]) {
+      expect(spawnSync("git", args, { cwd: decoy, env: decoyEnv }).status, args.join(" ")).toBe(0);
+    }
+    const decoyLog = (): string => spawnSync("git", ["log", "--format=%s"], { cwd: decoy, env: decoyEnv, encoding: "utf8" }).stdout;
+    // What a git hook exports to `npm test` run inside it.
+    vi.stubEnv("GIT_DIR", join(decoy, ".git"));
+    vi.stubEnv("GIT_WORK_TREE", decoy);
+    vi.stubEnv("GIT_INDEX_FILE", join(decoy, ".git", "index"));
+    try {
+      const env = probeEnv(join(decoy, "home"), { bin: join(decoy, "bin"), extra: { GH_LOG: "x" } });
+      const gitKeys = Object.keys(env).filter((k) => k.startsWith("GIT_"));
+      expect(gitKeys.sort()).toEqual(["GIT_AUTHOR_EMAIL", "GIT_AUTHOR_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_NAME", "GIT_CONFIG_NOSYSTEM"]);
+      // A scratch checkout built while the decoy is exported: its seed lands in the scratch repo only.
+      const s = new Scratch();
+      expect(spawnSync("git", ["log", "--format=%s"], { cwd: s.repo, env: probeEnv(join(s.work, "home")), encoding: "utf8" }).stdout).toBe("chore: seed the sandbox\n");
+      expect(decoyLog()).toBe("decoy seed\n");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+// ---- Step 6: which session reaches the rail (AC4)------------------------------------------------------------------
 
 describe("step 6: only a session whose policy admits the gh pr prefix reaches the rail", () => {
   const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };

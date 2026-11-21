@@ -22,7 +22,7 @@
 //     round still goes to the earned fallback review, never a `validate findings` spawn, so the owner's comment is
 //     not turned into a finding there either.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,13 +30,14 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { AUTOMATE_RUN_KEY, REVIEW_PR_RUN_POLICY, handleAutomateRun, reviewPrRunPrompt } from "../src/automate/launch.js";
 import type { KernelRunPayload } from "../src/automate/launch.js";
 import { createRoutingTools } from "../src/automate/routing.js";
-import { resolveLoomwrightInstall } from "../src/loomwright/active-install.js";
 import { EventLoop } from "../src/loop/index.js";
 import type { EventSessions } from "../src/loop/types.js";
 import type { SessionHandle, SessionRow, StartSessionParams } from "../src/sessions/index.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 import { HEAD, PR, installRunFiles, toolEnv } from "./fixtures/loomwright-run-files/harness.js";
 import type { ToolEnv } from "./fixtures/loomwright-run-files/harness.js";
+import { probeEnv, probeInstall, writeGhStub, writeGhTable } from "./fixtures/loomwright-probe.js";
+import type { GhRow } from "./fixtures/loomwright-probe.js";
 
 // The default GitHub client reads the real Keychain; every case injects one, so it must never get that far.
 vi.mock("../src/auth/keychain.js", async (importOriginal) => ({
@@ -217,20 +218,8 @@ describe("AC7: the kernel-started triage fix is given the PR, never the comment"
 
 // ---- AC8: what Loomwright 18.1.2 does with that prompt (install-gated) ---------------------------------------------
 
-/** The 18.1.2 plugin dir, or why the Loomwright half skips (the same gate as the walk-order probe). */
-function probeInstall(): { readonly root: string } | { readonly skip: string } {
-  const forced = process.env.STUDIO_PROBE_LOOMWRIGHT;
-  if (forced === "none") return { skip: "STUDIO_PROBE_LOOMWRIGHT=none" };
-  try {
-    const install = resolveLoomwrightInstall(forced === undefined || forced === "" ? {} : { configured: forced });
-    if (install.contract.plugin_version !== "18.1.2") return { skip: `the resolved Loomwright is ${install.contract.plugin_version}, not 18.1.2` };
-    for (const tool of ["bash", "git", "jq"]) if (spawnSync(tool, ["--version"], { stdio: "ignore" }).status !== 0) return { skip: `${tool} is not on PATH` };
-    return { root: install.installPath };
-  } catch (err) {
-    return { skip: `no Loomwright install resolves (${err instanceof Error ? err.message.split("\n")[0] : String(err)})` };
-  }
-}
-const INSTALL = probeInstall();
+/** The 18.1.2 plugin dir, or why the Loomwright half skips (the same gate as the walk-order probe, shared). */
+const INSTALL = probeInstall("18.1.2");
 const SKIP = "skip" in INSTALL ? INSTALL.skip : undefined;
 const LOOMWRIGHT = "root" in INSTALL ? INSTALL.root : "";
 
@@ -263,7 +252,8 @@ describe.skipIf(SKIP !== undefined)(`AC8: Loomwright 18.1.2's /review-pr for tha
     const repo = join(work, "repo");
     const bin = join(work, "bin");
     for (const d of [repo, bin, join(work, "home")]) mkdirSync(d, { recursive: true });
-    const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "probe", GIT_AUTHOR_EMAIL: "probe@example.invalid", GIT_COMMITTER_NAME: "probe", GIT_COMMITTER_EMAIL: "probe@example.invalid", HOME: join(work, "home") };
+    // Allow-listed, never `process.env`: an inherited GIT_DIR would send the seed commit into the caller's repo.
+    const gitEnv = probeEnv(join(work, "home"));
     writeFileSync(join(repo, "ping.js"), "process.exit(0);\n");
     for (const args of [["init", "-q", "."], ["symbolic-ref", "HEAD", "refs/heads/main"], ["add", "-A"], ["commit", "-q", "-m", "seed"]]) {
       expect(spawnSync("git", args, { cwd: repo, env: gitEnv }).status, args.join(" ")).toBe(0);
@@ -271,27 +261,23 @@ describe.skipIf(SKIP !== undefined)(`AC8: Loomwright 18.1.2's /review-pr for tha
     const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, env: gitEnv, encoding: "utf8" }).stdout.trim();
     const pr = "https://github.com/vikashruhilgit/studio-sandbox/pull/31";
     const api = "repos/vikashruhilgit/studio-sandbox";
-    writeFileSync(
-      join(bin, "gh"),
-      `#!/usr/bin/env bash\nall="$*"; printf 'gh %s\\n' "$all" >> "$GH_LOG"\nwhile IFS="\t" read -r rc pat out || [ -n "$rc" ]; do\n  case "$rc" in ""|"#"*) continue ;; esac\n  case "$all" in $pat) [ -n "$out" ] && printf "%s\\n" "$out"; exit "$rc" ;; esac\ndone < "$GH_TABLE"\necho "gh-stub: unmatched: $all" >&2; printf 'UNMATCHED %s\\n' "$all" >> "$GH_LOG"; exit 1\n`,
-    );
-    chmodSync(join(bin, "gh"), 0o755);
+    writeGhStub(bin);
     const view = { baseRefName: "main", headRefName: "feature/walk-01-drum", headRefOid: head, isCrossRepository: false, statusCheckRollup: [{ __typename: "CheckRun", name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }], reviews: [], latestReviews: [], reviewDecision: "", mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" };
-    const rows: [number, string, string][] = [
+    const rows: GhRow[] = [
       [0, `pr view ${pr} --json *`, JSON.stringify(view)],
       [0, "api graphql *reviewThreads*", JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] } } } } })],
       [1, "api *branches/main/protection*", "gh: Not Found (HTTP 404)"],
       [0, `api --method GET ${api}/rules/branches/main*`, "[]"],
       [0, `api --method GET ${api}/issues/31/comments*`, JSON.stringify([{ id: 1, created_at: "2026-11-21T06:00:00Z", user: { login: "vikashruhilgit", type: "User" }, body: FIX_COMMENT }])],
     ];
-    writeFileSync(join(work, "gh.table"), rows.map(([rc, p, o]) => `${rc}\t${p}\t${o}\n`).join(""));
+    writeGhTable(join(work, "gh.table"), rows);
     writeFileSync(join(work, "gh.log"), "");
     const r = spawnSync("bash", [join(LOOMWRIGHT, "scripts", "review-heal-next-step.sh"), pr, "--start", "drain", "--required-checks", "name:ci", "--no-auto-postmortem", "--root", repo], {
       cwd: repo,
       encoding: "utf8",
       input: "",
       timeout: 120_000,
-      env: { ...gitEnv, PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`, GH_TABLE: join(work, "gh.table"), GH_LOG: join(work, "gh.log"), LOOMWRIGHT_GH_BIN: join(bin, "gh") },
+      env: probeEnv(join(work, "home"), { bin, extra: { GH_TABLE: join(work, "gh.table"), GH_LOG: join(work, "gh.log"), LOOMWRIGHT_GH_BIN: join(bin, "gh") } }),
     });
     expect(r.status, r.stderr).toBe(0);
     const instruction = JSON.parse(r.stdout) as Record<string, unknown>;
