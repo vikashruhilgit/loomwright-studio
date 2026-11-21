@@ -56,3 +56,8 @@ kernel/src/automate/run-exclusions.ts
 scripts/refresh-loomwright-fixture.sh
 kernel/test/loomwright-past-the-rail-probe.test.ts
 docs/evidence/phase-8-25h-past-the-rail.md
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-20-25a-loomwright-conformance-test.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
