@@ -77,7 +77,7 @@ export interface ToolDecision {
  * limit what an allowed program itself runs (see `decideToolUse`). A
  * parser-grade Bash gate is out of scope.
  */
-export const SHELL_METACHARACTERS = /[;&|<>()$`\n\r]/;
+const SHELL_METACHARACTERS = /[;&|<>()$`\n\r]/;
 
 /**
  * The kernel's tool decision. Pure: no I/O. Deny by default.

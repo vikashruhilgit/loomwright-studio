@@ -33,7 +33,7 @@ import {
 import type { RunExclusion, RunSessionKind } from "../src/automate/run-exclusions.js";
 import { resolveLoomwrightInstall } from "../src/loomwright/active-install.js";
 import { loomwrightScriptPaths } from "../src/sessions/loomwright-scripts.js";
-import { decideToolUse, SHELL_METACHARACTERS } from "../src/sessions/policy.js";
+import { decideToolUse } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/types.js";
 import {
   bashCommandFor,
@@ -49,6 +49,11 @@ import {
   splitWords,
 } from "./fixtures/loomwright-instructions/extract.js";
 import type { RawEntry, ScriptFacts } from "./fixtures/loomwright-instructions/extract.js";
+
+// The sampler's own rule for a word it must not copy verbatim into a sample command: any shell
+// metacharacter. Kept here, not imported from the rail, so the rail can change how it reads a
+// command (25b) without changing which words this test samples.
+const SAMPLE_METACHARACTERS = /[;&|<>()$`\n\r]/;
 
 const UPDATE = process.env.LOOMWRIGHT_FIXTURE_UPDATE === "1";
 const LIVE = process.env.STUDIO_LIVE === "1" || UPDATE;
@@ -426,7 +431,7 @@ function literalCommand(part: string, scripts: ReadonlySet<string>): string | un
       continue;
     }
     if (/^\d?(>>?|<|&>)\S/.test(w)) continue;
-    if (scriptOfWord(w, scripts) !== undefined || !SHELL_METACHARACTERS.test(w)) out.push(w);
+    if (scriptOfWord(w, scripts) !== undefined || !SAMPLE_METACHARACTERS.test(w)) out.push(w);
     // A synopsis's `a|b|c` alternation: its first alternative, the form the session issues.
     else if (/^[A-Za-z0-9_.:=-]+(\|[A-Za-z0-9_.:=-]+)+$/.test(w)) out.push(w.split("|")[0] as string);
     else out.push("sample");
