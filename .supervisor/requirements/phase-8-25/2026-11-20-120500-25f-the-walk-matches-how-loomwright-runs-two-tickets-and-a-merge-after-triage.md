@@ -53,3 +53,8 @@ docs/evidence/phase-8-25e-triage-fix-probe.md
 docs/evidence/phase-8-exit-runbook.md
 docs/OPEN_QUESTIONS.md
 kernel/test/phase-8-exit-live.test.ts
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-21-25f-walk-order-probes.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
