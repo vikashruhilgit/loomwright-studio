@@ -241,9 +241,8 @@ function fixturePath(): string {
   return join(FIXTURES, found[0] as string);
 }
 
-/** The run policy for `kind`, with its scripts admitted under `root` exactly as the session manager admits them. */
-function admittedPolicy(kind: RunSessionKind, root: string): ToolPolicy {
-  const policy = POLICIES[kind];
+/** `policy` (by default `kind`'s run policy), with its scripts admitted under `root` exactly as the session manager admits them. */
+function admittedPolicy(kind: RunSessionKind, root: string, policy: ToolPolicy = POLICIES[kind]): ToolPolicy {
   const admitted = loomwrightScriptPaths(root, policy.loomwrightScripts);
   if (!admitted.ok) throw new Error(`${kind}: ${admitted.message}`);
   return { ...policy, admittedScriptPaths: admitted.paths };
@@ -445,7 +444,23 @@ function literalCommand(part: string, scripts: ReadonlySet<string>): string | un
  * one row too (as an entry of its own, at the same file:line), so a composition row can never hide a program or script
  * the kind's policy does not admit.
  */
-function conformanceFailures(entries: readonly Entry[], root: string, scripts: ReadonlySet<string>, rows: readonly RunExclusion[], used?: Set<string>): string[] {
+/**
+ * Options for `conformanceFailures`: `policies` replaces a kind's run policy (a test de-admitting one script, prefix
+ * or tool); `allowed.n` counts the admitted decisions, entries and parts alike.
+ */
+interface ConformanceOptions {
+  readonly policies?: Partial<Record<RunSessionKind, ToolPolicy>>;
+  readonly allowed?: { n: number };
+}
+
+function conformanceFailures(
+  entries: readonly Entry[],
+  root: string,
+  scripts: ReadonlySet<string>,
+  rows: readonly RunExclusion[],
+  used?: Set<string>,
+  opts: ConformanceOptions = {},
+): string[] {
   const failures: string[] = [];
   const policies = new Map<RunSessionKind, ToolPolicy>();
   const check = (e: RawEntry, kind: RunSessionKind, reason: string, label: string): void => {
@@ -457,10 +472,13 @@ function conformanceFailures(entries: readonly Entry[], root: string, scripts: R
   };
   for (const e of entries) {
     for (const kind of e.kinds) {
-      const policy = policies.get(kind) ?? admittedPolicy(kind, root);
+      const policy = policies.get(kind) ?? admittedPolicy(kind, root, opts.policies?.[kind]);
       policies.set(kind, policy);
       const d = decide(e, policy, root, scripts);
-      if (d.decision === "allow") continue;
+      if (d.decision === "allow") {
+        if (opts.allowed !== undefined) opts.allowed.n += 1;
+        continue;
+      }
       check(e, kind, d.reason, "");
       if (d.reason !== "bash_shell_metacharacter" || (e.type !== "command" && e.type !== "script")) continue;
       const seen = new Set<string>();
@@ -470,6 +488,7 @@ function conformanceFailures(entries: readonly Entry[], root: string, scripts: R
         seen.add(text);
         const p: RawEntry = { ...e, type: calledScript({ ...e, text }, scripts) === undefined ? "command" : "script", text };
         const pd = decide(p, policy, root, scripts);
+        if (pd.decision === "allow" && opts.allowed !== undefined) opts.allowed.n += 1;
         if (pd.decision === "deny") check(p, kind, pd.reason, `part of \`${e.text.replace(/\n/g, "\\n")}\`: `);
       }
     }
@@ -670,5 +689,72 @@ describe("a row matches only the shapes its reason describes (review iteration 2
       at("skills/workflow-management/SKILL.md", "npm run lint"),
     ];
     expect(conformanceFailures(real, root, scripts, RUN_EXCLUSIONS)).toEqual([]);
+  });
+});
+
+/** `kind`'s run policy without one admitted script, Bash prefix or tool. */
+function withoutElement(kind: RunSessionKind, field: "loomwrightScripts" | "allowedBashPrefixes" | "allowedTools", name: string): ToolPolicy {
+  const policy = POLICIES[kind];
+  return { ...policy, [field]: (policy[field] ?? []).filter((n) => n !== name) };
+}
+
+describe("a driver row matches only the option its reason names (review iteration 3)", () => {
+  const driver = new Set(["automate-next-step.sh"]);
+  const at = (file: string, text: string, kind: RunSessionKind): Entry => ({ file, line: 40, type: "script", source: "backtick", text, kinds: [kind] });
+  const SKILL = "skills/automate-loop/SKILL.md";
+  const HELPERS = "skills/automate-loop/helpers.md";
+
+  it.each([
+    ["backlog", SKILL, "automate-next-step.sh <runfile> --start pick --session-id <sid>"],
+    ["backlog", SKILL, "automate-next-step.sh --resume .supervisor/automate --session-id <sid>"],
+    ["resume", HELPERS, "automate-next-step.sh <runfile> --result '{}' --mode safe --session-id <sid>"],
+    ["merge_parked", SKILL, "automate-next-step.sh --merge-parked .supervisor/automate --run <run_id> --session-id <sid>"],
+    ["merge_parked_trusted", HELPERS, "automate-next-step.sh <runfile> --result '{}' --session-id <sid>"],
+  ] as const)("%s: in %s, `%s` with automate-next-step.sh de-admitted has no exclusion row", (kind, file, text) => {
+    const failures = conformanceFailures([at(file, text, kind)], root, driver, RUN_EXCLUSIONS, undefined, {
+      policies: { [kind]: withoutElement(kind, "loomwrightScripts", "automate-next-step.sh") },
+    });
+    expect(failures).toEqual([expect.stringMatching(/ denied bash_prefix_not_allowed at .*:40: no exclusion row$/)]);
+  });
+
+  it("the refused options and the synopsis still match their rows under the real policies", () => {
+    const real = [
+      at(SKILL, "automate-next-step.sh --merge-parked .supervisor/automate --run <run_id> --session-id <sid>", "backlog"),
+      at(SKILL, "automate-next-step.sh <runfile> --start pick --session-id <sid>", "merge_parked"),
+      at(SKILL, "automate-next-step.sh --resume .supervisor/automate --session-id <sid>", "merge_parked_trusted"),
+      at(HELPERS, "automate-next-step.sh --resume sample [--run sample", "resume"),
+      at(HELPERS, "automate-next-step.sh --resume sample [--run sample", "merge_parked"),
+    ];
+    expect(conformanceFailures(real, root, driver, RUN_EXCLUSIONS)).toEqual([]);
+  });
+
+  it("the synopsis row is limited to the helper catalog", () => {
+    expect(conformanceFailures([at(SKILL, "automate-next-step.sh --resume sample [--run sample", "backlog")], root, driver, RUN_EXCLUSIONS)).toEqual([
+      expect.stringMatching(/: no exclusion row$/),
+    ]);
+  });
+});
+
+describe("no row hides a de-admitted script, prefix or tool (review iteration 3)", () => {
+  // `resume` shares `backlog`'s policy and file set; the two merge kinds differ in their driver profile, so both are checked.
+  const KINDS: readonly RunSessionKind[] = ["backlog", "review_pr", "merge_parked", "merge_parked_trusted"];
+  const FIELDS = ["loomwrightScripts", "allowedBashPrefixes", "allowedTools"] as const;
+
+  it("de-admitting any element a kind's entries rely on fails the conformance check", () => {
+    const scripts = new Set(src.scripts);
+    const hidden: string[] = [];
+    for (const kind of KINDS) {
+      const entries = src.entries.filter((e) => e.kinds.includes(kind)).map((e) => ({ ...e, kinds: [kind] }));
+      const base = { n: 0 };
+      expect(conformanceFailures(entries, root, scripts, RUN_EXCLUSIONS, undefined, { allowed: base })).toEqual([]);
+      for (const field of FIELDS) {
+        for (const name of POLICIES[kind][field] ?? []) {
+          const allowed = { n: 0 };
+          const failures = conformanceFailures(entries, root, scripts, RUN_EXCLUSIONS, undefined, { policies: { [kind]: withoutElement(kind, field, name) }, allowed });
+          if (allowed.n < base.n && failures.length === 0) hidden.push(`${kind}: without ${field} \`${name}\`, ${base.n - allowed.n} admitted decision(s) become denials every one of which a row absorbs`);
+        }
+      }
+    }
+    expect(hidden).toEqual([]);
   });
 });
