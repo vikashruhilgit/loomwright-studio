@@ -95,6 +95,9 @@ const REVIEW: readonly RunSessionKind[] = Object.freeze(["review_pr"]);
 const ALL: readonly RunSessionKind[] = RUN_SESSION_KINDS;
 
 const SHELL_META = ["bash_shell_metacharacter"] as const;
+// A compound command: the rail refuses an operator outside quotes as a metacharacter, and 25b's
+// parser refuses a heredoc it cannot read as `bash_unparsed`.
+const SHELL_COMPOUND = ["bash_shell_metacharacter", "bash_unparsed"] as const;
 const NOT_LISTED = ["bash_prefix_not_allowed"] as const;
 
 /** The recorded exclusions (see the module comment). Each denied (entry, kind) matches exactly one row. */
@@ -514,7 +517,7 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "shell-compound",
-    match: { type: "command", deny: SHELL_META, text: "^(?!PATHS=|grep -rnE? \"(gh pr merge --squash|800 changed)).*(&&|\\|\\||\\s\\|\\s|\\s\\d?>>?(\\s|$)|\\s\\d>\\S|2>&1|<<)" },
+    match: { type: "command", deny: SHELL_COMPOUND, text: "^(?!PATHS=|grep -rnE? \"(gh pr merge --squash|800 changed)).*(&&|\\|\\||\\s\\|\\s|\\s\\d?>>?(\\s|$)|\\s\\d>\\S|2>&1|<<)" },
     kinds: ALL,
     reason_class: "shell composition",
     reason: "a pipe, chain, redirect or heredoc (`a && b`, `x | y`, `> file`, `<<'EOF'`): the rail refuses compound commands by design (25b's non-goal). The test decides each part too, and a denied part has its own row.",
