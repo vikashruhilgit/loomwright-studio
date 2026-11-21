@@ -13,8 +13,14 @@
 // instruction (`advisory, never instructed`). Where a row is filed to a story whose criteria do not name the
 // command yet, its reason says "not in 25x's list": 25a found it, and that story's owner decides.
 //
-// `test/automate-merge-check.test.ts` scans every file here for a merge call, a merge endpoint or a process start;
-// this data names Loomwright's own merge only through its anchor text, never as the GitHub CLI's merge command.
+// A row for a denied shell metacharacter (`shell composition`, `usage-synopsis`) never stands alone: the test also
+// decides each part of the composed command as the session would retry it (the literal value filled in), and each
+// denied part must match exactly one row of its own, so a composition row cannot hide an unadmitted program.
+//
+// `test/automate-merge-check.test.ts` scans every file here for a merge call, a merge endpoint or a process start.
+// This file is the scan's one reviewed exemption from its merge-TEXT patterns only: it names the GitHub CLI's merge
+// command as text to match (Loomwright's counter-examples and gate-eval's line), so the scan instead asserts that it
+// imports types only and exports frozen data with no function; the process, network and merge-call patterns still apply.
 //
 // Read from Loomwright 18.1.2 on 2026-11-21 (the committed fixture `test/fixtures/loomwright-18.1.2-instructions.json`).
 import type { ToolDecisionReason } from "../sessions/policy.js";
@@ -327,6 +333,22 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     consequence: "consequence if denied: none; the session issues one concrete form, which is decided on its own.",
   },
   {
+    id: "helpers-calling-convention",
+    match: { type: "command", deny: NOT_LISTED, text: "^bash sample$", files: ["skills/automate-loop/helpers.md"] },
+    kinds: [...AUTOMATE, ...MERGE],
+    reason_class: "advisory, never instructed",
+    reason: "the helper catalog's calling convention `bash \"${CLAUDE_PLUGIN_ROOT}/scripts/automate-helpers.sh <subcommand> [args…]\"` (one quoted word, a synopsis): each subcommand the catalog lists is an entry decided on its own.",
+    consequence: "consequence if denied: none.",
+  },
+  {
+    id: "run-lock-force-unlock",
+    match: { type: "script", deny: NOT_LISTED, scripts: ["run-lock.sh"], text: "--force-unlock\\b" },
+    kinds: [...AUTOMATE, ...MERGE],
+    reason_class: "refused subcommand or driver option",
+    reason: "LOOMWRIGHT_DENIED_SUBCOMMANDS: `run-lock.sh … --force-unlock` breaks the run lock unconditionally (Loomwright's own human-only escape hatch); the helper catalog's synopsis lists it as optional.",
+    consequence: "consequence if denied: the session cannot break `/automate`'s single-drain ownership (invariant 4); `acquire` / `release` / `status` stay admitted.",
+  },
+  {
     id: "helpers-sweep-synopsis",
     match: { type: "script", scripts: ["automate-helpers.sh"], deny: NOT_LISTED, text: "\\bsweep \\[--apply\\]" },
     kinds: [...AUTOMATE, ...MERGE],
@@ -360,18 +382,26 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "prose-misread",
-    match: { type: "command", text: "^(diff review\\)|git worktree \\(the sole-writer)" },
+    match: { type: "command", text: "^(diff review\\)|diff sample \\{fixable, each bot-sourced|git worktree \\(the sole-writer)" },
     kinds: [...AUTOMATE, ...REVIEW],
     reason_class: "advisory, never instructed",
-    reason: "prose in backticks that starts with a program word (`diff review): …`, `git worktree (the sole-writer …`), not a command.",
+    reason: "prose in backticks that starts with a program word (`diff review): …`, `git worktree (the sole-writer …`), not a command; the first is also matched as the part the test decides (`diff sample {fixable, …`).",
     consequence: "consequence if denied: none.",
   },
   {
     id: "never-do-this",
-    match: { type: "command", text: "^(PATHS=|grep -rnE? \"(gh pr m[e]rge --squash|800 changed))" },
+    match: { type: "command", text: "^(PATHS=|grep -rnE? \"(gh pr merge --squash|800 changed))" },
     kinds: [...AUTOMATE, ...MERGE],
     reason_class: "advisory, never instructed",
     reason: "a counter-example the text marks NEVER, or an invariant grep Loomwright's maintainers run over the plugin repo, not over the host checkout.",
+    consequence: "consequence if denied: none.",
+  },
+  {
+    id: "reviewer-bash-counter-example",
+    match: { type: "command", deny: NOT_LISTED, text: "^echo$", files: ["agents/code-reviewer.md"] },
+    kinds: [...AUTOMATE, ...REVIEW],
+    reason_class: "advisory, never instructed",
+    reason: "the code reviewer's read-only warning (\"`echo > file`, `sed -i`, `git commit` would all succeed\"): a counter-example, decided here as its `echo` part.",
     consequence: "consequence if denied: none.",
   },
   {
@@ -410,27 +440,43 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   // ---- Shell composition and variables the rail refuses by design ----
   {
     id: "shell-variables",
-    match: { type: "command", deny: SHELL_META, text: "^(?!PATHS=|grep -rnE? \"(gh pr m[e]rge --squash|800 changed))(?!.*(&&|\\|\\||\\s\\|\\s|\\s\\d?>>?(\\s|$)|\\s\\d>\\S|2>&1|<<)).*\\$" },
+    match: { type: "command", deny: SHELL_META, text: "^(?!PATHS=|grep -rnE? \"(gh pr merge --squash|800 changed))(?!.*(&&|\\|\\||\\s\\|\\s|\\s\\d?>>?(\\s|$)|\\s\\d>\\S|2>&1|<<)).*\\$" },
     kinds: ALL,
     reason_class: "shell composition",
-    reason: "a template variable or substitution (`\"$BASE_BRANCH\"`, `\"$HEAD_REF\"`, `${CLAUDE_PLUGIN_ROOT}`, `$(date …)`): the session fills in the value; the rail refuses `$` (25b keeps it refused).",
-    consequence: "consequence if denied: the session writes the literal value (a denial costs one retry).",
+    reason: "a template variable or substitution (`\"$BASE_BRANCH\"`, `\"$HEAD_REF\"`, `${CLAUDE_PLUGIN_ROOT}`, `$(date …)`): the session fills in the value; the rail refuses `$` (25b keeps it refused). The test decides the literal retry too, and an unadmitted program in it needs its own row.",
+    consequence: "consequence if denied: the session retries with the literal value, which is admitted only where the retry's own decision is (a retry denied again has its own row).",
   },
   {
     id: "shell-variables-scripts",
     match: { type: "script", deny: SHELL_META, text: "^(?!.*(\\S\\|\\S|\\| --)).*\\$" },
     kinds: ALL,
     reason_class: "shell composition",
-    reason: "a script call with a template variable or captured output (`\"$FIX_FLOOR\"`, `FIX_FLOOR=$(bash … fix-floor.sh resolve …)`, `$fix_cycles`): the session runs the call and fills the value in.",
-    consequence: "consequence if denied: the session writes the literal value (a denial costs one retry).",
+    reason: "a script call with a template variable or captured output (`\"$FIX_FLOOR\"`, `FIX_FLOOR=$(bash … fix-floor.sh resolve …)`, `$fix_cycles`): the session runs the call and fills the value in. The test decides that literal call too (a refused script has its own row).",
+    consequence: "consequence if denied: the session retries with the literal value, which is admitted only where the script and its arguments are (a retry denied again has its own row).",
   },
   {
     id: "shell-compound",
-    match: { type: "command", deny: SHELL_META, text: "^(?!PATHS=|grep -rnE? \"(gh pr m[e]rge --squash|800 changed)).*(&&|\\|\\||\\s\\|\\s|\\s\\d?>>?(\\s|$)|\\s\\d>\\S|2>&1|<<)" },
+    match: { type: "command", deny: SHELL_META, text: "^(?!PATHS=|grep -rnE? \"(gh pr merge --squash|800 changed)).*(&&|\\|\\||\\s\\|\\s|\\s\\d?>>?(\\s|$)|\\s\\d>\\S|2>&1|<<)" },
     kinds: ALL,
     reason_class: "shell composition",
-    reason: "a pipe, chain, redirect or heredoc (`a && b`, `x | y`, `> file`, `<<'EOF'`): the rail refuses compound commands by design (25b's non-goal).",
+    reason: "a pipe, chain, redirect or heredoc (`a && b`, `x | y`, `> file`, `<<'EOF'`): the rail refuses compound commands by design (25b's non-goal). The test decides each part too, and a denied part has its own row.",
     consequence: "consequence if denied: the session runs the parts one by one, or writes the file with Write.",
+  },
+  {
+    id: "composition-builtins",
+    match: { type: "command", deny: NOT_LISTED, text: "^(printf |\\[ sample = true \\]$|true$)" },
+    kinds: [...AUTOMATE, ...REVIEW],
+    reason_class: "shell composition",
+    reason: "a part that only feeds or guards another: `printf '%s' \"$BLOCK_TEXT\" |` feeding the Launch Pad validator, `$( [ \"$x\" = true ] && printf -- '--flag' )` building a postmortem flag, and `|| true` after a best-effort `gh pr close`.",
+    consequence: "consequence if denied: none of its own; the session passes the value or flag itself (the call it feeds is decided, and has its own row where denied).",
+  },
+  {
+    id: "driver-shell-quoting",
+    match: { type: "command", deny: NOT_LISTED, text: "^ns_sq ", files: ["scripts/automate-next-step.sh"] },
+    kinds: [...AUTOMATE, ...MERGE],
+    reason_class: "shell composition",
+    reason: "the driver's own quoting function (`ns_sq`, automate-next-step.sh:1993) in the source of a line it prints; the session receives the line expanded (`bash '<path>' '<run file>' --session-id …`), which is decided as the driver call.",
+    consequence: "consequence if denied: none; the session never calls `ns_sq`.",
   },
 
   {
@@ -454,11 +500,11 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "git-subcommands-unlisted",
-    match: { type: "command", deny: NOT_LISTED, text: "^git (pull|reset|restore|check-ref-format|remote set-head)\\b" },
+    match: { type: "command", deny: NOT_LISTED, text: "^git (pull|reset|restore|check-ref-format|remote set-head|ls-tree|check-ignore)\\b" },
     kinds: [...AUTOMATE, ...MERGE],
     reason_class: "program or subcommand not admitted",
-    reason: "git subcommands the 18.1.2 helpers and per-item loop use (`pull --ff-only`, `restore --staged`, `reset`, `check-ref-format`, `remote set-head`) that RUN_BASH_PREFIXES does not list (found by 25a, not in 25c's list).",
-    consequence: "consequence if denied: the session cannot fast-forward its base, unstage a path or validate a branch name with git.",
+    reason: "git subcommands the 18.1.2 helpers, per-item loop and Launch Pad use (`pull --ff-only`, `restore --staged`, `reset`, `check-ref-format`, `remote set-head`, `ls-tree -r --name-only \"origin/$BASE_BRANCH\"` for a cited ref, `check-ignore -q --no-index` in the `.supervisor/` gitignore probe) that RUN_BASH_PREFIXES does not list (found by 25a, not in 25c's list).",
+    consequence: "consequence if denied: the session cannot fast-forward its base, unstage a path, validate a branch name, resolve a cited ref by suffix (`resolves: no`) or probe `.supervisor/`'s ignore state with git.",
     filed: "25c",
   },
   {
@@ -472,12 +518,38 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "reviewer-scratch-repro",
-    match: { type: "command", deny: NOT_LISTED, text: "^(git -c |git init\\b|mktemp -d|sed -i|sed -n|awk -v|find … -mmin)" },
+    match: { type: "command", deny: NOT_LISTED, text: "^(git -c |git init\\b|mktemp -d|sed -i|tar -x |cd sample$)", files: ["agents/code-reviewer.md", "agents/worker.md"] },
     kinds: ALL,
     reason_class: "program or subcommand not admitted",
-    reason: "the reviewer's and worker's scratch-dir repro (`mktemp -d`, `git init`, `git -c user.name=…`, `sed -i`) and text tools that can run or write (`awk`, `sed`, `find`): outside the checkout 25c's confinement still refuses them (not in 25c's list).",
+    reason: "the reviewer's and worker's scratch-dir repro (`mktemp -d`, `git init`, `git -c user.name=…`, `sed -i`, `cd \"$SCRATCH\"`, `git archive | tar -x -C \"$SCRATCH/tree\"`): outside the checkout 25c's confinement still refuses them (not in 25c's list).",
     consequence: "consequence if denied: the self-review and code review skip their adversarial repro in a kernel run.",
     filed: "25c",
+  },
+  {
+    id: "text-and-runtime-tools",
+    match: { type: "command", deny: NOT_LISTED, text: "^(awk|find|python3|sed -n)( |$)" },
+    kinds: ALL,
+    reason_class: "program or subcommand not admitted",
+    reason: "`awk` (`has_rubric()`'s rubric check, `awk -v` in the loop), `sed -n` (the rubric grader's line reads), `find` (`-mmin +1440` for FETCH_HEAD's age; `-mtime +30 -delete` for old briefs) and `python3` (the inline Launch Pad result validator) are not in RUN_BASH_PREFIXES: `awk`, `sed` and `find` can run or write (`system()`, `w`, `-exec`) and `python3` runs any code (found by 25a, not in 25c's list).",
+    consequence: "consequence if denied: the rubric check, the fetch-age column and the Launch Pad block validation are done by the model with Read, and old briefs stay.",
+    filed: "25c",
+  },
+  {
+    id: "beads-probe",
+    match: { type: "command", deny: NOT_LISTED, text: "^bd --version$" },
+    kinds: [...AUTOMATE, ...REVIEW],
+    reason_class: "program or subcommand not admitted",
+    reason: "the optional Beads detection `test -d .beads && bd --version`: `bd` is not in RUN_BASH_PREFIXES (found by 25a, not in 25c's list).",
+    consequence: "consequence if denied: `beads_active` is false and the run works without Beads.",
+    filed: "25c",
+  },
+  {
+    id: "sdk-runner-spike",
+    match: { type: "command", deny: NOT_LISTED, text: "^(npm install$|node sample --brief )", files: ["agents/supervisor.md", "commands/supervisor.md", "skills/supervisor-config/SKILL.md"] },
+    kinds: AUTOMATE,
+    reason_class: "program or subcommand not admitted",
+    reason: "the Supervisor's `--sdk-runner` spike (experimental, off by default): `npm install` in the plugin's `sdk-spike/` and `node …/sdk-spike/dist/runner.js`, an Agent SDK runner that drives worker sessions the kernel does not own (invariant 2). The spike's `npm run build` part is counted under project-checks.",
+    consequence: "consequence if denied: none in a kernel run, which never passes `--sdk-runner`.",
   },
   {
     id: "gh-run-rerun",
@@ -534,22 +606,50 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     consequence: "consequence if denied: the session issues the inner command itself, which the rail decides.",
   },
 
-  // ---- Unparsed: pseudocode and compound shell blocks ----
+  // ---- Unparsed: pseudocode and compound shell blocks, each anchored on its known lines ----
   {
-    id: "pseudocode",
-    match: { type: "unparsed", files: ["skills/autonomous-loop/SKILL.md"] },
+    id: "autonomous-init-pseudocode",
+    match: {
+      type: "unparsed",
+      files: ["skills/autonomous-loop/SKILL.md"],
+      text: "^(if --single-iteration: +multi_iter=false|elif --allow-multi-iteration (AND --single-iteration|alone):.*|non_interactive=(true|false)|if \\[ ! -t 0 \\] \\|\\| \\[ -n \"\\$CI\" \\]:|if non_interactive AND multi_iter AND NOT --non-interactive-fallback:|if max_iterations < 1 OR max_iterations > 10:|\"ERROR: (/autonomous multi-iteration mode requires interactive terminal\\.|--max-iterations must be 1\\.\\.10 \\(got: \\$max_iterations\\)\\.|cannot combine --allow-multi-iteration with --single-iteration\\.)|Cap rationale: stacked-PR review burden .*|Pick one: drop --allow-multi-iteration .*|\")$",
+    },
     kinds: AUTOMATE,
     reason_class: "unparsed",
-    reason: "`/autonomous` INIT's flag-resolution and rubric-check pseudocode in a bash fence (`if --single-iteration: …`), not commands.",
+    reason: "`/autonomous` INIT's flag-resolution and argument-check pseudocode in a bash fence (`if --single-iteration: …`, `if max_iterations < 1 OR …`) and its quoted error texts, not commands.",
     consequence: "consequence if denied: none; the model follows the logic.",
   },
   {
-    id: "compound-shell-blocks",
-    match: { type: "unparsed", files: ["commands/supervisor.md", "skills/self-heal-advisory/completion-tail.md", "skills/state-management/SKILL.md"] },
+    id: "rubric-check-guard",
+    match: { type: "unparsed", files: ["skills/autonomous-loop/SKILL.md"], text: "^(\\}|if ! has_rubric \"\\$current_brief_path\"; then|fi)$" },
     kinds: AUTOMATE,
     reason_class: "unparsed",
-    reason: "multi-line shell blocks (`if awk …; then UM_DISPATCHED=true … fi`, a `for … case … esac` gitignore probe): compound shell the rail refuses by design.",
-    consequence: "consequence if denied: the session runs the parts one by one (the awk / git check-ignore parts are 25c's).",
+    reason: "real shell the extractor reads line by line: the closing `}` of `has_rubric()` and its `if ! has_rubric \"$current_brief_path\"; then … fi` guard (INIT's rubric check); a compound the rail refuses by design.",
+    consequence: "consequence if denied: the session reads the brief with Read and looks for the `## Outcomes Rubric` bullets itself (its awk part is text-and-runtime-tools).",
+  },
+  {
+    id: "review-dispatch-probe",
+    match: {
+      type: "unparsed",
+      files: ["commands/supervisor.md", "skills/self-heal-advisory/completion-tail.md"],
+      text: "^(if awk -v url=\"\\{PR_URL\\}\" '\\$0 == url \\|\\| \\$2 == url \\{ found=1; exit \\} END \\{ exit\\(found \\? 0 : 1\\) \\}' \\.supervisor/review-dispatch/\\* 2>/dev/null; then|UM_DISPATCHED=true|else|UM_DISPATCHED=false; UM_LOG=|fi)$",
+    },
+    kinds: AUTOMATE,
+    reason_class: "unparsed",
+    reason: "real shell, one `if awk … .supervisor/review-dispatch/* …; then UM_DISPATCHED=true … else UM_DISPATCHED=false; UM_LOG= … fi` block read line by line: a compound the rail refuses by design.",
+    consequence: "consequence if denied: the session reads `.supervisor/review-dispatch/` with Read and sets the flag itself (its awk part is 25c's).",
+  },
+  {
+    id: "gitignore-probe",
+    match: {
+      type: "unparsed",
+      files: ["skills/state-management/SKILL.md"],
+      text: "^(gi=ignored|for p in \\.supervisor/state\\.md \\.supervisor/logs/x\\.json; do|case \\$\\? in 0\\) ;; 1\\) gi=append ;; \\*\\) gi=fallback; break ;; esac|done|\\[ \"\\$gi\" = fallback \\] && grep -qxF '\\.supervisor/' \\.gitignore 2>/dev/null && gi=ignored|case \"\\$gi\" in|esac)$",
+    },
+    kinds: AUTOMATE,
+    reason_class: "unparsed",
+    reason: "real shell, the `.supervisor/` gitignore probe (`gi=ignored`, `for p in …; do … case $? in … esac … done`, `case \"$gi\" in … esac`) read line by line: a compound the rail refuses by design.",
+    consequence: "consequence if denied: the session runs the parts one by one (its `git check-ignore` part is git-subcommands-unlisted, 25c).",
   },
   {
     id: "driver-dynamic-launch",
@@ -625,7 +725,7 @@ export const PAST_THE_RAIL: readonly PastTheRail[] = Object.freeze([
     id: "helpers-gate-eval-merge",
     script: "scripts/automate-helpers.sh",
     line: 1179,
-    anchor: 'pr merge --squash --match-head-commit "$live_head"',
+    anchor: '"$GH" pr merge --squash --match-head-commit "$live_head"',
     runs: "the squash merge of `gate-eval`, Loomwright's one merge executor (the anchor's line)",
     condition: "the driver's `--merge-parked` gate on a `go` (the kernel's sanctioned merge, invariant 4)",
     kinds: MERGE,

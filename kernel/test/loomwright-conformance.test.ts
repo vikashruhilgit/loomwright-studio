@@ -40,11 +40,13 @@ import {
   extractFile,
   extractMarkdown,
   fileDigest,
+  fillPlaceholders,
   listScripts,
   SAMPLE_RUN_ID,
   scriptFacts,
   scriptOfWord,
   sortEntries,
+  splitWords,
 } from "./fixtures/loomwright-instructions/extract.js";
 import type { RawEntry, ScriptFacts } from "./fixtures/loomwright-instructions/extract.js";
 
@@ -285,21 +287,191 @@ function rowMatches(row: RunExclusion, entry: RawEntry, kind: RunSessionKind, re
   return true;
 }
 
-/** One conformance failure per denied (entry, kind) with no row, or with more than one; `used` collects the rows that matched. */
+/** The rail's shell metacharacters (`SHELL_METACHARACTERS`, `policy.ts`). */
+const SHELL_META = /[;&|<>()$`\n\r]/;
+
+/** The index of the `)` closing a `$(` whose body starts at `from` (quotes and nesting respected), or -1. */
+function closeParen(text: string, from: number): number {
+  let depth = 1;
+  let quote: string | undefined;
+  for (let i = from; i < text.length; i += 1) {
+    const c = text[i] as string;
+    if (quote !== undefined) {
+      if (c === "\\" && quote === '"') i += 1;
+      else if (c === quote) quote = undefined;
+    } else if (c === "\\") i += 1;
+    else if (c === "'" || c === '"') quote = c;
+    else if (c === "(") depth += 1;
+    else if (c === ")" && (depth -= 1) === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * The simple commands a composed shell text runs: its top-level parts split on `&&`, `||`, `;`, `&`, a newline and a
+ * pipe (a `|` with whitespace on a side; `a|b` with none is a synopsis's alternation and stays in its word), plus each
+ * `$(…)` body, recursively. A heredoc body is skipped. Honest limit: backtick substitution and `( … )` subshells are
+ * not entered; their words hold a metacharacter, so `literalCommand` replaces them with a sample value.
+ */
+function shellParts(text: string): string[] {
+  const parts: string[] = [];
+  let cur = "";
+  let quote: string | undefined;
+  let heredoc: string | undefined;
+  const flush = (): void => {
+    if (cur.trim() !== "") parts.push(cur.trim());
+    cur = "";
+  };
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i] as string;
+    if (quote === "'") {
+      cur += c;
+      if (c === "'") quote = undefined;
+      continue;
+    }
+    if (c === "\\") {
+      cur += text.slice(i, i + 2);
+      i += 1;
+      continue;
+    }
+    if (c === "$" && text[i + 1] === "(") {
+      const end = closeParen(text, i + 2);
+      if (end === -1) {
+        cur += text.slice(i);
+        break;
+      }
+      parts.push(...shellParts(text.slice(i + 2, end)));
+      cur += text.slice(i, end + 1);
+      i = end;
+      continue;
+    }
+    if (quote === '"') {
+      cur += c;
+      if (c === '"') quote = undefined;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    if (c === "<" && text[i + 1] === "<" && text[i + 2] !== "<") {
+      const m = /^<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(text.slice(i));
+      if (m !== null) heredoc = m[2];
+      cur += c;
+      continue;
+    }
+    if (c === "\n") {
+      flush();
+      if (heredoc !== undefined) {
+        const lines = text.slice(i + 1).split("\n");
+        const end = lines.findIndex((l) => l.trim() === heredoc);
+        if (end === -1) break;
+        i += lines.slice(0, end + 1).reduce((n, l) => n + l.length + 1, 0);
+        heredoc = undefined;
+      }
+      continue;
+    }
+    const prev = text[i - 1] ?? " ";
+    const next = text[i + 1] ?? " ";
+    if ((c === "&" && next === "&") || (c === "|" && next === "|")) {
+      flush();
+      i += 1;
+      continue;
+    }
+    if (c === ";" || (c === "&" && prev !== ">" && prev !== "<" && next !== ">")) {
+      flush();
+      continue;
+    }
+    if (c === "|" && (/\s/.test(prev) || /\s/.test(next))) {
+      flush();
+      continue;
+    }
+    cur += c;
+  }
+  flush();
+  return parts;
+}
+
+/** Shell keywords that open a part (`if ! x`, `then x`), stripped before the program word. */
+const SHELL_KEYWORDS: ReadonlySet<string> = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "time", "{"]);
+
+/**
+ * A part as the session issues it after a denial for a metacharacter: leading shell keywords and `VAR=value`
+ * assignments dropped, each redirection dropped (the session writes a file with Write), and every other word that
+ * holds a metacharacter replaced by `sample` (the literal value the session fills in). A word naming a Loomwright
+ * script is kept (`bashCommandFor` resolves it). Undefined for a part with no program word (`fi`, `done`, an
+ * assignment alone, a lone `)`).
+ */
+function literalCommand(part: string, scripts: ReadonlySet<string>): string | undefined {
+  let flat = "";
+  for (let i = 0; i < part.length; i += 1) {
+    const end = part[i] === "$" && part[i + 1] === "(" ? closeParen(part, i + 2) : -1;
+    if (end === -1) {
+      flat += part[i] as string;
+      continue;
+    }
+    // A substitution is one word: the script it names (`$(ns_sq "$HERE/x.sh")`), else its sample value.
+    const named = (splitWords(part.slice(i + 2, end)) ?? []).map((w) => scriptOfWord(w.word, scripts)).find((s) => s !== undefined);
+    flat += named ?? "sample";
+    i = end;
+  }
+  const words = splitWords(flat)?.map((w) => w.word);
+  if (words === undefined) return undefined;
+  let k = 0;
+  while (k < words.length && (SHELL_KEYWORDS.has(words[k] as string) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k] as string))) k += 1;
+  // No program word: a closing keyword, a synopsis's `| --alt` alternative, or an elided `…` tail.
+  if (k >= words.length || /^(fi|done|esac|\}|\)|;;|…|\.\.\.)$|^-/.test(words[k] as string)) return undefined;
+  const out: string[] = [];
+  for (let i = k; i < words.length; i += 1) {
+    const w = words[i] as string;
+    if (/^\d?(>>?|<|&>)$/.test(w)) {
+      i += 1;
+      continue;
+    }
+    if (/^\d?(>>?|<|&>)\S/.test(w)) continue;
+    if (scriptOfWord(w, scripts) !== undefined || !SHELL_META.test(w)) out.push(w);
+    // A synopsis's `a|b|c` alternation: its first alternative, the form the session issues.
+    else if (/^[A-Za-z0-9_.:=-]+(\|[A-Za-z0-9_.:=-]+)+$/.test(w)) out.push(w.split("|")[0] as string);
+    else out.push("sample");
+  }
+  return out.length === 0 ? undefined : out.join(" ");
+}
+
+/**
+ * One conformance failure per denied (entry, kind) with no row, or with more than one; `used` collects the rows that
+ * matched. An entry denied for a shell metacharacter is decided a second time, part by part (`shellParts`, each as
+ * `literalCommand` writes it): the retry the session makes with the literal value. Each denied part must match exactly
+ * one row too (as an entry of its own, at the same file:line), so a composition row can never hide a program or script
+ * the kind's policy does not admit.
+ */
 function conformanceFailures(entries: readonly Entry[], root: string, scripts: ReadonlySet<string>, rows: readonly RunExclusion[], used?: Set<string>): string[] {
   const failures: string[] = [];
   const policies = new Map<RunSessionKind, ToolPolicy>();
+  const check = (e: RawEntry, kind: RunSessionKind, reason: string, label: string): void => {
+    const hits = rows.filter((r) => rowMatches(r, e, kind, reason, scripts));
+    for (const h of hits) used?.add(h.id);
+    if (hits.length === 1) return;
+    const what = `${kind}: ${label}\`${e.text.replace(/\n/g, "\\n")}\` (${e.type}) denied ${reason} at ${e.file}:${e.line}`;
+    failures.push(hits.length === 0 ? `${what}: no exclusion row` : `${what}: matches ${hits.length} rows (${hits.map((h) => h.id).join(", ")})`);
+  };
   for (const e of entries) {
     for (const kind of e.kinds) {
       const policy = policies.get(kind) ?? admittedPolicy(kind, root);
       policies.set(kind, policy);
       const d = decide(e, policy, root, scripts);
       if (d.decision === "allow") continue;
-      const hits = rows.filter((r) => rowMatches(r, e, kind, d.reason, scripts));
-      for (const h of hits) used?.add(h.id);
-      if (hits.length === 1) continue;
-      const what = `${kind}: \`${e.text.replace(/\n/g, "\\n")}\` (${e.type}) denied ${d.reason} at ${e.file}:${e.line}`;
-      failures.push(hits.length === 0 ? `${what}: no exclusion row` : `${what}: matches ${hits.length} rows (${hits.map((h) => h.id).join(", ")})`);
+      check(e, kind, d.reason, "");
+      if (d.reason !== "bash_shell_metacharacter" || (e.type !== "command" && e.type !== "script")) continue;
+      const seen = new Set<string>();
+      for (const part of shellParts(fillPlaceholders(e.text))) {
+        const text = literalCommand(part, scripts);
+        if (text === undefined || seen.has(text)) continue;
+        seen.add(text);
+        const p: RawEntry = { ...e, type: calledScript({ ...e, text }, scripts) === undefined ? "command" : "script", text };
+        const pd = decide(p, policy, root, scripts);
+        if (pd.decision === "deny") check(p, kind, pd.reason, `part of \`${e.text.replace(/\n/g, "\\n")}\`: `);
+      }
     }
   }
   return failures;
@@ -434,5 +606,26 @@ describe("the extractor keeps a shape it cannot parse (AC 6, 10a)", () => {
     expect(entries.length).toBe(1);
     const failures = conformanceFailures(entries, root, scripts, RUN_EXCLUSIONS);
     expect(failures).toEqual([expect.stringMatching(/^backlog: .* \(unparsed\) denied unparsed at skills\/synthetic\/SKILL\.md:1: no exclusion row$/)]);
+  });
+});
+
+describe("a shell-composition row never hides the program it composes (review iteration 1)", () => {
+  const scripts = new Set<string>();
+  const at = (text: string): Entry => ({ file: "skills/synthetic/SKILL.md", line: 7, type: "command", source: "fence", text, kinds: ["backlog"] });
+
+  it("decides a `$`-bearing command's literal retry: an unadmitted program with no row of its own fails", () => {
+    const failures = conformanceFailures([at('zzprog --base "origin/$BASE_BRANCH"')], root, scripts, RUN_EXCLUSIONS);
+    expect(failures).toEqual([
+      'backlog: part of `zzprog --base "origin/$BASE_BRANCH"`: `zzprog --base sample` (command) denied bash_prefix_not_allowed at skills/synthetic/SKILL.md:7: no exclusion row',
+    ]);
+  });
+
+  it("decides each part of a pipe, chain and substitution: only the unadmitted ones fail", () => {
+    const failures = conformanceFailures([at('git log --oneline -1 "$X" | zzpipe -q && git status || zzchain "$(zzsub --x)" 2>/dev/null')], root, scripts, RUN_EXCLUSIONS);
+    expect(failures.map((f) => /: `([^`]*)` \(command\) denied/.exec(f.slice(f.indexOf("`: `")))?.[1])).toEqual(["zzpipe -q", "zzsub --x", "zzchain \"sample\""]);
+  });
+
+  it("an admitted literal retry adds nothing beyond the composition row", () => {
+    expect(conformanceFailures([at('git log --oneline -1 "origin/$BASE_BRANCH"')], root, scripts, RUN_EXCLUSIONS)).toEqual([]);
   });
 });

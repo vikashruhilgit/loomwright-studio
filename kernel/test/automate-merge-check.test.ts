@@ -60,6 +60,9 @@ vi.mock("../src/auth/keychain.js", async (importOriginal) => ({
 }));
 
 const AUTOMATE_SRC = new URL("../src/automate/", import.meta.url);
+/** The scan's one reviewed exemption from its merge-TEXT patterns (25a): inert data, pinned by its own test below. */
+const MERGE_TEXT_EXEMPT: ReadonlySet<string> = new Set(["run-exclusions.ts"]);
+const MERGE_TEXT_PATTERNS: ReadonlySet<string> = new Set(["a /merge endpoint", "gh pr merge", "a merge mutation"]);
 const APP_SUBJECT = new URL("../../app/src/screens/approvals/subject.ts", import.meta.url);
 const B = "b".repeat(40);
 const NOW = new Date("2026-11-09T10:00:00.000Z");
@@ -277,7 +280,31 @@ describe("AC4: a parked awaiting_merge item at the PR's head on a Solo repo, CI 
     ];
     for (const f of files) {
       const text = readFileSync(new URL(f, AUTOMATE_SRC), "utf8");
-      for (const [what, pattern] of forbidden) expect(pattern.test(text), `${f} has ${what}`).toBe(false);
+      for (const [what, pattern] of forbidden) {
+        // The one reviewed exemption: run-exclusions.ts is data naming the GitHub CLI's merge as TEXT to match
+        // (Loomwright's counter-examples, gate-eval's cited line). It is exempt from the merge-text patterns only; the
+        // merge-call, process and network patterns still apply, and the next test pins that it stays inert data.
+        if (MERGE_TEXT_EXEMPT.has(f) && MERGE_TEXT_PATTERNS.has(what)) continue;
+        expect(pattern.test(text), `${f} has ${what}`).toBe(false);
+      }
+    }
+  });
+
+  it("the merge-text exemption covers inert data only: run-exclusions.ts imports types alone and exports frozen data with no function", async () => {
+    expect([...MERGE_TEXT_EXEMPT]).toEqual(["run-exclusions.ts"]);
+    for (const f of MERGE_TEXT_EXEMPT) {
+      const text = readFileSync(new URL(f, AUTOMATE_SRC), "utf8");
+      const imports = text.split("\n").filter((l) => /^\s*(import|export)\b.*\bfrom\s+["']/.test(l) || /\b(require|import)\s*\(/.test(l));
+      expect(imports.every((l) => /^import type\b/.test(l)), `${f} imports a value: ${imports.join(" | ")}`).toBe(true);
+      const mod = (await import(new URL(f, AUTOMATE_SRC).href)) as Record<string, unknown>;
+      expect(Object.keys(mod).length).toBeGreaterThan(0);
+      const noFunction = (v: unknown, path: string): string[] => {
+        if (typeof v === "function") return [`${path} is a function`];
+        if (typeof v !== "object" || v === null) return [];
+        return Object.entries(v).flatMap(([k, x]) => noFunction(x, `${path}.${k}`));
+      };
+      const bad = Object.entries(mod).flatMap(([k, v]) => [...(Object.isFrozen(v) ? [] : [`${k} is not frozen`]), ...noFunction(v, k)]);
+      expect(bad).toEqual([]);
     }
   });
 });

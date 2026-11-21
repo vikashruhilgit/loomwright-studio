@@ -6,10 +6,12 @@ Run 2026-11-21 on macOS against Loomwright 18.1.2 (`plugin_version` in the insta
 
 [`kernel/test/loomwright-conformance.test.ts`](../../kernel/test/loomwright-conformance.test.ts) extracts what Loomwright's instruction files and its four drivers tell each kernel run session kind to use, and decides each item with that kind's real run policy (`decideToolUse`, with scripts admitted by `loomwrightScriptPaths`). Each kind's file set is a closed constant in the test, one line of reason per file. Every denial must match exactly one row of `RUN_EXCLUSIONS` in [`kernel/src/automate/run-exclusions.ts`](../../kernel/src/automate/run-exclusions.ts). Any other denial fails the test, and the failure names the command, the kind, the deny reason and the source `file:line`.
 
+The rail checks shell metacharacters before prefixes, so a command holding `$`, a pipe or a redirect is denied `bash_shell_metacharacter` whatever program it runs. A composition row alone would hide that program. The test therefore decides such a command a second time, part by part, as the session would retry it. It splits on `&&`, `||`, `;`, a pipe and each `$(…)` body, fills each `$…` word with a literal value and drops redirections. Each denied part must match exactly one row of its own. An unadmitted program paired with `$` therefore still fails.
+
 - **Extractor:** [`kernel/test/fixtures/loomwright-instructions/extract.ts`](../../kernel/test/fixtures/loomwright-instructions/extract.ts). It reads shell fences, backtick spans, `scripts/<name>.sh` references, tool names (backticks, `Name(`, "the Name tool", front-matter `tools:`), slash commands, and the drivers' printed text. A shape it cannot parse is kept as `unparsed`, never dropped.
 - **Fixture:** [`kernel/test/fixtures/loomwright-18.1.2-instructions.json`](../../kernel/test/fixtures/loomwright-18.1.2-instructions.json). It holds 1494 entries (566 script calls, 334 commands, 325 slash commands, 233 tool names, 36 unparsed) from 46 files, the 345 script names, every script's facts, and the cited lines. Paths are install-relative. Entries are sorted by file, then line, then text.
 - **Modes:** plain `npm test` reads the fixture, so CI needs no install and no test reads `installed_plugins.json`. `STUDIO_LIVE=1` reads the install `resolveLoomwrightInstall()` returns. [`scripts/refresh-loomwright-fixture.sh`](../../scripts/refresh-loomwright-fixture.sh) runs the test's update mode (`LOOMWRIGHT_FIXTURE_UPDATE=1`), which rewrites the fixture, then prints `git diff -M --stat` on it.
-- **Table:** 50 exclusion rows. 18 are known gaps: 2 `filed: 25b`, 15 `filed: 25c` and 1 `filed: 25d`. The rest are denied on purpose (a refused subcommand, a `claude` process, an outward post, a memory write) or are text that is not an instruction (`advisory, never instructed`). A row filed to a story whose criteria do not yet name the command says "not in 25x's list".
+- **Table:** 60 exclusion rows. 20 are known gaps: 2 `filed: 25b`, 17 `filed: 25c` and 1 `filed: 25d`. The rest are denied on purpose (a refused subcommand, a `claude` process, an outward post, a memory write) or are text that is not an instruction (`advisory, never instructed`). A row filed to a story whose criteria do not yet name the command says "not in 25x's list".
 - **Facts:** 3 rows carry `reason_fact_false: "filed: 25c"`. The test asserts their stated fact IS false. `gate-auto.sh` ("starts a claude process", `launch.ts:232`) and `run-benchmark.sh` ("runs eval / bash -c", `launch.ts:236`) were expected. The test also found `run-pin-mutations.sh`: 18.1.2 holds no `eval` and no `bash -c` in it. It runs pinned test files with `bash "$1"` (`run-pin-mutations.sh:262`).
 - **Past the rail:** `PAST_THE_RAIL` lists 7 commands that admitted scripts run themselves. Each row has a line anchor:
   - `review-heal-next-step.sh`:
@@ -27,14 +29,20 @@ These are recorded as `filed: 25c` rows; the policies are unchanged here:
 - **`backlog` and `resume` lack the drain scripts.** A ticket run's inline `/review-pr` drain calls the review-heal scripts that `REVIEW_PR_RUN_POLICY` admits. `AUTOMATE_RUN_POLICY` lists none of them: `drain-rounds.sh`, `wait-for-checks.sh`, `classify-bot-review.sh`, `ci-run-probe.sh`, `drain-gh-read.sh`, `drain-subfloor-decision.sh`, `guard-arm.sh`, `wrap-external-text.sh`, `notify-desktop.sh` and `pr-postmortem-gather.sh`.
 - **`review_pr` lacks the code reviewer's readers.** The code-reviewer reads with `read-rules.sh`, `module-shape-facts.sh` and `read-project-memory.sh`, which only the automate policy admits.
 - **Readers and bookkeeping no policy lists:** `resolve-routing.sh` (16 call sites), `stamp-requirement-status.sh`, `format-twin-delta.sh`, `audit-rules.sh` and others.
+- **Programs hidden behind a `$`, a pipe or a redirect** (surfaced by the part-by-part decision):
+  - `git ls-tree -r --name-only "origin/$BASE_BRANCH"` (`agents/launch-pad.md:298`, `skills/preflight-sync/SKILL.md:98`) and `git check-ignore -q --no-index "$p"` (`skills/state-management/SKILL.md:46`), added to `git-subcommands-unlisted`;
+  - `find "$(git rev-parse --git-common-dir)/FETCH_HEAD" -mmin +1440`, `find … -mtime +30 -delete`, `has_rubric()`'s `awk`, and `printf … | python3 …/validate-launch-pad-result.py --raw` (`skills/autonomous-loop/SKILL.md:209`), in the new `text-and-runtime-tools` row;
+  - `test -d .beads && bd --version`, in the new `beads-probe` row.
+
+  All three are `filed: 25c`. Also surfaced, and kept on purpose: the `--sdk-runner` spike's `npm install` and `node …/sdk-spike/dist/runner.js`, which start sessions the kernel does not own, and `run-lock.sh … --force-unlock` in the helper catalog's synopsis.
 
 ## Commands
 
 ```bash
-cd kernel && npm ci && npm test                              # 146 files passed, 1 skipped; 5028 tests passed
-cd kernel && npx vitest run test/loomwright-conformance.test.ts                 # fixture mode: 8 passed
-cd kernel && STUDIO_LIVE=1 npx vitest run test/loomwright-conformance.test.ts   # live 18.1.2: 8 passed
-bash scripts/refresh-loomwright-fixture.sh                   # update mode: 8 passed; fixture regenerated
+cd kernel && npm ci && npm test                              # 147 files passed, 1 skipped; 5039 tests passed
+cd kernel && npx vitest run test/loomwright-conformance.test.ts                 # fixture mode: 11 passed
+cd kernel && STUDIO_LIVE=1 npx vitest run test/loomwright-conformance.test.ts   # live 18.1.2: 11 passed
+bash scripts/refresh-loomwright-fixture.sh                   # update mode: 11 passed; fixture regenerated, unchanged
 cd kernel && npm run typecheck                               # clean
 ```
 
@@ -50,8 +58,8 @@ npx vitest run test/loomwright-conformance.test.ts
 ```
 
 ```text
-Tests  1 failed | 7 passed (8)
-AssertionError: 9 denied instruction(s) without exactly one exclusion row:
+Tests  1 failed | 10 passed (11)
+AssertionError: 15 denied instruction(s) without exactly one exclusion row:
 backlog: `git commit` (command) denied bash_prefix_not_allowed at agents/code-reviewer.md:66: no exclusion row
 resume: `git commit` (command) denied bash_prefix_not_allowed at agents/code-reviewer.md:66: no exclusion row
 review_pr: `git commit` (command) denied bash_prefix_not_allowed at agents/code-reviewer.md:66: no exclusion row
@@ -61,20 +69,28 @@ backlog: `git commit` (command) denied bash_prefix_not_allowed at skills/async-o
 resume: `git commit` (command) denied bash_prefix_not_allowed at skills/async-orchestration/finalize.md:51: no exclusion row
 backlog: `git commit -F -` (command) denied bash_prefix_not_allowed at skills/commit/SKILL.md:27: no exclusion row
 resume: `git commit -F -` (command) denied bash_prefix_not_allowed at skills/commit/SKILL.md:27: no exclusion row
+backlog: part of `git commit -m "feat(auth): add jwt token refresh endpoint" -m "Implement refresh token endpoint with sliding window expiration.\n\nCloses BD-45"`: `git commit -m sample -m sample` (command) denied bash_prefix_not_allowed at skills/commit/SKILL.md:31: no exclusion row
+resume: part of `git commit -m "feat(auth): add jwt token refresh endpoint" -m "Implement refresh token endpoint with sliding window expiration.\n\nCloses BD-45"`: `git commit -m sample -m sample` (command) denied bash_prefix_not_allowed at skills/commit/SKILL.md:31: no exclusion row
+backlog: part of `git commit -F - <<'EOF'`: `git commit -F -` (command) denied bash_prefix_not_allowed at skills/commit/SKILL.md:36: no exclusion row
+resume: part of `git commit -F - <<'EOF'`: `git commit -F -` (command) denied bash_prefix_not_allowed at skills/commit/SKILL.md:36: no exclusion row
+backlog: part of `git commit -m '```bash\nfeat(auth): add jwt token refresh endpoint\n\nCloses BD-45\n```'`: `git commit -m sample` (command) denied bash_prefix_not_allowed at skills/commit/SKILL.md:45: no exclusion row
+resume: part of `git commit -m '```bash\nfeat(auth): add jwt token refresh endpoint\n\nCloses BD-45\n```'`: `git commit -m sample` (command) denied bash_prefix_not_allowed at skills/commit/SKILL.md:45: no exclusion row
 ```
 
-After restoring `launch.ts`, the same command passes: `Tests  8 passed (8)`.
+The last six lines are the part-by-part decision: the composition rows still match the multi-line and heredoc commits, and their `git commit` parts fail on their own.
+
+After restoring `launch.ts`, the same command passes: `Tests  11 passed (11)`.
 
 ### 2. Delete the `reason_fact_false` marker on the `gate-auto.sh` row: the reason check fails
 
 ```bash
-# the marker line of the gate-auto row in src/automate/run-exclusions.ts (line 124 then)
-sed -i '' '124d' src/automate/run-exclusions.ts
+# delete the reason_fact_false line inside the gate-auto row (content-addressed, not a line number)
+sed -i '' '/id: "gate-auto",/,/^  },/{/reason_fact_false/d;}' src/automate/run-exclusions.ts
 npx vitest run test/loomwright-conformance.test.ts
 ```
 
 ```text
-Tests  1 failed | 7 passed (8)
+Tests  1 failed | 10 passed (11)
 +   "gate-auto: \"starts a claude process\" is false for gate-auto.sh in Loomwright 18.1.2",
 ```
 
@@ -92,4 +108,5 @@ Tests  1 failed | 7 passed (8)
 - **Driver text is read statically.** A driver's printed text built from shell variables (`$w`, `$a` in `automate-next-step.sh`'s fresh-phase `run launch`) is read only as far as its literals go, and is kept as `unparsed`. The past-the-rail probe (25h) runs the drivers.
 - **Placeholders get sample values.** `<…>` and `{…}` placeholders are filled with sample values (a run id, a PR URL, a sha) before the decision. `$VAR`, `$(…)` and other real metacharacters are kept as written, because the rail really refuses them.
 - **Tool names:** `Task` is read as the SDK's `Agent` tool. A `Bash` tool name is checked against the grant, and its commands are decided one by one.
-- **The scan test's file list changed.** `kernel/test/automate-merge-check.test.ts` pins the file list of `kernel/src/automate/`, so it now lists `run-exclusions.ts`. Its content scan (no merge call, endpoint or process start) runs on the new file too, and passes. The table names Loomwright's own merge only through its anchor text.
+- **The scan test has one reviewed exemption.** `kernel/test/automate-merge-check.test.ts` pins the file list of `kernel/src/automate/`, so it now lists `run-exclusions.ts`. The table writes the GitHub CLI's merge command literally, as text to match: Loomwright's counter-examples and gate-eval's cited line. So the file is exempt from the scan's merge-text patterns only (`a /merge endpoint`, `gh pr merge`, `a merge mutation`). The merge-call, process and network patterns still apply. A second test pins that the exemption covers inert data only: the file imports types alone, and every export is frozen and holds no function.
+- **The part-by-part decision reads shell text, not a shell.** It does not enter backtick substitution or `( … )` subshells; their words become the literal value. A synopsis's `a|b` (no space around the `|`) is read as its first alternative. A part with no program word (`fi`, `done`, an assignment alone, a `| --alt` synopsis alternative) is skipped. Unparsed entries are not split: each `unparsed` row is anchored on the known lines of its block, so a new unparsed line in the same file still fails.

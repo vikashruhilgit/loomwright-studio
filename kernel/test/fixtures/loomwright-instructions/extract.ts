@@ -83,7 +83,7 @@ const SHELL_FENCES: ReadonlySet<string> = new Set(["bash", "sh", "shell", "zsh",
 export const SAMPLE_RUN_ID = "2026-11-20-sample";
 
 /** A word split with each word's span, or undefined for an unbalanced quote. Quotes are kept in the words. */
-function splitWords(text: string): { word: string; start: number; end: number }[] | undefined {
+export function splitWords(text: string): { word: string; start: number; end: number }[] | undefined {
   const out: { word: string; start: number; end: number }[] = [];
   let i = 0;
   while (i < text.length) {
