@@ -1,0 +1,438 @@
+// Phase 8 item 25a: every command, script call, Claude tool and slash command the installed Loomwright tells a
+// kernel run session to use is either admitted by that kind's real run policy or recorded, with its reason, in
+// `RUN_EXCLUSIONS` (`src/automate/run-exclusions.ts`). Anything else fails, naming the command, the kind, the deny
+// reason and the source `file:line`.
+//
+// Three modes, one extraction path (`test/fixtures/loomwright-instructions/extract.ts`):
+//   - default (CI, plain `npm test`): the committed fixture `test/fixtures/loomwright-<version>-instructions.json`,
+//     extracted from the install; no test reads the real `installed_plugins.json` (the repo convention);
+//   - `STUDIO_LIVE=1`: the install `resolveLoomwrightInstall()` returns, read live;
+//   - `LOOMWRIGHT_FIXTURE_UPDATE=1` (`scripts/refresh-loomwright-fixture.sh`): the live install, and the fixture is
+//     rewritten from it (named for its version; any other version's fixture is removed), then checked.
+//
+// Script admission is the real one: `loomwrightScriptPaths(<root>, policy.loomwrightScripts)`, where `<root>` is the
+// install, or (fixture mode) a temp dir holding an empty `scripts/<name>` for every script the fixture lists.
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  AUTOMATE_RUN_POLICY,
+  MERGE_PARKED_RUN_POLICY,
+  MERGE_PARKED_TRUSTED_RUN_POLICY,
+  REVIEW_PR_RUN_POLICY,
+} from "../src/automate/launch.js";
+import {
+  EXCLUSION_REASON_CLASSES,
+  FACT_REASON_CLASSES,
+  PAST_THE_RAIL,
+  RUN_EXCLUSIONS,
+  RUN_SESSION_KINDS,
+} from "../src/automate/run-exclusions.js";
+import type { RunExclusion, RunSessionKind } from "../src/automate/run-exclusions.js";
+import { resolveLoomwrightInstall } from "../src/loomwright/active-install.js";
+import { loomwrightScriptPaths } from "../src/sessions/loomwright-scripts.js";
+import { decideToolUse } from "../src/sessions/policy.js";
+import type { ToolPolicy } from "../src/sessions/types.js";
+import {
+  bashCommandFor,
+  extractFile,
+  extractMarkdown,
+  fileDigest,
+  listScripts,
+  SAMPLE_RUN_ID,
+  scriptFacts,
+  scriptOfWord,
+  sortEntries,
+} from "./fixtures/loomwright-instructions/extract.js";
+import type { RawEntry, ScriptFacts } from "./fixtures/loomwright-instructions/extract.js";
+
+const UPDATE = process.env.LOOMWRIGHT_FIXTURE_UPDATE === "1";
+const LIVE = process.env.STUDIO_LIVE === "1" || UPDATE;
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
+const FIXTURE_NAME = /^loomwright-(.+)-instructions\.json$/;
+
+/** One file of a kind's instruction set, with why it is in the set. */
+interface SetFile {
+  readonly file: string;
+  readonly why: string;
+}
+
+const AL = "skills/automate-loop";
+
+/** What `/automate` itself reads: the command, its loop skill and its driver. `merge_parked` reads a subset. */
+const AUTOMATE_ENGINE: readonly SetFile[] = [
+  { file: "commands/automate.md", why: "the command a ticket, resume or merge run starts with" },
+  { file: `${AL}/SKILL.md`, why: "the authoritative loop contract the command defers to" },
+  { file: `${AL}/helpers.md`, why: "the helper catalog the loop calls by name" },
+  { file: `${AL}/invariants.md`, why: "the loop's invariants (merge only through gate-eval)" },
+  { file: `${AL}/modes-and-merge-gate.md`, why: "safe mode and the merge gate a merge run takes" },
+  { file: `${AL}/resume.md`, why: "--resume and --merge-parked (\"Merging one parked item\")" },
+  { file: `${AL}/run-file.md`, why: "the run file the driver and session keep" },
+  { file: "scripts/automate-next-step.sh", why: "the /automate driver: its printed invocation / launch / push / then text" },
+];
+
+/** The ticket run (`backlog`) and `resume`: `/automate --inline-phases`, so `/autonomous`, Launch Pad, the Supervisor and the owned `/review-pr` drain run in the session. */
+const AUTOMATE_FILES: readonly SetFile[] = [
+  ...AUTOMATE_ENGINE,
+  { file: `${AL}/branch-mode.md`, why: "branch-mode steps the start reads when the repo uses it" },
+  { file: `${AL}/intake.md`, why: "a new run's intake (the backlog doc becomes the Queue)" },
+  { file: `${AL}/per-item-loop.md`, why: "the per-item PICK / RUN / DRAIN / GATE loop" },
+  { file: "commands/autonomous.md", why: "--inline-phases runs /autonomous --single-iteration inline" },
+  { file: "skills/autonomous-loop/SKILL.md", why: "/autonomous's loop (single-iteration only)" },
+  { file: "commands/launch-pad.md", why: "Launch Pad runs inline under /autonomous" },
+  { file: "agents/launch-pad.md", why: "the Launch Pad contract (LP-SCOPE, LP-SAVE gates)" },
+  { file: "scripts/launch-pad-phase.sh", why: "Launch Pad's phase-marker driver" },
+  { file: "commands/supervisor.md", why: "the Supervisor runs inline under /autonomous" },
+  { file: "agents/supervisor.md", why: "the Supervisor contract" },
+  { file: "scripts/supervisor-next-step.sh", why: "the Supervisor driver: its printed invocation / then text" },
+  { file: "agents/execute-manager.md", why: "the Supervisor's Execute Manager (spawned with Task)" },
+  { file: "agents/worker.md", why: "the implementation worker (spawned with Task)" },
+  { file: "agents/context-keeper.md", why: "the Supervisor's Context-Keeper (spawned with Task)" },
+  { file: "agents/code-reviewer.md", why: "the Phase 4.5 / drain code reviewer (spawned with Task)" },
+  { file: "agents/plan-reviewer.md", why: "Launch Pad's plan reviewer (spawned with Task)" },
+  { file: "agents/orchestrator.md", why: "the async orchestrator the Supervisor may spawn" },
+  { file: "agents/rubric-grader.md", why: "the outcomes-rubric grader" },
+  { file: "skills/async-orchestration/SKILL.md", why: "the Supervisor's parallel path" },
+  { file: "skills/async-orchestration/finalize.md", why: "FINALIZE (merge subtask branches, publish)" },
+  { file: "skills/supervisor-readiness/SKILL.md", why: "Launch Pad / Supervisor readiness checks" },
+  { file: "skills/supervisor-readiness/design-decisions.md", why: "the brief's design-decision block" },
+  { file: "skills/state-management/SKILL.md", why: ".supervisor/ state the Supervisor keeps" },
+  { file: "skills/workflow-management/SKILL.md", why: "branch / PR workflow the Supervisor follows" },
+  { file: "skills/supervisor-config/SKILL.md", why: "the Supervisor's config reads" },
+  { file: "skills/preflight-sync/SKILL.md", why: "supervisor-next-step.sh's preflight invocation reads it" },
+  { file: "skills/commit/SKILL.md", why: "how the worker and Supervisor commit" },
+  { file: "skills/self-heal-advisory/SKILL.md", why: "Phase 4.5 (self-heal advisory)" },
+  { file: "skills/self-heal-advisory/completion-tail.md", why: "Phase 4.5's completion tail" },
+  { file: "skills/self-heal-advisory/escalation.md", why: "Phase 4.5's escalation" },
+  { file: "skills/self-heal-advisory/multi-voter.md", why: "Phase 4.5's multi-voter review" },
+  { file: "skills/self-heal-advisory/on-entry.md", why: "Phase 4.5's on-entry steps" },
+  { file: "commands/review-pr.md", why: "the owned drain runs /review-pr inline" },
+  { file: "skills/review-heal/SKILL.md", why: "the drain's review-heal loop" },
+  { file: "skills/review-heal/dispatch.md", why: "the drain's review dispatch" },
+  { file: "skills/review-heal/escalation.md", why: "the drain's escalation" },
+  { file: "skills/review-heal/fallback-review.md", why: "the drain's earned fallback review" },
+  { file: "scripts/review-heal-next-step.sh", why: "the review-heal driver: its printed push / then text" },
+];
+
+/** `review_pr`: `/loomwright:review-pr <url>`, the triage fix (heals, never merges). */
+const REVIEW_PR_FILES: readonly SetFile[] = [
+  { file: "commands/review-pr.md", why: "the command the run starts with" },
+  { file: "skills/review-heal/SKILL.md", why: "the review-heal loop /review-pr runs" },
+  { file: "skills/review-heal/dispatch.md", why: "the review dispatch" },
+  { file: "skills/review-heal/escalation.md", why: "the escalation" },
+  { file: "skills/review-heal/fallback-review.md", why: "the earned fallback review" },
+  { file: "scripts/review-heal-next-step.sh", why: "the review-heal driver" },
+  { file: "agents/code-reviewer.md", why: "the fallback review's agent (loomwright:code-reviewer)" },
+];
+
+/** `merge_parked`, plain and trusted: `/loomwright:automate --merge-parked <run_id>`, one parked item through the gate. */
+const MERGE_PARKED_FILES: readonly SetFile[] = AUTOMATE_ENGINE;
+
+/**
+ * Each kind's closed instruction file set. Left out on purpose (a transitive reference closure pulls about 75
+ * files, about 2 MB, including `commands/setup.md` and `commands/dreaming.md`): `skills/automate-loop/lanes.md` and
+ * `command-lanes.md` (`--parallel` only; safe mode takes no lane), `skills/autonomous-loop/multi-iteration.md`
+ * (never read under `--single-iteration`), and `agents/review-pr.md` (the standalone `claude --agent` runner).
+ */
+const FILE_SETS: Readonly<Record<RunSessionKind, readonly SetFile[]>> = {
+  backlog: AUTOMATE_FILES,
+  resume: AUTOMATE_FILES,
+  review_pr: REVIEW_PR_FILES,
+  merge_parked: MERGE_PARKED_FILES,
+  merge_parked_trusted: MERGE_PARKED_FILES,
+};
+
+/**
+ * Tool names as Loomwright writes them → the name the session's tool call carries. Loomwright 18.1.2 says `Task(`
+ * for a subagent; the Agent SDK's tool is `Agent` (`@anthropic-ai/claude-agent-sdk` 0.3.284 `sdk.d.ts:36`,
+ * "a custom subagent that can be invoked via the Agent tool"), which `RUN_TOOLS` grants. An unmapped name is
+ * decided as written.
+ */
+const TOOL_ALIASES: Readonly<Record<string, string>> = { Task: "Agent" };
+
+/** Each kind's run policy, as `launch.ts` builds it (a merge run is pinned to its run id). */
+const POLICIES: Readonly<Record<RunSessionKind, ToolPolicy>> = {
+  backlog: AUTOMATE_RUN_POLICY,
+  resume: AUTOMATE_RUN_POLICY,
+  review_pr: REVIEW_PR_RUN_POLICY,
+  merge_parked: { ...MERGE_PARKED_RUN_POLICY, loomwrightRunId: SAMPLE_RUN_ID },
+  merge_parked_trusted: { ...MERGE_PARKED_TRUSTED_RUN_POLICY, loomwrightRunId: SAMPLE_RUN_ID },
+};
+
+/** An extracted entry with the kinds whose file set holds its file. */
+interface Entry extends RawEntry {
+  readonly kinds: readonly RunSessionKind[];
+}
+
+/** Everything the checks read: from the fixture, or from the install. */
+interface Source {
+  readonly version: string;
+  readonly file_sets: Readonly<Record<string, readonly string[]>>;
+  readonly files: Readonly<Record<string, { lines: number; sha256: string }>>;
+  readonly scripts: readonly string[];
+  readonly script_facts: Readonly<Record<string, ScriptFacts>>;
+  readonly lines: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly entries: readonly Entry[];
+}
+
+function unionFiles(): string[] {
+  return [...new Set(Object.values(FILE_SETS).flatMap((s) => s.map((f) => f.file)))].sort();
+}
+
+function setNames(): Record<string, string[]> {
+  return Object.fromEntries(RUN_SESSION_KINDS.map((k) => [k, FILE_SETS[k].map((f) => f.file)]));
+}
+
+function kindsOf(file: string): RunSessionKind[] {
+  return RUN_SESSION_KINDS.filter((k) => FILE_SETS[k].some((f) => f.file === file));
+}
+
+/** Read everything from an install. A file of a set that is missing is left out of `files` (the set check fails on it). */
+function sourceFromInstall(root: string, version: string): Source {
+  const scripts = listScripts(root);
+  const known = new Set(scripts);
+  const files: Record<string, { lines: number; sha256: string }> = {};
+  const raw: RawEntry[] = [];
+  for (const f of unionFiles()) {
+    if (!existsSync(join(root, f))) continue;
+    files[f] = fileDigest(root, f);
+    raw.push(...extractFile(root, f, known));
+  }
+  const script_facts: Record<string, ScriptFacts> = {};
+  for (const s of scripts) script_facts[s] = scriptFacts(root, s, known);
+  const lines: Record<string, Record<string, string>> = {};
+  for (const row of PAST_THE_RAIL) {
+    const all = existsSync(join(root, row.script)) ? readFileSync(join(root, row.script), "utf8").split("\n") : [];
+    const kept = (lines[row.script] ??= {});
+    for (let n = Math.max(1, row.line - 2); n <= Math.min(all.length, row.line + 2); n += 1) kept[String(n)] = all[n - 1] as string;
+  }
+  const entries = sortEntries(raw).map((e) => ({ ...e, kinds: kindsOf(e.file) }));
+  return { version, file_sets: setNames(), files, scripts, script_facts, lines, entries };
+}
+
+/** The fixture as text: top-level keys pretty, one entry and one script's facts per line, so a diff reads per entry. */
+function fixtureText(src: Source): string {
+  const obj = (o: Readonly<Record<string, unknown>>, indent: string): string =>
+    `{\n${Object.keys(o).sort().map((k) => `${indent}  ${JSON.stringify(k)}: ${JSON.stringify(o[k])}`).join(",\n")}\n${indent}}`;
+  const lines = Object.keys(src.lines).sort().map((k) => `    ${JSON.stringify(k)}: ${JSON.stringify(src.lines[k])}`).join(",\n");
+  return [
+    "{",
+    `  "version": ${JSON.stringify(src.version)},`,
+    `  "generated_by": "bash scripts/refresh-loomwright-fixture.sh (LOOMWRIGHT_FIXTURE_UPDATE=1 vitest run test/loomwright-conformance.test.ts)",`,
+    `  "file_sets": ${obj(src.file_sets, "  ")},`,
+    `  "files": ${obj(src.files, "  ")},`,
+    `  "scripts": ${JSON.stringify(src.scripts)},`,
+    `  "script_facts": ${obj(src.script_facts, "  ")},`,
+    `  "lines": {\n${lines}\n  },`,
+    `  "entries": [\n${src.entries.map((e) => `    ${JSON.stringify({ file: e.file, line: e.line, type: e.type, source: e.source, text: e.text, kinds: e.kinds })}`).join(",\n")}\n  ]`,
+    "}",
+    "",
+  ].join("\n");
+}
+
+/** The one committed fixture (more than one, or none, is an error). */
+function fixturePath(): string {
+  const found = readdirSync(FIXTURES).filter((f) => FIXTURE_NAME.test(f));
+  if (found.length !== 1) throw new Error(`expected exactly one ${FIXTURE_NAME} fixture in ${FIXTURES}, found ${found.length}: run scripts/refresh-loomwright-fixture.sh`);
+  return join(FIXTURES, found[0] as string);
+}
+
+/** The run policy for `kind`, with its scripts admitted under `root` exactly as the session manager admits them. */
+function admittedPolicy(kind: RunSessionKind, root: string): ToolPolicy {
+  const policy = POLICIES[kind];
+  const admitted = loomwrightScriptPaths(root, policy.loomwrightScripts);
+  if (!admitted.ok) throw new Error(`${kind}: ${admitted.message}`);
+  return { ...policy, admittedScriptPaths: admitted.paths };
+}
+
+/** How `policy` decides `entry`; an `unparsed` entry is always denied `unparsed`. */
+function decide(entry: RawEntry, policy: ToolPolicy, root: string, scripts: ReadonlySet<string>): { decision: "allow" | "deny"; reason: string } {
+  switch (entry.type) {
+    case "tool": {
+      const name = TOOL_ALIASES[entry.text] ?? entry.text;
+      // The `Bash` name alone is no call: its commands are decided as Bash entries; the name is checked against the grant.
+      if (name === "Bash") return policy.allowedTools.includes("Bash") ? { decision: "allow", reason: "tool_allowed" } : { decision: "deny", reason: "tool_not_allowed" };
+      return decideToolUse(policy, name, {});
+    }
+    case "slash":
+      return decideToolUse(policy, "Skill", {});
+    case "unparsed":
+      return { decision: "deny", reason: "unparsed" };
+    default:
+      return decideToolUse(policy, "Bash", { command: bashCommandFor(entry.text, root, scripts) });
+  }
+}
+
+/** The Loomwright script an entry calls (its first script word), if any. */
+function calledScript(entry: RawEntry, scripts: ReadonlySet<string>): string | undefined {
+  for (const w of entry.text.split(/\s+/)) {
+    const s = scriptOfWord(w, scripts);
+    if (s !== undefined) return s;
+  }
+  return undefined;
+}
+
+function rowMatches(row: RunExclusion, entry: RawEntry, kind: RunSessionKind, reason: string, scripts: ReadonlySet<string>): boolean {
+  const m = row.match;
+  if (!row.kinds.includes(kind) || m.type !== entry.type) return false;
+  if (m.scripts !== undefined && !m.scripts.includes(calledScript(entry, scripts) ?? "")) return false;
+  if (m.tools !== undefined && !m.tools.includes(entry.text)) return false;
+  if (m.deny !== undefined && !(m.deny as readonly string[]).includes(reason)) return false;
+  if (m.files !== undefined && !m.files.includes(entry.file)) return false;
+  if (m.text !== undefined && !new RegExp(m.text).test(entry.text)) return false;
+  return true;
+}
+
+/** One conformance failure per denied (entry, kind) with no row, or with more than one; `used` collects the rows that matched. */
+function conformanceFailures(entries: readonly Entry[], root: string, scripts: ReadonlySet<string>, rows: readonly RunExclusion[], used?: Set<string>): string[] {
+  const failures: string[] = [];
+  const policies = new Map<RunSessionKind, ToolPolicy>();
+  for (const e of entries) {
+    for (const kind of e.kinds) {
+      const policy = policies.get(kind) ?? admittedPolicy(kind, root);
+      policies.set(kind, policy);
+      const d = decide(e, policy, root, scripts);
+      if (d.decision === "allow") continue;
+      const hits = rows.filter((r) => rowMatches(r, e, kind, d.reason, scripts));
+      for (const h of hits) used?.add(h.id);
+      if (hits.length === 1) continue;
+      const what = `${kind}: \`${e.text.replace(/\n/g, "\\n")}\` (${e.type}) denied ${d.reason} at ${e.file}:${e.line}`;
+      failures.push(hits.length === 0 ? `${what}: no exclusion row` : `${what}: matches ${hits.length} rows (${hits.map((h) => h.id).join(", ")})`);
+    }
+  }
+  return failures;
+}
+
+/** Whether a fact-class row's fact holds for its script (directly, or through `fact_via`, which the script must name). */
+function factHolds(row: RunExclusion, facts: Readonly<Record<string, ScriptFacts>>): boolean {
+  const script = row.match.scripts?.[0] as string;
+  const key = row.reason_class === "starts a claude process" ? "claude" : "eval_or_bash_c";
+  const own = facts[script];
+  if (own === undefined) return false;
+  if (row.fact_via === undefined) return own[key] !== null;
+  const via = facts[row.fact_via];
+  return own.calls.includes(row.fact_via) && via !== undefined && via[key] !== null;
+}
+
+let src: Source;
+let root: string;
+let scratch: string | undefined;
+
+beforeAll(() => {
+  if (LIVE) {
+    const install = resolveLoomwrightInstall();
+    root = install.installPath;
+    src = sourceFromInstall(root, install.contract.plugin_version);
+    if (UPDATE) {
+      for (const f of readdirSync(FIXTURES).filter((x) => FIXTURE_NAME.test(x))) rmSync(join(FIXTURES, f));
+      writeFileSync(join(FIXTURES, `loomwright-${src.version}-instructions.json`), fixtureText(src));
+    }
+    return;
+  }
+  src = JSON.parse(readFileSync(fixturePath(), "utf8")) as Source;
+  scratch = mkdtempSync(join(tmpdir(), "loomwright-conformance-"));
+  mkdirSync(join(scratch, "scripts"));
+  for (const s of src.scripts) writeFileSync(join(scratch, "scripts", s), "");
+  root = scratch;
+});
+
+afterAll(() => {
+  if (scratch !== undefined) rmSync(scratch, { recursive: true, force: true });
+});
+
+describe(`Loomwright instruction conformance (${UPDATE ? "fixture update" : LIVE ? "live install, STUDIO_LIVE=1" : "committed fixture"})`, () => {
+  it("each kind's instruction file set is closed, and every listed file exists in the source", () => {
+    const missing: string[] = [];
+    for (const kind of RUN_SESSION_KINDS) {
+      const files = FILE_SETS[kind].map((f) => f.file);
+      expect(new Set(files).size, `${kind}: a file is listed twice`).toBe(files.length);
+      for (const f of FILE_SETS[kind]) {
+        expect(f.why.trim(), `${kind}: ${f.file} has no reason`).not.toBe("");
+        if (src.files[f.file] === undefined) missing.push(`${kind}: ${f.file} (renamed or removed in Loomwright ${src.version})`);
+      }
+    }
+    expect(missing).toEqual([]);
+    expect(src.file_sets, "the fixture was made from other file sets: run scripts/refresh-loomwright-fixture.sh").toEqual(setNames());
+    expect(src.entries.every((e) => JSON.stringify(e.kinds) === JSON.stringify(kindsOf(e.file))), "an entry's kinds disagree with the file sets").toBe(true);
+    expect(src.entries.length).toBeGreaterThan(0);
+  });
+
+  it("every extracted entry is admitted by its kind's run policy, or matches exactly one exclusion row", () => {
+    const failures = conformanceFailures(src.entries, root, new Set(src.scripts), RUN_EXCLUSIONS);
+    expect(failures, `${failures.length} denied instruction(s) without exactly one exclusion row:\n${failures.join("\n")}`).toEqual([]);
+  });
+
+  it("every exclusion row is well formed and matches at least one denied entry", () => {
+    const used = new Set<string>();
+    conformanceFailures(src.entries, root, new Set(src.scripts), RUN_EXCLUSIONS, used);
+    const bad: string[] = [];
+    const ids = new Set<string>();
+    for (const r of RUN_EXCLUSIONS) {
+      if (ids.has(r.id)) bad.push(`${r.id}: duplicate id`);
+      ids.add(r.id);
+      if (r.kinds.length === 0) bad.push(`${r.id}: no kinds`);
+      if (!(EXCLUSION_REASON_CLASSES as readonly string[]).includes(r.reason_class)) bad.push(`${r.id}: unknown reason class`);
+      if (r.reason.trim() === "") bad.push(`${r.id}: no reason`);
+      if (!r.consequence.startsWith("consequence if denied: ") || r.consequence.length <= "consequence if denied: ".length) bad.push(`${r.id}: no consequence line`);
+      if (r.reason_fact_false !== undefined && !FACT_REASON_CLASSES.includes(r.reason_class)) bad.push(`${r.id}: reason_fact_false on a class that states no fact`);
+      if (FACT_REASON_CLASSES.includes(r.reason_class) && r.match.type === "script" && r.match.scripts?.length !== 1) bad.push(`${r.id}: a fact row names exactly one script`);
+      if (!used.has(r.id)) bad.push(`${r.id}: matches no denied entry in Loomwright ${src.version} (stale: remove it)`);
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("each exclusion's stated script fact holds in the script text, and each reason_fact_false row's fact is still false", () => {
+    const wrong: string[] = [];
+    for (const r of RUN_EXCLUSIONS) {
+      if (!FACT_REASON_CLASSES.includes(r.reason_class) || r.match.type !== "script") continue;
+      const script = r.match.scripts?.[0] as string;
+      const holds = factHolds(r, src.script_facts);
+      if (r.reason_fact_false !== undefined) {
+        if (holds) wrong.push(`${r.id}: "${r.reason_class}" is now TRUE for ${script}: drop reason_fact_false (${r.reason_fact_false})`);
+      } else if (!holds) {
+        wrong.push(`${r.id}: "${r.reason_class}" is false for ${script}${r.fact_via === undefined ? "" : ` (via ${r.fact_via})`} in Loomwright ${src.version}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  it("each 'runs past the rail' row's cited line holds its anchor", () => {
+    const moved: string[] = [];
+    for (const row of PAST_THE_RAIL) {
+      const text = src.lines[row.script]?.[String(row.line)];
+      if (text === undefined || !text.includes(row.anchor)) {
+        moved.push(`${row.id}: anchor not found at the cited line ${row.script}:${row.line} (${JSON.stringify(row.anchor)}; the line reads ${JSON.stringify(text ?? null)})`);
+      }
+    }
+    expect(moved).toEqual([]);
+  });
+
+  it("the source is deterministic and install-relative: entries sorted by file, line, text; no absolute home path", () => {
+    expect(src.entries.map((e) => [e.file, e.line, e.text])).toEqual(sortEntries(src.entries).map((e) => [e.file, e.line, e.text]));
+    const text = fixtureText(src);
+    expect(text.includes(homedir())).toBe(false);
+    expect(/"\/(Users|home)\//.test(text)).toBe(false);
+    if (!LIVE) expect(readFileSync(fixturePath(), "utf8")).toBe(text);
+  });
+});
+
+describe("the extractor keeps a shape it cannot parse (AC 6, 10a)", () => {
+  const scripts = new Set(["automate-helpers.sh"]);
+  const line = 'Then run `bash "${CLAUDE_PLUGIN_ROOT}/scripts/automate-helpers.sh current-set --run x` before PICK.';
+
+  it("returns the synthetic line as `unparsed` with its file:line", () => {
+    const got = extractMarkdown("skills/synthetic/SKILL.md", `# Synthetic\n\n${line}\n`, scripts);
+    expect(got).toEqual([
+      { file: "skills/synthetic/SKILL.md", line: 3, type: "unparsed", source: "backtick", text: line.slice(line.indexOf("`") + 1, line.lastIndexOf("`")) },
+    ]);
+  });
+
+  it("reports an unparsed entry with no exclusion row as a conformance failure", () => {
+    const entries = extractMarkdown("skills/synthetic/SKILL.md", `${line}\n`, scripts).map((e) => ({ ...e, kinds: ["backlog"] as RunSessionKind[] }));
+    expect(entries.length).toBe(1);
+    const failures = conformanceFailures(entries, root, scripts, RUN_EXCLUSIONS);
+    expect(failures).toEqual([expect.stringMatching(/^backlog: .* \(unparsed\) denied unparsed at skills\/synthetic\/SKILL\.md:1: no exclusion row$/)]);
+  });
+});
