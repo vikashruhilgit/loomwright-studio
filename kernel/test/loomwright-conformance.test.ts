@@ -33,7 +33,7 @@ import {
 import type { RunExclusion, RunSessionKind } from "../src/automate/run-exclusions.js";
 import { resolveLoomwrightInstall } from "../src/loomwright/active-install.js";
 import { loomwrightScriptPaths } from "../src/sessions/loomwright-scripts.js";
-import { decideToolUse } from "../src/sessions/policy.js";
+import { decideToolUse, SHELL_METACHARACTERS } from "../src/sessions/policy.js";
 import type { ToolPolicy } from "../src/sessions/types.js";
 import {
   bashCommandFor,
@@ -286,9 +286,6 @@ function rowMatches(row: RunExclusion, entry: RawEntry, kind: RunSessionKind, re
   return true;
 }
 
-/** The rail's shell metacharacters (`SHELL_METACHARACTERS`, `policy.ts`). */
-const SHELL_META = /[;&|<>()$`\n\r]/;
-
 /** The index of the `)` closing a `$(` whose body starts at `from` (quotes and nesting respected), or -1. */
 function closeParen(text: string, from: number): number {
   let depth = 1;
@@ -429,7 +426,7 @@ function literalCommand(part: string, scripts: ReadonlySet<string>): string | un
       continue;
     }
     if (/^\d?(>>?|<|&>)\S/.test(w)) continue;
-    if (scriptOfWord(w, scripts) !== undefined || !SHELL_META.test(w)) out.push(w);
+    if (scriptOfWord(w, scripts) !== undefined || !SHELL_METACHARACTERS.test(w)) out.push(w);
     // A synopsis's `a|b|c` alternation: its first alternative, the form the session issues.
     else if (/^[A-Za-z0-9_.:=-]+(\|[A-Za-z0-9_.:=-]+)+$/.test(w)) out.push(w.split("|")[0] as string);
     else out.push("sample");
@@ -625,6 +622,24 @@ describe("the extractor keeps a shape it cannot parse (AC 6, 10a)", () => {
     expect(entries.length).toBe(1);
     const failures = conformanceFailures(entries, root, scripts, RUN_EXCLUSIONS);
     expect(failures).toEqual([expect.stringMatching(/^backlog: .* \(unparsed\) denied unparsed at skills\/synthetic\/SKILL\.md:1: no exclusion row$/)]);
+  });
+
+  it("keeps a shell-fence line whose program it does not list as `unparsed`, never dropped (review iteration 4)", () => {
+    const md = "```bash\nuv run pytest -q\nkubectl apply -f x.yaml\nBASE=$(uvx tool)\n```\n";
+    expect(extractMarkdown("skills/synthetic/SKILL.md", md, scripts)).toEqual([
+      { file: "skills/synthetic/SKILL.md", line: 2, type: "unparsed", source: "fence", text: "uv run pytest -q" },
+      { file: "skills/synthetic/SKILL.md", line: 3, type: "unparsed", source: "fence", text: "kubectl apply -f x.yaml" },
+      { file: "skills/synthetic/SKILL.md", line: 4, type: "unparsed", source: "fence", text: "BASE=$(uvx tool)" },
+    ]);
+    // The same words in a backtick span stay a prose mention.
+    expect(extractMarkdown("skills/synthetic/SKILL.md", "Run `uv run pytest` there.\n", scripts)).toEqual([]);
+  });
+
+  it("reads a lone listed program in a shell fence as a command, and in a backtick span as a mention (review iteration 4)", () => {
+    expect(extractMarkdown("skills/synthetic/SKILL.md", "```bash\nmake\n```\n", scripts)).toEqual([
+      { file: "skills/synthetic/SKILL.md", line: 2, type: "command", source: "fence", text: "make" },
+    ]);
+    expect(extractMarkdown("skills/synthetic/SKILL.md", "Then `make` it.\n", scripts)).toEqual([]);
   });
 });
 

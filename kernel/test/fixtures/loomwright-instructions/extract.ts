@@ -11,8 +11,10 @@
 //   that starts with a known program (with at least one argument, except `ls`, `pwd`, `date`) or a
 //   Loomwright script; a Claude tool name in backticks, as `Name(`, as "the Name tool", or in a front-matter
 //   `tools:` / `allowed-tools:` list; and every `scripts/<name>.sh` or bare `<name>.sh` reference (a script
-//   of the install) outside those spans, as a call with no arguments. A shell-fence line the extractor
-//   cannot model (a keyword, an assignment, an unbalanced quote) is kept as `unparsed`, never dropped.
+//   of the install) outside those spans, as a call with no arguments. Every non-blank, non-comment line of
+//   a shell fence is kept: a known program (alone or with arguments) or a Loomwright script is a `command`
+//   / `script`; anything else (a keyword, an assignment, an unbalanced quote, a program not in `PROGRAMS`
+//   such as `uv run …`) is `unparsed`, never dropped. Only a heredoc body and a lone `...` are skipped.
 // - drivers (`scripts/*.sh` in a file set): the text a driver prints for the session, read on its
 //   non-comment lines: backtick spans (bash's `\``), the `push: [...]` array, `/loomwright:` slash
 //   commands, a `tools: [...]` list, and a printed field (`invocation`, `then`, ...) that starts with a
@@ -71,11 +73,6 @@ const PROGRAMS: ReadonlySet<string> = new Set([
 
 /** Programs that read as a command with no argument (`ls`); any other lone program word is a mention. */
 const BARE_PROGRAMS: ReadonlySet<string> = new Set(["ls", "pwd", "date"]);
-
-/** First words of a shell-fence line the extractor does not model as one command. */
-const SHELL_KEYWORDS: ReadonlySet<string> = new Set([
-  "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "function", "{", "}", "[", "[[", ";;", "local", "return",
-]);
 
 const SHELL_FENCES: ReadonlySet<string> = new Set(["bash", "sh", "shell", "zsh", "console"]);
 
@@ -172,10 +169,11 @@ function classify(raw: string, scripts: ReadonlySet<string>, strict: boolean, dy
   if (first === "bash" && words[k + 1] !== undefined && scriptOfWord((words[k + 1] as { word: string }).word, scripts) !== undefined) {
     return { type: "script", text };
   }
-  if (PROGRAMS.has(first)) return words.length - k > 1 || BARE_PROGRAMS.has(first) ? { type: "command", text } : undefined;
+  // A lone program word in a shell fence is a command a session would run (`make`); in a backtick span it is a mention.
+  if (PROGRAMS.has(first)) return strict || words.length - k > 1 || BARE_PROGRAMS.has(first) ? { type: "command", text } : undefined;
   if (dynamicIsUnparsed && first.startsWith("$")) return { type: "unparsed", text };
-  if (strict && (SHELL_KEYWORDS.has(first) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(first))) return { type: "unparsed", text };
-  return undefined;
+  // Every other shell-fence line (a keyword, an assignment, or a program the extractor does not list: `uv run …`) is kept.
+  return strict ? { type: "unparsed", text } : undefined;
 }
 
 /** Whether a span that cannot be split still starts like a command (so it is kept as `unparsed`). */
