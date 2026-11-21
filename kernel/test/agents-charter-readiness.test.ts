@@ -854,12 +854,17 @@ const LONG_DUTIES = [
   duty("At the end of each day, write a short note in lessons.md about anything that surprised you in the repo, so the next session starts from what you learned instead of finding it out again the hard way."),
 ];
 
-/** Approval 21's tool policy: the file and shell tools, every tool of `jobs`, its Bash prefixes and its never list. */
+/**
+ * Approval 21's tool policy: the file and shell tools, every tool of `jobs`, its Bash prefixes and a never list.
+ * Approval 21's own never list (`git_push`, `gh_pr_create`, ...) defeats the ticket run it grants, which readiness
+ * flags since item 25g (`agents-charter-readiness-never.test.ts`); these 19a cases are about duty excerpts and the
+ * head's size, so the list here names only categories no granted job's run admits.
+ */
 function approval21Policy(jobs: readonly ToolJob[] = APPROVAL21_JOBS): Record<string, unknown> {
   return {
     allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", ...jobs.flatMap(toolsOf)],
     allowedBashPrefixes: ["git status", "git diff", "git log", "git checkout -b", "npm test", "npm run lint", "npm run typecheck"],
-    never: ["git_push", "gh_pr_create", "gh_pr_edit", "gh_pr_close", "gh_pr_comment", "gh_issue_create"],
+    never: ["alias_define", "gh_pr_request_reviewers", "gh_pr_comment_reply", "mcp_write", "settings_write", "hooks_write"],
   };
 }
 

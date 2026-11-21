@@ -21,6 +21,7 @@ import {
   BASH_PREFIX_LABELS,
   CLAUDE_TOOL_LABELS,
   LOOMWRIGHT_COMMAND_NEEDS,
+  NEVER_ACTION_LABELS,
   UNKNOWN_CLAUDE_TOOL_LABEL,
   bashPrefixHeld,
   commandNeedsTable,
@@ -29,6 +30,8 @@ import {
   resolveJobNeeds,
 } from "../src/features/job-needs.js";
 import type { CommandNeeds, LoomwrightCommandNeedsTable } from "../src/features/job-needs.js";
+import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
+import { GITHUB_WRITE_TOOLS, NEVER_CATEGORIES, neverCategoriesAdmitted } from "../src/sessions/policy.js";
 import { parseLoomwrightContract } from "../src/loomwright/contract.js";
 import type { LoomwrightContractEntry } from "../src/loomwright/contract.js";
 import { fixtureContract, writeLoomwrightInstall } from "./fixtures/loomwright/helpers.js";
@@ -269,6 +272,109 @@ describe("the needs-vs-policy comparison readiness and fit share", () => {
   it("a Claude tool the job itself declares (not a command's) is a gap a charter change can close", () => {
     const declared = { ...resolveJobNeeds("read_pr", PINNED), claudeTools: [{ name: "WebFetch", label: "fetch web pages", closable: true }] };
     expect(jobNeedsGaps(declared, none).map((g) => [g.name, g.closable])).toEqual([["WebFetch", true]]);
+  });
+});
+
+// ---- Item 25g: a kernel run's outward needs, derived from its run policy, against the member's never list ----------------
+
+describe("item 25g: neverCategoriesAdmitted reads a policy's outward reach through the rail's own labels", () => {
+  const admits = (allowedBashPrefixes: string[], allowedTools: string[] = []) => neverCategoriesAdmitted({ allowedTools, allowedBashPrefixes });
+  const prCategories = NEVER_CATEGORIES.filter((c) => c.startsWith("gh_pr_"));
+  const issueCategories = NEVER_CATEGORIES.filter((c) => c.startsWith("gh_issue_"));
+
+  it("AUTOMATE_RUN_POLICY admits git_push (its `git push` prefix) and gh_pr_create (its `gh pr` prefix), in NEVER_CATEGORIES order", () => {
+    const admitted = neverCategoriesAdmitted(AUTOMATE_RUN_POLICY);
+    expect(admitted).toEqual(expect.arrayContaining(["git_push", "gh_pr_create"]));
+    expect(admitted).toEqual(NEVER_CATEGORIES.filter((c) => admitted.includes(c)));
+  });
+
+  it("the word-boundary rule: `gh p` and `gh prx` admit no gh_pr_* category; `gh pr` admits them", () => {
+    expect(admits(["gh p"])).toEqual([]);
+    expect(admits(["gh prx"]).filter((c) => prCategories.includes(c))).toEqual([]);
+    expect(admits(["git pus"])).toEqual([]);
+    expect(admits(["gh pr"])).toEqual(["gh_pr_create", "gh_pr_comment", "gh_pr_review", "gh_pr_edit", "gh_pr_close"]);
+  });
+
+  it("`gh pr` admits no gh_issue_* category, and `gh issue` no gh_pr_* one", () => {
+    expect(admits(["gh pr"]).filter((c) => issueCategories.includes(c))).toEqual([]);
+    expect(admits(["gh issue"])).toEqual(["gh_issue_create", "gh_issue_comment", "gh_issue_edit", "gh_issue_close"]);
+  });
+
+  it("a narrower prefix admits only its own form; `gh pr new` is read as create, `gh api` as a write, `gh` holds every gh form", () => {
+    expect(admits(["gh pr create"])).toEqual(["gh_pr_create"]);
+    expect(admits(["gh pr new"])).toEqual(["gh_pr_create"]);
+    expect(admits(["gh pr view", "gh pr diff", "git status"])).toEqual([]);
+    expect(admits(["gh api"])).toEqual(["gh_api_write"]);
+    expect(admits(["gh alias set"])).toEqual(["alias_define"]);
+    expect(admits(["git"])).toEqual(["git_push"]);
+    // `gh` holds every gh form; the two PR categories with no gh form (request reviewers, comment reply) are only kernel tools.
+    expect(admits(["gh"])).toEqual([
+      "alias_define",
+      "gh_pr_create",
+      "gh_pr_comment",
+      "gh_pr_review",
+      "gh_pr_edit",
+      "gh_pr_close",
+      "gh_issue_create",
+      "gh_issue_comment",
+      "gh_issue_edit",
+      "gh_issue_close",
+      "gh_api_write",
+    ]);
+  });
+
+  it("a GitHub write tool in allowedTools admits its category; an empty or blank prefix, or a file tool, admits nothing", () => {
+    for (const [tool, category] of Object.entries(GITHUB_WRITE_TOOLS)) expect(admits([], [tool]), tool).toEqual([category]);
+    expect(admits(["", "  "])).toEqual([]);
+    expect(admits([], ["Write", "Edit", "Bash"])).toEqual([]);
+  });
+});
+
+describe("item 25g: a kernel-launched command's outward needs, compared with held.never", () => {
+  const none = { allowedTools: [] as string[], allowedBashPrefixes: [] as string[] };
+
+  it("the ticket job's resolved outward needs include git_push and gh_pr_create, derived from its kernel run policy", () => {
+    const [command] = resolveJobNeeds("automate_tickets", PINNED).commands;
+    expect(command?.outward).toEqual(expect.arrayContaining(["git_push", "gh_pr_create"]));
+    expect(command?.outward).toEqual(neverCategoriesAdmitted(AUTOMATE_RUN_POLICY));
+    // A job reaching no command has no outward needs.
+    expect(resolveJobNeeds("read_pr", PINNED).commands).toEqual([]);
+  });
+
+  it("a crew-launched command is not under a kernel run policy, so it carries no outward needs", () => {
+    const row = LOOMWRIGHT_COMMAND_NEEDS["/loomwright:review-pr"] as CommandNeeds;
+    const table: LoomwrightCommandNeedsTable = { ...LOOMWRIGHT_COMMAND_NEEDS, "/loomwright:review-pr": { ...row, launch: "crew" } };
+    expect(resolveJobNeeds("triage_pr_comments", buildToolCatalogue(TOOLS, table)).commands[0]?.outward).toEqual([]);
+  });
+
+  it("a contract's declared needs never replace a row's run policy (it is the kernel's own fact, like launch)", () => {
+    const table = commandNeedsTable(contractCommands({ claude_tools: ["Read"], bash_prefixes: [] }, "automate"));
+    expect(table["/loomwright:automate"]?.runPolicy).toBe(LOOMWRIGHT_COMMAND_NEEDS["/loomwright:automate"]?.runPolicy);
+    expect(resolveJobNeeds("automate_tickets", buildToolCatalogue(TOOLS, table)).commands[0]?.outward).toEqual(neverCategoriesAdmitted(AUTOMATE_RUN_POLICY));
+  });
+
+  it("a never entry the run admits is a `never` gap: plain words, never closable, last in the gap order, once per category", () => {
+    const tickets = resolveJobNeeds("automate_tickets", PINNED);
+    const gaps = jobNeedsGaps(tickets, { ...none, workspace: false, never: ["gh_pr_create", "git_push", "mcp_write"] });
+    expect(gaps.map((g) => [g.kind, g.name, g.label, g.closable, g.command])).toEqual([
+      ["workspace", "workspace", "a copy of a repo to work in", false, undefined],
+      ["never", "git_push", "push with git", false, "/loomwright:automate"],
+      ["never", "gh_pr_create", "open a PR", false, "/loomwright:automate"],
+    ]);
+  });
+
+  it("no never given, an empty never, or one the run does not admit: no `never` gap", () => {
+    const tickets = resolveJobNeeds("automate_tickets", PINNED);
+    expect(jobNeedsGaps(tickets, none)).toEqual([]);
+    expect(jobNeedsGaps(tickets, { ...none, never: [] })).toEqual([]);
+    expect(jobNeedsGaps(tickets, { ...none, never: ["mcp_write", "settings_write", "hooks_write", "alias_define"] })).toEqual([]);
+  });
+
+  it("every never category has plain words that are not its raw name", () => {
+    for (const c of NEVER_CATEGORIES) {
+      expect(NEVER_ACTION_LABELS[c], c).toBeTruthy();
+      expect(NEVER_ACTION_LABELS[c], c).not.toContain("_");
+    }
   });
 });
 

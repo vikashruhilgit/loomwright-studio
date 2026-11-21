@@ -65,6 +65,7 @@ import type { McpGrantKind } from "./settings.js";
 //       ready: <prerequisite> for <job labels>: <what it has>  READINESS_READY_PREFIX
 //       flagged: <prerequisite> for <job labels>: <missing>    READINESS_FLAG_PREFIX
 //       flagged: permission to <plain words> for <job label>: <why>   READINESS_FLAG_PREFIX
+//       flagged: <job label> needs to <plain words>; the charter's never list forbids it   (25g, at most one per job)
 //       covered: <job labels>: Studio runs <the fix and the merge> for this member   (D45, at most one)
 //       flagged: permission to <plain words>: this charter holds a permission no crew member needs (…)   (AC7, at most one)
 //       ready | flagged: duty <n>: <member> can read <tracker> tickets, or can't read them yet: <why>
@@ -86,14 +87,20 @@ import type { McpGrantKind } from "./settings.js";
 // declared on the job and on the Loomwright commands it reaches, resolved by
 // `../features/job-needs.ts`), in plain words only: a raw tool name or shell
 // prefix is shown on the display's `enforced:` line, never on a readiness line.
+// Each such job's permission lines are followed by at most one never line
+// (item 25g): when its kernel-launched run's policy admits outward actions the
+// charter's `never` list forbids (the run inherits the list, D45), one line
+// names them all (`Hand tickets to /automate needs to push with git and open a
+// PR; the charter's never list forbids it`), and every duty naming that job is
+// flagged not covered; never a raw category, tool or policy constant.
 // Then one covered line for the granted jobs whose Loomwright route the kernel
 // starts itself (`Studio runs the fix and the merge for this member`, D45), and
 // one flagged line for a `Skill`, `Agent` or Loomwright shell prefix the
 // charter holds and no granted job needs (`./charter-surplus.ts`, AC7).
 // A job with no prerequisite has no line. So the block grows with the duties
-// and the granted jobs, never with the number of granted tools (at most one
-// repo line, two per connector, two permission lines per job, one covered
-// route line and one surplus line). Every line starts with exactly one of these prefixes; a duty's
+// and the granted jobs, never with the number of granted tools or `never`
+// entries (at most one repo line, two per connector, two permission lines and
+// one never line per job, one covered route line and one surplus line). Every line starts with exactly one of these prefixes; a duty's
 // text is always last on its line, after the kernel's own words, so it can't
 // pose as a status.
 
@@ -280,7 +287,12 @@ interface DutyFindings {
   readonly legacy: boolean;
 }
 
-function dutyFindings(charter: Charter, catalogue: ToolCatalogue | undefined, allowed: ReadonlySet<string>): DutyFindings {
+/**
+ * `defeated`: the jobs whose kernel-launched run needs an outward action the
+ * charter's `never` list forbids (`neverConflicts`). A duty naming one that the
+ * charter grants is flagged not covered, as one naming an ungranted job is.
+ */
+function dutyFindings(charter: Charter, catalogue: ToolCatalogue | undefined, allowed: ReadonlySet<string>, defeated: ReadonlyMap<ToolJob, readonly NeedsGap[]>): DutyFindings {
   const items: ReadinessItem[] = [];
   const missing = new Set<ToolJob>();
   let legacy = false;
@@ -303,13 +315,18 @@ function dutyFindings(charter: Charter, catalogue: ToolCatalogue | undefined, al
       continue;
     }
     const lacking = duty.jobs.filter((job) => !jobGranted(catalogue, job, allowed));
-    if (lacking.length === 0) {
+    const forbidden = duty.jobs.filter((job) => !lacking.includes(job) && defeated.has(job));
+    if (lacking.length === 0 && forbidden.length === 0) {
       items.push(item("duty", "covered", `${n} by ${andList(duty.jobs.map((j) => TOOL_JOBS[j]))}: ${text}`, `${n} is covered`));
       continue;
     }
     for (const job of lacking) missing.add(job);
     const needs = andList(lacking.map((j) => TOOL_JOBS[j]));
-    items.push(item("duty", "flagged", `${n} not covered (needs ${needs}, which this charter does not grant): ${text}`, `${n} is not covered (needs ${needs})`));
+    // Job labels only, never the forbidden actions (the job's never line names them): a duty line stays bounded.
+    const neverWhy = `the charter's never list forbids what ${andList(forbidden.map((j) => TOOL_JOBS[j]))} ${forbidden.length === 1 ? "needs" : "need"}`;
+    const why = [...(lacking.length > 0 ? [`needs ${needs}, which this charter does not grant`] : []), ...(forbidden.length > 0 ? [neverWhy] : [])].join("; ");
+    const brief = [...(lacking.length > 0 ? [`needs ${needs}`] : []), ...(forbidden.length > 0 ? [neverWhy] : [])].join("; ");
+    items.push(item("duty", "flagged", `${n} not covered (${why}): ${text}`, `${n} is not covered (${brief})`));
   }
   const missingJobs = (Object.keys(TOOL_JOBS) as ToolJob[]).filter((j) => missing.has(j));
   return { items, missingJobs, legacy };
@@ -414,6 +431,33 @@ interface PermissionFindings {
   readonly ownerGrant: boolean;
   /** The charter holds a permission no crew member needs (`charterSurplus`). */
   readonly surplus: boolean;
+  /** A granted job's run needs an outward action the charter's `never` list forbids: the owner's decision. */
+  readonly neverConflict: boolean;
+}
+
+/**
+ * Each job whose kernel-launched run needs an outward action `never` forbids,
+ * with those `"never"` gaps (`jobNeedsGaps`, the one comparison fit shares), in
+ * `TOOL_JOBS` order. Empty for an empty `never`.
+ */
+function neverConflicts(catalogue: ToolCatalogue, charter: Charter): ReadonlyMap<ToolJob, readonly NeedsGap[]> {
+  const conflicts = new Map<ToolJob, readonly NeedsGap[]>();
+  const { allowedTools, allowedBashPrefixes, never } = charter.tool_policy;
+  if (never.length === 0) return conflicts;
+  for (const job of Object.keys(TOOL_JOBS) as ToolJob[]) {
+    const gaps = jobNeedsGaps(resolveJobNeeds(job, catalogue), { allowedTools, allowedBashPrefixes, never }).filter((g) => g.kind === "never");
+    if (gaps.length > 0) conflicts.set(job, gaps);
+  }
+  return conflicts;
+}
+
+/** The start of a never line's reason: the line ends `<job label> needs to <actions>; ` + this. */
+export const NEVER_FORBIDS = "the charter's never list forbids it";
+
+/** A job's one never line (item 25g): every forbidden action its run needs, in plain words, on one line. */
+function neverItem(job: ToolJob, gaps: readonly NeedsGap[]): ReadinessItem {
+  const needs = `${TOOL_JOBS[job]} needs to ${andList(gaps.map((g) => g.label))}`;
+  return item("permission", "flagged", `${needs}; ${NEVER_FORBIDS}`, `${needs}, which the charter's never list forbids`, [job]);
 }
 
 /** The kinds of missing permission that get one line per job, in line order. */
@@ -461,7 +505,8 @@ function studioRunsItem(catalogue: ToolCatalogue, jobs: readonly ToolJob[]): Rea
  * connector lines) is a line of its own, in the connector's words. Then the
  * covered line for the routes the kernel starts for the member
  * (`studioRunsItem`), and the flagged line for what the charter holds that no
- * crew member needs (`charterSurplus`). Plain words only.
+ * crew member needs (`charterSurplus`). A job in `defeated` gets one never
+ * line after its permission lines (`neverItem`). Plain words only.
  */
 function permissionFindings(
   catalogue: ToolCatalogue,
@@ -469,11 +514,13 @@ function permissionFindings(
   charter: Charter,
   view: GrantView,
   toolNeeds: readonly { readonly need: ConnectorNeed; readonly jobs: readonly ToolJob[] }[],
+  defeated: ReadonlyMap<ToolJob, readonly NeedsGap[]>,
 ): PermissionFindings {
   const items: ReadinessItem[] = [];
   const fixTools: string[] = [];
   const fixPrefixes: string[] = [];
   let ownerGrant = false;
+  let neverConflict = false;
   const held = { allowedTools: charter.tool_policy.allowedTools, allowedBashPrefixes: charter.tool_policy.allowedBashPrefixes };
   for (const job of jobs) {
     const needs = resolveJobNeeds(job, catalogue);
@@ -483,6 +530,12 @@ function permissionFindings(
       if (ofKind.length === 0) continue;
       items.push(permissionItem(job, ofKind));
       for (const g of ofKind) if (g.closable) (kind === "claude_tool" ? fixTools : fixPrefixes).push(g.name);
+    }
+    // One line per job, naming every forbidden action: never one per category (the head's 4000-character cap).
+    const forbidden = defeated.get(job);
+    if (forbidden !== undefined) {
+      neverConflict = true;
+      items.push(neverItem(job, forbidden));
     }
     const extra = needs.connectors.filter((n) => n.source !== "tool" && !toolNeeds.some((t) => t.need.kind === n.kind && t.need.write === n.write && t.jobs.includes(job)));
     for (const n of extra) {
@@ -500,7 +553,7 @@ function permissionFindings(
   // A held Skill, Agent or Loomwright shell prefix no granted job needs is flagged, never counted as covering a need (AC7).
   const surplus = charterSurplus({ charter, catalogue, jobs }, (text, brief) => item("permission", "flagged", text, brief));
   items.push(...surplus);
-  return { items, fixTools: [...new Set(fixTools)], fixPrefixes: [...new Set(fixPrefixes)], ownerGrant, surplus: surplus.length > 0 };
+  return { items, fixTools: [...new Set(fixTools)], fixPrefixes: [...new Set(fixPrefixes)], ownerGrant, surplus: surplus.length > 0, neverConflict };
 }
 
 /** The line for one job's missing permissions of one kind. */
@@ -608,7 +661,9 @@ export function trackerReadiness(input: { readonly charter: Pick<Charter, "displ
 export function charterReadiness(input: ReadinessInput): ReadinessResult {
   const { charter, catalogue } = input;
   const allowed = new Set(charter.tool_policy.allowedTools);
-  const duties = dutyFindings(charter, catalogue, allowed);
+  // The jobs a `never` entry defeats (item 25g): read once, for the duty lines and the never lines alike.
+  const defeated = catalogue === undefined ? new Map<ToolJob, readonly NeedsGap[]>() : neverConflicts(catalogue, charter);
+  const duties = dutyFindings(charter, catalogue, allowed, defeated);
   const items: ReadinessItem[] = [...duties.items];
   const view = grantView(input.grant, input.ownerGrant);
   let noRepo = false;
@@ -648,7 +703,7 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
       items.push(line);
     }
     // Then each granted job's Claude tool and shell permissions (item 20c), one line per job and kind.
-    permissions = permissionFindings(catalogue, grantedJobs, charter, view, needs);
+    permissions = permissionFindings(catalogue, grantedJobs, charter, view, needs, defeated);
     items.push(...permissions.items);
     if (permissions.ownerGrant) ownerGrant = true;
   }
@@ -680,6 +735,7 @@ export function charterReadiness(input: ReadinessInput): ReadinessResult {
     fixTools: permissions?.fixTools ?? [],
     fixPrefixes: permissions?.fixPrefixes ?? [],
     surplus: permissions?.surplus ?? false,
+    neverConflict: permissions?.neverConflict ?? false,
   });
   return { lines, items, open, agentNote };
 }
@@ -707,6 +763,8 @@ interface NoteParts {
   readonly fixPrefixes: readonly string[];
   /** The charter holds a permission no crew member needs (`charterSurplus`, AC7). */
   readonly surplus: boolean;
+  /** A granted job's run needs an action the charter's `never` list forbids (item 25g): the owner's decision. */
+  readonly neverConflict: boolean;
 }
 
 /**
@@ -741,6 +799,12 @@ function noteText(p: NoteParts): string {
     sentences.push(
       "The charter holds Skill, Agent or a Loomwright shell prefix that no crew member needs: the kernel starts Loomwright's commands itself. " +
         "Never draft one or copy one from another member; propose taking it out only if the owner agrees, and the owner decides whether to approve the charter as it is.",
+    );
+  }
+  if (p.neverConflict) {
+    sentences.push(
+      "A granted job's run needs an action this charter's never list forbids, so a real run would be refused it: " +
+        "whether to drop that job or that never entry is the owner's decision, never a change you make to the never list; tell the owner and let them choose.",
     );
   }
   if (p.toollessJobs.length > 0) {

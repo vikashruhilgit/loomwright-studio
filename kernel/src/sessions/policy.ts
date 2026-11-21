@@ -600,6 +600,44 @@ export function neverCategoriesOf(action: string): readonly NeverCategory[] {
   return [];
 }
 
+/** The non-GET methods a `gh api` write is read as (`ghApiForm`'s `gh api <METHOD>`): the forms a held `gh api` prefix admits. */
+const GH_API_WRITE_METHODS = ["POST", "PUT", "PATCH", "DELETE"] as const;
+
+/**
+ * The `NeverCategory` values `policy`'s grants admit: the outward actions a
+ * session under it could reach, so a `never` list naming one defeats work the
+ * policy is for (phase 8 item 25g). A category is admitted when one of the
+ * rail's own Bash forms for it (each `GIT_OUTWARD` label, `git p4 submit`,
+ * `gh pr <sub>` and `gh issue <sub>` from `GH_PR_OUTWARD` / `GH_ISSUE_OUTWARD`,
+ * `gh alias set|import`, `gh api <METHOD>`) is held by one of the policy's
+ * `allowedBashPrefixes` under the session's own word-boundary rule
+ * (`decideToolUse`: equal, or the form starts with `<prefix> `), or one of
+ * the policy's `allowedTools` is a `GITHUB_WRITE_TOOLS` name. Each held form's
+ * categories are `neverCategoriesOf`'s, never a second matcher. The path
+ * categories (`settings_write`, `hooks_write`) and `mcp_write` are about a
+ * target or a connector, not a grant, so none is ever admitted here; nor is
+ * `git alias` (read from config words such as `-c alias.*`, not a subcommand
+ * a prefix names). In `NEVER_CATEGORIES` order. Pure: no I/O.
+ */
+export function neverCategoriesAdmitted(policy: Pick<ToolPolicy, "allowedTools" | "allowedBashPrefixes">): readonly NeverCategory[] {
+  // Each rail form as a session would type it, with the action the rail reads it as (`gh pr new` is read as `gh pr create`).
+  const forms: (readonly [string, string])[] = [
+    ...GIT_OUTWARD.map(([, label]) => [label, label] as const),
+    ["git p4 submit", "git p4 submit"],
+    ...GH_PR_OUTWARD.map(([sub, label]) => [`gh pr ${sub}`, `gh pr ${label}`] as const),
+    ...GH_ISSUE_OUTWARD.map(([sub, label]) => [`gh issue ${sub}`, `gh issue ${label}`] as const),
+    ...GH_ALIAS_OUTWARD.map((sub) => [`gh alias ${sub}`, `gh alias ${sub}`] as const),
+    ...GH_API_WRITE_METHODS.map((method) => [`gh api ${method}`, `gh api ${method}`] as const),
+  ];
+  const admitted = new Set<NeverCategory>();
+  for (const [label, action] of forms) {
+    const held = policy.allowedBashPrefixes.some((prefix) => prefix.trim() !== "" && (label === prefix || label.startsWith(`${prefix} `)));
+    if (held) for (const category of neverCategoriesOf(action)) admitted.add(category);
+  }
+  for (const tool of policy.allowedTools) if (Object.hasOwn(GITHUB_WRITE_TOOLS, tool)) admitted.add(GITHUB_WRITE_TOOLS[tool] as NeverCategory);
+  return NEVER_CATEGORIES.filter((c) => admitted.has(c));
+}
+
 /** The rail's outward path labels (`railTargets`), each with the category its Bash and Write/Edit/NotebookEdit forms are in. */
 const OUTWARD_PATH_CATEGORIES: readonly (readonly [string, NeverCategory])[] = [
   ["~/.claude/", "settings_write"],
