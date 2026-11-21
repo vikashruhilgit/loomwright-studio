@@ -37,3 +37,8 @@ kernel/src/agents/roster.ts
 kernel/test/charter-readiness.test.ts
 app/src/screens/chat/CharterCard.tsx
 app/src/screens/chat/CharterCard.test.tsx
+
+## Status: brief-shipped
+
+Job `.supervisor/jobs/done/2026-11-21-readiness-flags-never-blocking-own-job.md` completed (reconciled from the job lifecycle, not self-reported).
+Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
