@@ -38,7 +38,10 @@ import {
   wrightDutyRefusal,
 } from "../src/agents/charter-readiness.js";
 import type { ReadinessGrant, ReadinessResult, TrackerEnv } from "../src/agents/charter-readiness.js";
-import { AFTER_MEMBER_APPROVAL, AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME } from "../src/agents/charter-tools.js";
+import { AFTER_MEMBER_APPROVAL, AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME, UPDATE_ASK_LESS_NEVER, UPDATE_ASK_LESS_NEVER_CHOICE } from "../src/agents/charter-tools.js";
+import { AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, REVIEW_PR_RUN_POLICY } from "../src/automate/launch.js";
+import { neverCategoriesAdmitted } from "../src/sessions/policy.js";
+import type { NeverCategory } from "../src/sessions/policy.js";
 import { CHARTER_JSON_SCHEMA, TICKET_SOURCES } from "../src/agents/charter-files.js";
 import { agentSettingsPath, createAgent, getAgent, readAgentSettings, renderRoleMd, validateCharter } from "../src/agents/index.js";
 import type { Charter } from "../src/agents/index.js";
@@ -854,12 +857,17 @@ const LONG_DUTIES = [
   duty("At the end of each day, write a short note in lessons.md about anything that surprised you in the repo, so the next session starts from what you learned instead of finding it out again the hard way."),
 ];
 
-/** Approval 21's tool policy: the file and shell tools, every tool of `jobs`, its Bash prefixes and its never list. */
+/**
+ * Approval 21's tool policy: the file and shell tools, every tool of `jobs`, its Bash prefixes and a never list.
+ * Approval 21's own never list (`git_push`, `gh_pr_create`, ...) defeats the ticket run it grants, which readiness
+ * flags since item 25g (`agents-charter-readiness-never.test.ts`); these 19a cases are about duty excerpts and the
+ * head's size, so the list here names only categories no granted job's run admits.
+ */
 function approval21Policy(jobs: readonly ToolJob[] = APPROVAL21_JOBS): Record<string, unknown> {
   return {
     allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", ...jobs.flatMap(toolsOf)],
     allowedBashPrefixes: ["git status", "git diff", "git log", "git checkout -b", "npm test", "npm run lint", "npm run typecheck"],
-    never: ["git_push", "gh_pr_create", "gh_pr_edit", "gh_pr_close", "gh_pr_comment", "gh_issue_create"],
+    never: ["alias_define", "gh_pr_request_reviewers", "gh_pr_comment_reply", "mcp_write", "settings_write", "hooks_write"],
   };
 }
 
@@ -1050,7 +1058,7 @@ describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, 
     const over = await h.update(A21, { tool_policy: { allowedTools: [...held, ...wide(8, "b")], allowedBashPrefixes: base.allowedBashPrefixes } }, "u1");
     expect(over.permissionDecision).toBe("deny");
     expect(over.permissionDecisionReason).toMatch(
-      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(fewer or shorter tools, prefixes or workspaces\) \(nothing was held for the owner\)$/,
+      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(fewer or shorter tools or prefixes\) \(nothing was held for the owner\)$/,
     );
     expect(over.permissionDecisionReason).not.toContain("no request to these fields fits");
     expect(h.approvals()).toBe(0);
@@ -1058,6 +1066,55 @@ describe("19a: a readiness duty line quotes a word-bounded excerpt of the duty, 
     const fits = await h.update(A21, { tool_policy: { allowedTools: base.allowedTools, allowedBashPrefixes: base.allowedBashPrefixes } }, "u2");
     expect(fits.permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
     expect(h.display(1).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+  });
+
+  it("item 25g: a never-only update's floor counts the duty lines as an empty never list gives them and no never line, so a long never request is asked for less (never 'no request to these fields fits'), and never [] is held", async () => {
+    const h = await boot();
+    const base = approval21Policy();
+    // Ten long tools: before the floor counted the never input, it was 4,005 here (the request's own never lines), over the cut.
+    const wide = Array.from({ length: 10 }, (_, i) => `mcp__wide__${"a".repeat(135)}_${String(i).padStart(2, "0")}`);
+    h.ownerCreate(approval21({ tool_policy: { ...base, allowedTools: [...(base.allowedTools as string[]), ...wide] } }));
+    // The ticket run needs these: two duties naming it read not covered, and the job gets its never line.
+    const never = [...(base.never as string[]), "git_push", "gh_pr_create", "gh_pr_close", "gh_issue_create"];
+    const over = await h.update(A21, { never }, "u1");
+    expect(over.permissionDecision).toBe("deny");
+    // The request sets only never: it is asked for a shorter never list, as the owner's choice, never for tools, prefixes or workspaces.
+    expect(over.permissionDecisionReason).toMatch(
+      /^kernel_agent_update: invalid_input: the display \(its readiness lines, job lines, field lines and enforced line\) would be \d+ characters, \d+ over the 4000 the owner is shown; ask for less at once \(/,
+    );
+    expect(over.permissionDecisionReason.endsWith(`ask for less at once (${UPDATE_ASK_LESS_NEVER}) (nothing was held for the owner)`)).toBe(true);
+    expect(over.permissionDecisionReason).not.toMatch(/tools|prefixes|workspaces/);
+    expect(over.permissionDecisionReason).not.toContain("no request to these fields fits");
+    expect(h.approvals()).toBe(0);
+    // A shorter request to the same field fits: the floor was a real lower bound.
+    const fits = await h.update(A21, { never: [] }, "u2");
+    expect(fits.permissionDecisionReason.startsWith("approval_required: held as approval 1;")).toBe(true);
+    expect(h.display(1).length).toBeLessThanOrEqual(MAX_APPROVAL_DISPLAY);
+  });
+
+  it("item 25g: a never-only update over the cut whose never list defeats no granted job is asked for a shorter never list as the owner's choice, never told it blocks the member's jobs", async () => {
+    const h = await boot();
+    const base = approval21Policy();
+    // approval21Policy's never list: no category of it is one a granted job's kernel run admits, so it defeats no job.
+    const never = base.never as NeverCategory[];
+    const admitted = new Set([AUTOMATE_RUN_POLICY, REVIEW_PR_RUN_POLICY, MERGE_PARKED_RUN_POLICY].flatMap((p) => neverCategoriesAdmitted(p)));
+    expect(never.filter((c) => admitted.has(c))).toEqual([]);
+    const wide = Array.from({ length: 10 }, (_, i) => `mcp__wide__${"a".repeat(135)}_${String(i).padStart(2, "0")}`);
+    // Grow the member one short tool at a time until the request's display is over the cut while a shorter never list still fits.
+    let reason: string | undefined;
+    for (let k = 0; k < 200 && reason === undefined; k += 1) {
+      const id = `pad-${String(k).padStart(3, "0")}`;
+      const pad = Array.from({ length: k }, (_, i) => `mcp__pad__${String(i).padStart(3, "0")}`);
+      h.ownerCreate(approval21({ id, display_name: `Pad ${String(k).padStart(3, "0")}`, tool_policy: { ...base, allowedTools: [...(base.allowedTools as string[]), ...wide, ...pad], never: [] } }));
+      const r = await h.update(id, { never }, `n${k}`);
+      // Held while the display fits; the first refusal is the one over the cut.
+      if (!r.permissionDecisionReason.startsWith("approval_required: held")) reason = r.permissionDecisionReason;
+    }
+    expect(reason).toBeDefined();
+    expect(reason).toMatch(/^kernel_agent_update: invalid_input: the display .* over the 4000 the owner is shown; ask for less at once \(/);
+    expect(reason?.endsWith(`ask for less at once (${UPDATE_ASK_LESS_NEVER_CHOICE}) (nothing was held for the owner)`)).toBe(true);
+    expect(reason).not.toContain("blocks fewer of the member's own jobs");
+    expect(reason).not.toContain(UPDATE_ASK_LESS_NEVER);
   });
 
   it("AC5: a stored bare-string duty (an update's legacy line) is quoted by its excerpt too", async () => {

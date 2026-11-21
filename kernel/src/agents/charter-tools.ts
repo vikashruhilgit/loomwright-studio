@@ -90,7 +90,7 @@ import { z } from "zod";
 import { MAX_APPROVAL_DISPLAY } from "../approvals/store.js";
 import type { AppliedApproval, ApprovalApplyOutcome, OwnerGrant } from "../approvals/store.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
-import { CONNECTOR_LABELS, jobDisplayLines } from "../features/catalogue.js";
+import { CONNECTOR_LABELS, andList, jobDisplayLines } from "../features/catalogue.js";
 import type { ToolCatalogue } from "../features/catalogue.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedToolContext } from "../features/contribution.js";
@@ -111,7 +111,7 @@ import {
   validateCharter,
 } from "./charter-files.js";
 import type { AgentAuditKind, Charter } from "./charter-files.js";
-import { charterReadiness, openFlagsSentence, readinessFloorLines, wrightDutyRefusal } from "./charter-readiness.js";
+import { charterReadiness, openFlagsSentence, readinessFloorLines, readinessNeverConflict, wrightDutyRefusal } from "./charter-readiness.js";
 import type { ReadinessResult, TrackerConnectionState, TrackerEnv } from "./charter-readiness.js";
 import { getAgent, listAgents } from "./registry.js";
 import type { AgentRow } from "./registry.js";
@@ -865,20 +865,59 @@ function shortestNewShown(field: string): string {
  * that leaves `tool_policy` alone adds no tool (its job lines carry no mark),
  * and one that sets it is bounded with no job line at all. The readiness
  * block is bounded by `readinessFloorLines` from this request's own readiness
- * (`readiness`): exact when the change sets neither `tool_policy` nor
- * `workspaces` (nothing else changes it), else each line that can vary at
- * its shortest (every update shows the member's stored duties).
+ * (`readiness`): exact when the change sets none of `tool_policy`,
+ * `workspaces` and `never` (nothing else changes it; `never` decides which
+ * granted jobs it defeats, item 25g), else each line that can vary at its
+ * shortest (every update shows the member's stored duties).
  */
 function updateFloor(m: Merged, catalogue: ToolCatalogue | undefined, readiness: ReadinessResult): string {
   const tp = m.charter.tool_policy;
   const sets = new Set(m.changes.map((c) => c.field));
   return [
     updateHead(m),
-    ...readinessFloorLines(m.charter, catalogue, readiness, { tools: sets.has("tool_policy"), workspaces: sets.has("workspaces") }),
+    ...readinessFloorLines(m.charter, catalogue, readiness, { tools: sets.has("tool_policy"), workspaces: sets.has("workspaces"), never: sets.has("never") }),
     ...jobDisplayLines(sets.has("tool_policy") ? [] : tp.allowedTools, catalogue, false),
     ...m.changes.map((c) => (c.field === "tool_policy" ? fieldLine(c, true) : `${c.field}: ${shownValue(c.old)} → ${shortestNewShown(c.field)}`)),
     enforcedLine(sets.has("never") ? [] : tp.never, sets.has("tool_policy") ? ["x"] : tp.allowedTools, sets.has("tool_policy") ? ["x"] : tp.allowedBashPrefixes),
   ].join("\n");
+}
+
+/**
+ * What an update's ask-for-less names for a request that sets a non-empty
+ * `never` list which defeats at least one granted job (its readiness has a
+ * never line): the owner's choice, never Wright's own change.
+ */
+export const UPDATE_ASK_LESS_NEVER =
+  "if the owner chooses it, fewer never entries, so the never list blocks fewer of the member's own jobs: the owner's decision, never a change you make to the never list on your own";
+
+/**
+ * What an update's ask-for-less names for a request that sets a non-empty
+ * `never` list which defeats no granted job: only a shorter list, as the
+ * owner's choice, with no claim about the member's jobs (none is blocked).
+ */
+export const UPDATE_ASK_LESS_NEVER_CHOICE =
+  "if the owner chooses it, a shorter never list: the owner's decision, never a change you make to the never list on your own";
+
+/**
+ * What the update hold's ask-for-less names, from the fields this request sets
+ * and nothing else (an update can't change the stored duties, and a field it
+ * leaves alone is not Wright's to shrink here): fewer or shorter tools or
+ * prefixes (`tool_policy`), fewer or shorter workspaces (`workspaces`), a
+ * non-empty `never` list as `UPDATE_ASK_LESS_NEVER` when the request's never
+ * list defeats a granted job (`neverConflict`: its readiness has a never line,
+ * `readinessNeverConflict`), else as `UPDATE_ASK_LESS_NEVER_CHOICE`, and
+ * shorter values for any other field it sets. A request whose every set field
+ * is already at its shortest (`never: []`) is asked for shorter new values in general.
+ */
+export function updateAskLess(m: { readonly changes: readonly Pick<FieldChange, "field">[]; readonly charter: Pick<Charter, "tool_policy"> }, neverConflict: boolean): string {
+  const sets = new Set(m.changes.map((c) => c.field));
+  const parts: string[] = [];
+  const shrinkable = [...(sets.has("tool_policy") ? ["tools", "prefixes"] : []), ...(sets.has("workspaces") ? ["workspaces"] : [])];
+  if (shrinkable.length > 0) parts.push(`fewer or shorter ${shrinkable.length === 3 ? "tools, prefixes or workspaces" : shrinkable.join(" or ")}`);
+  if (sets.has("never") && m.charter.tool_policy.never.length > 0) parts.push(neverConflict ? UPDATE_ASK_LESS_NEVER : UPDATE_ASK_LESS_NEVER_CHOICE);
+  const others = [...sets].filter((f) => f !== "tool_policy" && f !== "workspaces" && f !== "never");
+  if (others.length > 0) parts.push(`shorter values for ${andList(others)}`);
+  return parts.length > 0 ? parts.join("; ") : "shorter new values for the fields it changes";
 }
 
 /** What the update hold's fit refusal names: the display the owner must see whole. */
@@ -897,8 +936,8 @@ const UPDATE_DISPLAY_TEXT = "the display (its readiness lines, job lines, field 
 function updateFitRefusal(m: Merged, display: string, catalogue: ToolCatalogue | undefined, readiness: ReadinessResult): Refused | undefined {
   if (display.length <= MAX_APPROVAL_DISPLAY) return undefined;
   const floor = updateFloor(m, catalogue, readiness).length;
-  // An update never changes the stored duties: only what it can change is asked for less of.
-  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal(UPDATE_DISPLAY_TEXT, display, "fewer or shorter tools, prefixes or workspaces");
+  // An update never changes the stored duties: only what this request changes is asked for less of.
+  if (floor <= MAX_APPROVAL_DISPLAY) return displayFitRefusal(UPDATE_DISPLAY_TEXT, display, updateAskLess(m, readinessNeverConflict(readiness)));
   return refused(
     "invalid_input",
     `${UPDATE_DISPLAY_TEXT} would be ${display.length} characters, over the ${MAX_APPROVAL_DISPLAY} the owner is shown, ` +

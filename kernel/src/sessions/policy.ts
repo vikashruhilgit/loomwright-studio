@@ -623,6 +623,59 @@ export function neverCategoriesOf(action: string): readonly NeverCategory[] {
   return [];
 }
 
+/** The non-GET methods a `gh api` write is read as (`ghApiForm`'s `gh api <METHOD>`): the forms a held `gh api` prefix admits. */
+const GH_API_WRITE_METHODS = ["POST", "PUT", "PATCH", "DELETE"] as const;
+
+/**
+ * The `NeverCategory` values `policy`'s grants admit: the outward actions a
+ * session under it could reach, so a `never` list naming one defeats work the
+ * policy is for (phase 8 item 25g). A prefix is read in both directions:
+ *
+ * - Shorter than (or equal to) a rail form: the category is admitted when one
+ *   of the rail's own Bash forms for it (each `GIT_OUTWARD` label, `git p4
+ *   submit`, `gh pr <sub>` and `gh issue <sub>` from `GH_PR_OUTWARD` /
+ *   `GH_ISSUE_OUTWARD`, `gh alias set|import`, `gh api <METHOD>`) is held by the
+ *   prefix under the session's own word-boundary rule (`decideToolUse`: equal,
+ *   or the form starts with `<prefix> `), so `gh pr` admits every `gh pr` write.
+ * - More specific than a rail form: the prefix's own text is a command a
+ *   session could start with, so it is read by the rail's own Bash form reader
+ *   (`commandForms` over `shellWords`, as `classifyToolCall` reads a Bash call)
+ *   and each outward form it finds is admitted: `git push origin` admits
+ *   `git_push`, `gh pr create --draft` admits `gh_pr_create`, `gh api -X POST`
+ *   and `gh api --method PATCH` admit `gh_api_write`. A prefix the rail reads
+ *   as no outward form (`git status`, `gh api repos/x`, a GET) admits nothing
+ *   this way. Words a session appends after the prefix are not guessed at.
+ *
+ * One of the policy's `allowedTools` that is a `GITHUB_WRITE_TOOLS` name also
+ * admits its category. Each form's categories are `neverCategoriesOf`'s, never
+ * a second matcher. The path categories (`settings_write`, `hooks_write`) and
+ * `mcp_write` are about a target or a connector, not a grant, so none is ever
+ * admitted here; `git alias` only when a prefix's own words define one (`-c
+ * alias.*`), since no subcommand names it. In `NEVER_CATEGORIES` order. Pure:
+ * no I/O.
+ */
+export function neverCategoriesAdmitted(policy: Pick<ToolPolicy, "allowedTools" | "allowedBashPrefixes">): readonly NeverCategory[] {
+  // Each rail form as a session would type it, with the action the rail reads it as (`gh pr new` is read as `gh pr create`).
+  const forms: (readonly [string, string])[] = [
+    ...GIT_OUTWARD.map(([, label]) => [label, label] as const),
+    ["git p4 submit", "git p4 submit"],
+    ...GH_PR_OUTWARD.map(([sub, label]) => [`gh pr ${sub}`, `gh pr ${label}`] as const),
+    ...GH_ISSUE_OUTWARD.map(([sub, label]) => [`gh issue ${sub}`, `gh issue ${label}`] as const),
+    ...GH_ALIAS_OUTWARD.map((sub) => [`gh alias ${sub}`, `gh alias ${sub}`] as const),
+    ...GH_API_WRITE_METHODS.map((method) => [`gh api ${method}`, `gh api ${method}`] as const),
+  ];
+  const prefixes = policy.allowedBashPrefixes.filter((prefix) => prefix.trim() !== "");
+  const admitted = new Set<NeverCategory>();
+  for (const [label, action] of forms) {
+    const held = prefixes.some((prefix) => label === prefix || label.startsWith(`${prefix} `));
+    if (held) for (const category of neverCategoriesOf(action)) admitted.add(category);
+  }
+  // A prefix more specific than a rail form (`git push origin`, `gh api -X POST`): read its own text as the rail reads a Bash call.
+  for (const prefix of prefixes) for (const action of commandForms(shellWords(prefix))) for (const category of neverCategoriesOf(action)) admitted.add(category);
+  for (const tool of policy.allowedTools) if (Object.hasOwn(GITHUB_WRITE_TOOLS, tool)) admitted.add(GITHUB_WRITE_TOOLS[tool] as NeverCategory);
+  return NEVER_CATEGORIES.filter((c) => admitted.has(c));
+}
+
 /** The rail's outward path labels (`railTargets`), each with the category its Bash and Write/Edit/NotebookEdit forms are in. */
 const OUTWARD_PATH_CATEGORIES: readonly (readonly [string, NeverCategory])[] = [
   ["~/.claude/", "settings_write"],
