@@ -37,7 +37,7 @@
 // detail route, so its per-tool grant is unknown (no checkboxes), never "not
 // granted". As with GitHub, the row changes only when the feed's `agent_*` event
 // refetches the detail.
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import type { McpCapability, McpConnection, McpConnectionKind, RosterEntry, StudioBridge } from "../../api/contract";
 import { Button } from "../../components/Button/Button";
 import { type GithubGrantValue, setAgentConnectors, setAgentMcpTools } from "./actions";
@@ -387,10 +387,12 @@ function CrewGrant({ level, state, busy, onChange }: { readonly level: GithubLev
   // The button the owner just used is the one that unmounts when the feed's refetch changes the level (only the other
   // two levels render), which would drop a keyboard user's focus to the body. A browser fires no blur when a focused
   // node is removed, so `inGroup` still says focus was here at the swap, and focus moves to the group instead.
+  // A layout effect, not a passive one: it runs in the same commit that removes the button, so nothing (a frame, a
+  // screen reader, a test reading `document.activeElement`) ever sees focus on the body in between.
   const group = useRef<HTMLDivElement>(null);
   const inGroup = useRef(false);
   const shown = useRef(level);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const changed = shown.current !== level;
     shown.current = level;
     if (!changed || !inGroup.current) return;
