@@ -27,7 +27,7 @@ import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
 import { isProtectedPath, protectedLocationsText, resolvedPath } from "../protected-paths.js";
 import { loomwrightAdapterStatus } from "../loomwright/active-install.js";
-import { refTracksRunState } from "../loomwright/run-state-checkout.js";
+import { checkoutConfinement, refTracksRunState, writeTargetInGitDir } from "../loomwright/run-state-checkout.js";
 import { refoldRunsRepoCode } from "../loomwright/release-refold-gate.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { hostSwitchNameProblem } from "../loomwright/contract.js";
@@ -41,7 +41,7 @@ import type { MintedGithubToken } from "./github-session-auth.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { GITHUB_CLI_DENY_REASON, draftDecision, draftDenyReason, draftPayloadOf, githubCliDecision } from "./draft-mode.js";
 import { latestOrphanReason } from "./orphans.js";
-import { ALWAYS_HELD_TOOLS, bashCommandOf, boundaryDecision, boundaryDenyReason, checkoutTargets, classifyToolCall, decideToolUse, freezePolicy, mayCreateRunFile, NEVER_CATEGORIES, safeRunFileCreation, TICKET_RUN_SYSTEM_NOTE } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, boundaryDecision, boundaryDenyReason, classifyToolCall, decideToolUse, freezePolicy, mayCreateRunFile, NEVER_CATEGORIES, runGateView, safeRunFileCreation, shellCommandOf, TICKET_RUN_SYSTEM_NOTE, writeToolPath } from "./policy.js";
 import type { NeverCategory, ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -2842,29 +2842,43 @@ export class SessionManager {
         if (input.hook_event_name === "PreToolUse") {
           tool = input.tool_name;
           if (typeof input.tool_use_id === "string" && input.tool_use_id !== "") toolUseId = input.tool_use_id;
-          if (tool === "Bash") command = bashCommandOf(input.tool_input);
+          // A Monitor's `command` is a shell command too (25c): recorded, checked and railed as a Bash call.
+          command = shellCommandOf(input.tool_name, input.tool_input);
           let d = decideToolUse(live.policy, input.tool_name, input.tool_input);
           // A new run's first run file (`loomwright_run_file_created`): safe mode only, and only while nothing is there.
           if (d.reason === "loomwright_run_state" && mayCreateRunFile(live.policy)) {
             const created = safeRunFileCreation(input.tool_name, input.tool_input, input.cwd);
             if (created !== undefined && !pathEntryExists(created)) d = { decision: "allow", reason: "loomwright_run_file_created" };
           }
+          // 25c review iteration 2: a run session's file-tool write never lands in a `.git` directory, resolved on disk
+          // (a committed symlink into `.git` passes the policy's text check).
+          const written = writeToolPath(input.tool_name, input.tool_input);
+          if (d.decision === "allow" && (live.policy.loomwrightScripts ?? []).length > 0 && written !== undefined && writeTargetInGitDir(written, input.cwd)) {
+            d = { decision: "deny", reason: "checkout_confinement" };
+          }
           // A checkout in a Loomwright run session: never onto a ref that tracks run state (review iteration 4).
-          if (d.decision === "allow" && input.tool_name === "Bash" && (live.policy.loomwrightScripts ?? []).length > 0 && command !== undefined) {
-            const targets = checkoutTargets(command);
-            if (targets === "deny" || (targets !== undefined && targets.some((t) => refTracksRunState(input.cwd, t)))) {
+          if (d.decision === "allow" && (live.policy.loomwrightScripts ?? []).length > 0 && command !== undefined) {
+            const view = runGateView(command);
+            // 25c: a file operation, `git -C <dir>` or `git merge` stays inside the checkout (the row's cwd) and its worktrees.
+            const confined = view === undefined ? undefined : checkoutConfinement(view, input.cwd, () => this.getSession(live.id)?.cwd, this.#homeDir);
+            // A `git -C <dir>` checkout is read on its own words and asked of git in `<dir>`.
+            const targets = view === undefined ? "deny" : view.checkout;
+            if (confined?.kind === "deny") {
+              d = { decision: "deny", reason: confined.reason };
+            } else if (targets === "deny" || (targets !== undefined && targets.some((t) => refTracksRunState(confined?.gitCwd, t)))) {
               d = { decision: "deny", reason: "loomwright_run_state" };
             }
           }
           // `release-refold.sh` runs the project's own `scripts/bump-version.sh` when it has one: admitted only while none is
           // where the script would look (23q, `../loomwright/release-refold-gate.ts`).
-          if (d.decision === "allow" && input.tool_name === "Bash" && command !== undefined && refoldRunsRepoCode(command, input.cwd, live.policy.admittedScriptPaths ?? [])) {
+          if (d.decision === "allow" && command !== undefined && refoldRunsRepoCode(command, input.cwd, live.policy.admittedScriptPaths ?? [])) {
             d = { decision: "deny", reason: "loomwright_repo_code" };
           }
-          // The rail applies only after the policy allowed: it never widens a policy.
+          // The rail applies only after the policy allowed: it never widens a policy. A Monitor's command is railed as Bash (25c).
+          const railCall = command !== undefined && input.tool_name === "Monitor" ? { name: "Bash", input: { command } } : { name: input.tool_name, input: input.tool_input };
           const rail: ToolCallClass =
             d.decision === "allow"
-              ? classifyToolCall(input.tool_name, input.tool_input, { dataDir: this.#store.dataDir, homeDir: this.#homeDir, cwd: input.cwd, admittedScriptPaths: live.policy.admittedScriptPaths })
+              ? classifyToolCall(railCall.name, railCall.input, { dataDir: this.#store.dataDir, homeDir: this.#homeDir, cwd: input.cwd, admittedScriptPaths: live.policy.admittedScriptPaths })
               : { kind: "ordinary" };
           // The never boundary is read first for an outward call: before the dry-run branch and any hold or grant.
           const boundary = rail.kind === "outward" ? boundaryDecision(live.policy, rail) : undefined;
@@ -2876,7 +2890,7 @@ export class SessionManager {
               : classifyDryRunCall(input.tool_name, input.tool_input, d, rail);
           // Draft mode records an outward call instead of holding it; the GitHub CLI deny follows it. A rail deny wins over both.
           const draft = rail.kind === "outward" ? draftDecision(live.policy, rail) : undefined;
-          const githubCli = rail.kind === "deny" ? undefined : githubCliDecision(live.policy, input.tool_name, input.tool_input);
+          const githubCli = rail.kind === "deny" ? undefined : githubCliDecision(live.policy, railCall.name, railCall.input);
           if (boundary?.kind === "boundary") {
             // Denied and recorded below like a rail deny: no approval written, no grant looked up, no would-do entry.
             decision = "deny";

@@ -12,7 +12,8 @@
 // (`parseBashCommand`, `shell-words.ts`: no unquoted shell metacharacter, no
 // unmodelled quoting), and never with a
 // subcommand that merges, pushes or starts an unowned process
-// (`LOOMWRIGHT_DENIED_SUBCOMMANDS`), nor with a driver option that turns the
+// (`LOOMWRIGHT_DENIED_SUBCOMMANDS`), nor, for an allow-only script, with any
+// subcommand it does not list (`LOOMWRIGHT_ALLOWED_SUBCOMMANDS`, 25c), nor with a driver option that turns the
 // run toward a merge or trust its policy's profile refuses
 // (`LOOMWRIGHT_DRIVER_ARGUMENTS`, `ToolPolicy.loomwrightDriverProfile`).
 //
@@ -151,6 +152,42 @@ export const LOOMWRIGHT_DENIED_SUBCOMMANDS: Readonly<Record<string, DeniedSubcom
   "supervisor-next-step.sh": Object.freeze({ anyPosition: true, subcommands: Object.freeze(["--skip-children-check", "--skip-preflight-sync"]) }),
   "guard-finalize-publish.sh": Object.freeze({ anyPosition: true, subcommands: Object.freeze(["--skip-children-check"]) }),
 });
+
+/**
+ * The scripts admitted for some subcommands only (phase 8 item 25c), by script
+ * basename: the first argument must be exactly one of the listed words (as bash
+ * passes it), else the call is refused like an unlisted command. An allow list,
+ * so a subcommand Loomwright adds later is refused by default. Fixed: part of the
+ * safety kernel, the same in every run policy (which policies admit the script at
+ * all is `loomwrightScripts`). Read from the Loomwright 18.1.2 install:
+ *
+ * - `automate-lanes.sh` reads its first argument as the subcommand (`lanes_main`);
+ *   `scope-outside <item> <brief> [--root <dir>]` is READ-ONLY (Launch Pad's
+ *   LP-SCOPE gate, `automate-lanes.d/scope.sh`), while `lane-launch` and
+ *   `phase-launch` start headless `claude -p` (invariant 2) and the rest drive lanes.
+ * - `gate-auto.sh` reads its first argument the same way: `decide` (a fixed read of
+ *   the lane catalog and the run's switches), `record` (one `## Progress` line through
+ *   `automate-helpers.sh progress-append`) and `list` (read-only). It starts no
+ *   `claude` and posts nothing.
+ */
+export const LOOMWRIGHT_ALLOWED_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "automate-lanes.sh": Object.freeze(["scope-outside"]),
+  "gate-auto.sh": Object.freeze(["decide", "record", "list"]),
+});
+
+/**
+ * True when `args` asks an allow-only script (`LOOMWRIGHT_ALLOWED_SUBCOMMANDS`)
+ * for anything but a listed subcommand at its first argument, or cannot be read
+ * exactly (`shellWords`: fail closed, the same reading `asksDeniedSubcommand`
+ * uses). False for any other script. Pure.
+ */
+function asksUnlistedSubcommand(script: string, args: string): boolean {
+  const allowed = Object.prototype.hasOwnProperty.call(LOOMWRIGHT_ALLOWED_SUBCOMMANDS, basenameOf(script)) ? LOOMWRIGHT_ALLOWED_SUBCOMMANDS[basenameOf(script)] : undefined;
+  if (allowed === undefined) return false;
+  const words = shellWords(args);
+  if (words === undefined) return true;
+  return words[0] === undefined || !allowed.includes(words[0]);
+}
 
 /**
  * True when `args` (the text after the script's path, as the session wrote it)
@@ -358,7 +395,8 @@ const PLAIN_PATH = /^\/[A-Za-z0-9_./@%+=:,-]*$/;
  * another program, a flag before the path (`bash -c`, `bash -x`), a second
  * space, or anything glued to the closing quote is no match. Nor is a call
  * that asks the script for a subcommand `LOOMWRIGHT_DENIED_SUBCOMMANDS`
- * refuses, nor a call of `automate-next-step.sh` with an option `profile`
+ * refuses, nor a call of an allow-only script whose first argument is not one
+ * `LOOMWRIGHT_ALLOWED_SUBCOMMANDS` lists, nor a call of `automate-next-step.sh` with an option `profile`
  * refuses (`LOOMWRIGHT_DRIVER_ARGUMENTS`; absent ⇒ `automate_run`). The caller
  * then denies it `bash_prefix_not_allowed`, as for any unlisted command. The
  * caller runs the parsed check first (`decideToolUse`, `parseBashCommand`: an
@@ -391,6 +429,7 @@ export function matchLoomwrightScript(
   if (after !== "" && !after.startsWith(" ")) return undefined;
   if (!admitted.includes(path)) return undefined;
   if (asksDeniedSubcommand(path, after)) return undefined;
+  if (asksUnlistedSubcommand(path, after)) return undefined;
   if (basenameOf(path) === LOOMWRIGHT_ARGUMENT_DRIVER && asksDeniedDriverArgument(after, profile, runId)) return undefined;
   return path;
 }

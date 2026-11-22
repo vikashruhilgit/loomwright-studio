@@ -1,6 +1,8 @@
 import { basename, resolve } from "node:path";
 import { firmlinkForms, withoutFirmlink } from "../protected-paths.js";
 import { matchLoomwrightScript } from "./loomwright-scripts.js";
+import { confinedShape, EXACT_RUN_PREFIXES, installReadWords, monitorCommandOf, splitGitC } from "./run-confinement.js";
+import type { ConfinedShape } from "./run-confinement.js";
 import { parseBashCommand, scanShellWords } from "./shell-words.js";
 import type { ToolPolicy } from "./types.js";
 
@@ -70,7 +72,18 @@ export type ToolDecisionReason =
    * as a safe-mode run file AND nothing exists at the path yet; every later
    * write of the file stays `loomwright_run_state`.
    */
-  | "loomwright_run_file_created";
+  | "loomwright_run_file_created"
+  /**
+   * In a Loomwright run policy (phase 8 item 25c): an `rm`, `mv`, `chmod`, `git rm`, `git mv`, `git -C <dir> …` or
+   * `git merge` outside its admitted shape (`run-confinement.ts`: an option outside the program's closed set, a
+   * glob, brace, `~` or `..` operand, a second git global option, a merge that is not `git merge <name> [--no-ff]
+   * [-m <msg>]`), or, decided in the session gate, one naming a path outside the session's checkout and its git
+   * worktrees, under `~/.claude/` or a `.git` directory, a recursive form or a move on the checkout or a
+   * worktree root (or an ancestor of one), or a merge of anything but a local branch. Also a run session's Write,
+   * Edit or NotebookEdit of a path under a `.git` segment: as text here (`writesGitDir`, review iteration 1), and
+   * resolved on disk through every symlink in the session gate (`writeTargetInGitDir`, review iteration 2).
+   */
+  | "checkout_confinement";
 
 export interface ToolDecision {
   readonly decision: "allow" | "deny";
@@ -120,6 +133,20 @@ function startsWithPrefixWords(words: readonly string[], prefix: string): boolea
  *   `sed` (`e`/`w`), `awk` (`system()`), `sh`, `bash`. The kernel adds no
  *   blocklist for them: the policy is the user's (invariant 1), and listing
  *   such a prefix is a decision to allow whatever it can run.
+ * - `Monitor` runs its `command` as a shell watch, so in every policy it is
+ *   allowed only when its name is in `allowedTools` AND its input is a shell
+ *   watch (`monitorCommandOf`: no `ws`, an outward WebSocket; no unknown key)
+ *   AND its `command` is decided exactly as a Bash call (25c). A refused input
+ *   is `tool_not_allowed`.
+ * - A run policy (`loomwrightScripts` set, phase 8 item 25c) reads three more
+ *   shapes (`run-confinement.ts`): `git -C <dir> <rest>` is judged as
+ *   `git <rest>` (the same prefix list and run-state guard; another global
+ *   option is `checkout_confinement`); a prefix in `EXACT_RUN_PREFIXES`
+ *   (`git remote -v`) admits only the whole command; and `rm`, `mv`, `chmod`,
+ *   `git rm`, `git mv` and `git merge` must keep their closed option sets and
+ *   literal operands (`confinedShape`). Where those paths lie is the session
+ *   gate's question (`kernel/src/loomwright/run-state-checkout.ts`): this
+ *   decision reads no file system.
  * - Any other tool is allowed only when its exact name is in `allowedTools`.
  *
  * `toolInput` is untrusted data from the model: it is only inspected here,
@@ -137,16 +164,101 @@ export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: u
     if (matchLoomwrightScript(command, policy.admittedScriptPaths ?? [], policy.loomwrightDriverProfile, policy.loomwrightRunId) !== undefined) {
       return { decision: "allow", reason: "bash_prefix_allowed" };
     }
-    const allowed = policy.allowedBashPrefixes.some(
-      (prefix) => prefix.trim() !== "" && (command === prefix || command.startsWith(`${prefix} `)) && startsWithPrefixWords(parsed.words, prefix),
+    // 25c: in a run policy `git -C <dir> <rest>` is judged as `git <rest>` (on its words: the text before `<rest>` is
+    // not the prefix's); the session gate confines `<dir>`. `git -C` is never a prefix itself.
+    const split = runPolicy ? splitGitC(parsed.words) : { kind: "none" as const };
+    if (split.kind === "refuse") return { decision: "deny", reason: "checkout_confinement" };
+    const words = split.kind === "split" ? split.words : parsed.words;
+    const matched = policy.allowedBashPrefixes.find(
+      (prefix) =>
+        prefix.trim() !== "" && (split.kind === "split" || command === prefix || command.startsWith(`${prefix} `)) && startsWithPrefixWords(words, prefix),
     );
-    if (!allowed) return { decision: "deny", reason: "bash_prefix_not_allowed" };
-    if (runPolicy && bashTouchesLoomwrightRunState(command)) return { decision: "deny", reason: "loomwright_run_state" };
+    if (matched === undefined) return { decision: "deny", reason: "bash_prefix_not_allowed" };
+    if (runPolicy && bashTouchesLoomwrightRunState(words)) return { decision: "deny", reason: "loomwright_run_state" };
+    if (runPolicy && runShapeRefused(words, policy.allowedBashPrefixes)) return { decision: "deny", reason: "checkout_confinement" };
     return { decision: "allow", reason: "bash_prefix_allowed" };
   }
   if (!policy.allowedTools.includes(toolName)) return { decision: "deny", reason: "tool_not_allowed" };
+  if (toolName === "Monitor") {
+    const command = monitorCommandOf(toolInput);
+    return command === undefined ? { decision: "deny", reason: "tool_not_allowed" } : decideToolUse(policy, "Bash", { command });
+  }
   if (runPolicy && writesLoomwrightRunState(toolName, toolInput)) return { decision: "deny", reason: "loomwright_run_state" };
+  if (runPolicy && writesGitDir(toolName, toolInput)) return { decision: "deny", reason: "checkout_confinement" };
   return { decision: "allow", reason: "tool_allowed" };
+}
+
+/**
+ * The path a Write, Edit or NotebookEdit call writes (`file_path` / `notebook_path`, as given), else `undefined`.
+ * The session gate resolves it on disk for a run session (`writeTargetInGitDir`, 25c review iteration 2). Pure.
+ */
+export function writeToolPath(toolName: string, toolInput: unknown): string | undefined {
+  const field = Object.prototype.hasOwnProperty.call(WRITE_TOOLS, toolName) ? WRITE_TOOLS[toolName] : undefined;
+  if (field === undefined || typeof toolInput !== "object" || toolInput === null) return undefined;
+  const raw = (toolInput as Record<string, unknown>)[field];
+  return typeof raw === "string" && raw !== "" ? raw : undefined;
+}
+
+/**
+ * Whether a Write, Edit or NotebookEdit call's path lies under a `.git` segment (or is one: a worktree's `.git`
+ * file), case-folded, after `..` is applied, read as `writesLoomwrightRunState` reads it (25c, review iteration 1).
+ * git runs what `.git/config` and `.git/hooks/` name, and builds `git worktree list` from `.git/worktrees/*`; so a
+ * run session writes nothing there with a file tool. No Loomwright step does: its own `.git/info/exclude` line is
+ * written by `supervisor-next-step.sh` (18.1.2), not by a file tool. This is the first layer and reads the path
+ * text only: a symlink into `.git` (which `git checkout`, `git merge` or `gh pr checkout` can create from a
+ * committed link) is not seen here. The session gate resolves the same path on disk for a run session and refuses
+ * it there too (`writeTargetInGitDir`, `loomwright/run-state-checkout.ts`, review iteration 2). Pure.
+ */
+function writesGitDir(toolName: string, toolInput: unknown): boolean {
+  const raw = writeToolPath(toolName, toolInput);
+  return raw !== undefined && resolve("/", raw.toLowerCase()).split("/").includes(".git");
+}
+
+/**
+ * Whether a run session's prefix-allowed `words` break their admitted shape (25c): a command matching a prefix in
+ * `EXACT_RUN_PREFIXES` must be exactly that prefix (every matching prefix is checked, so a shorter listed one cannot
+ * stand in), and a confined program must keep its shape (`confinedShape`). Pure.
+ */
+function runShapeRefused(words: readonly string[], prefixes: readonly string[]): boolean {
+  for (const prefix of prefixes) {
+    if (!EXACT_RUN_PREFIXES.includes(prefix) || !startsWithPrefixWords(words, prefix)) continue;
+    const own = parseBashCommand(prefix);
+    if (own.kind === "words" && own.words.length !== words.length) return true;
+  }
+  return confinedShape(words).kind === "refuse";
+}
+
+/**
+ * The shell command a `Bash` or `Monitor` call runs (`bashCommandOf`, `monitorCommandOf`), else `undefined`. The
+ * session gate reads it for both: a Monitor's `command` gets the run-session checks and the rail as a Bash call
+ * (25c), and its `tool_decision` records it.
+ */
+export function shellCommandOf(toolName: string, toolInput: unknown): string | undefined {
+  if (toolName === "Bash") return bashCommandOf(toolInput);
+  if (toolName === "Monitor") return monitorCommandOf(toolInput);
+  return undefined;
+}
+
+/**
+ * What the session gate checks against the checkout for a run session's allowed shell command (25c): the
+ * `git -C` directory as written (absent: the hook's cwd), the checkout or switch targets of the command's own words
+ * (`checkoutTargets`, so `git -C <dir> checkout <ref>` is asked of git in `<dir>`), and its confined shape.
+ * `undefined` when the command does not parse to words (the policy already denied it). Pure.
+ */
+export interface RunGateView {
+  readonly dir?: string;
+  readonly checkout: readonly string[] | "deny" | undefined;
+  readonly shape: ConfinedShape;
+}
+
+export function runGateView(command: string): RunGateView | undefined {
+  const parsed = parseBashCommand(command);
+  if (parsed.kind !== "words") return undefined;
+  const split = splitGitC(parsed.words);
+  if (split.kind === "refuse") return undefined;
+  const words = split.kind === "split" ? split.words : parsed.words;
+  const view = { checkout: checkoutTargetsOfWords(words), shape: confinedShape(words) };
+  return split.kind === "split" ? { ...view, dir: split.dir } : view;
 }
 
 // ---- Loomwright run state: written by Loomwright's scripts only (phase 8 item 22g, review iteration 3) ----
@@ -278,10 +390,11 @@ export function safeRunFileCreation(toolName: string, toolInput: unknown, cwd: s
  * contents: a word naming run state is fine for them. `mkdir` is one: a new
  * run runs `mkdir -p .supervisor/automate` before `pick-guard`
  * (Loomwright 17.38.0 `commands/automate.md`), and making a directory changes
- * no file. `git` and `gh` can change a file they name
- * (`git checkout <rev> -- <path>`, `git stash`, `gh pr checkout`).
+ * no file. `od` (25c) only dumps a file. `git` and `gh` can change a file they name
+ * (`git checkout <rev> -- <path>`, `git stash`, `gh pr checkout`); so can `rm`, `mv`
+ * and `chmod` (25c), which are never here, so a word of theirs naming run state is refused.
  */
-const READ_ONLY_PROGRAMS: readonly string[] = ["ls", "cat", "pwd", "date", "test", "wc", "head", "tail", "grep", "sleep", "jq", "mkdir"];
+const READ_ONLY_PROGRAMS: readonly string[] = ["ls", "cat", "pwd", "date", "test", "wc", "head", "tail", "grep", "sleep", "jq", "mkdir", "od"];
 
 /**
  * Whether an allowed Bash command could change run state. Its program is not
@@ -295,10 +408,11 @@ const READ_ONLY_PROGRAMS: readonly string[] = ["ls", "cat", "pwd", "date", "test
  * Honest limit: a whole-tree form that names no path (`git checkout -- .`,
  * `git stash`) is not read here. It can only restore content git already
  * holds at that path, written by Loomwright's scripts, since every direct
- * write of a run-state path is denied. Pure.
+ * write of a run-state path is denied. Read on the command's words (for
+ * `git -C <dir> <rest>`, the words `git <rest>`; the gate confines `<dir>`). Pure.
  */
-function bashTouchesLoomwrightRunState(command: string): boolean {
-  const words = shellWords(command).filter((w) => w !== "");
+function bashTouchesLoomwrightRunState(all: readonly string[]): boolean {
+  const words = all.filter((w) => w !== "");
   const program = words[0];
   if (program === undefined) return false;
   const name = basename(program).toLowerCase();
@@ -331,7 +445,12 @@ const CHECKOUT_VALUE_OPTIONS: readonly string[] = ["-b", "-B", "-c", "-C", "--or
  * target tracks its path (reproduced with git 2.55.0). Pure.
  */
 export function checkoutTargets(command: string): readonly string[] | "deny" | undefined {
-  const words = shellWords(command).filter((w) => w !== "");
+  return checkoutTargetsOfWords(shellWords(command));
+}
+
+/** `checkoutTargets` on words already read (`runGateView` passes `git <rest>` of a `git -C <dir> <rest>`). Pure. */
+function checkoutTargetsOfWords(all: readonly string[]): readonly string[] | "deny" | undefined {
+  const words = all.filter((w) => w !== "");
   if (words[0] === undefined || basename(words[0]).toLowerCase() !== "git" || (words[1] !== "checkout" && words[1] !== "switch")) return undefined;
   const targets: string[] = [];
   for (let i = 2; i < words.length; i += 1) {
@@ -425,6 +544,10 @@ export interface RailContext {
    * target (item 23a): the active install lives under `~/.claude/plugins/`, so
    * the script's own path would otherwise read as `settings_write` on every
    * driver call. Every other word, and the protected-path check, is read as usual.
+   * They also name the session's one install root (`loomwrightInstallRoot`): a
+   * read-only program (`INSTALL_READ_PROGRAMS`: `cat`, `grep`, `head`, `tail`,
+   * `wc`, `ls`, `jq`) does not read a literal absolute path under that root as
+   * the `~/.claude/` target (23f, `installReadWords`).
    */
   readonly admittedScriptPaths?: readonly string[];
 }
@@ -857,7 +980,10 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
     if (forms[0] === "merge") return { kind: "deny", reason: "merge_blocked" };
     // An admitted Loomwright script (item 23a): its own path word is not an outward target. Only `bash <path>`
     // with `<path>` exactly an admitted path, as `shellWords` reads it; every other word is still read.
-    const outwardRead = admittedScriptWord(words, ctx.admittedScriptPaths) ? bashPathPatterns([words[0] as string, ...words.slice(2)], cwd, homeDir) : read;
+    // 23f: a read-only program's literal path under the session's own install is not an outward target either.
+    const exempt = new Set(installReadWords(words, ctx.admittedScriptPaths, homeDir));
+    if (admittedScriptWord(words, ctx.admittedScriptPaths)) exempt.add(1);
+    const outwardRead = exempt.size > 0 ? bashPathPatterns(words.filter((_, i) => !exempt.has(i)), cwd, homeDir) : read;
     if (outwardRead === undefined) return { kind: "deny", reason: "bash_command_too_large" };
     // The action is the command's first form, else its first path label; the rest only feed `alsoReads`.
     const [action, ...others] = [...forms, ...outwardLabels(outwardRead, targets).map((label) => `Bash naming ${label}`)];

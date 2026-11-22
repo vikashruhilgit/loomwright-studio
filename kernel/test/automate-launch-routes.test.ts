@@ -46,6 +46,7 @@ import type { SessionHandle, SessionRow, StartSessionParams, ToolPolicy } from "
 import { LoomwrightSessionError } from "../src/sessions/index.js";
 import type { SessionTokenMint } from "../src/sessions/github-session-auth.js";
 import { classifyToolCall, mayCreateRunFile, TICKET_RUN_SYSTEM_NOTE } from "../src/sessions/policy.js";
+import { LOOMWRIGHT_ALLOWED_SUBCOMMANDS } from "../src/sessions/loomwright-scripts.js";
 import { contributedToolHandler } from "../src/tools/server.js";
 import { FakeGitHubClient } from "./fixtures/github-fake.js";
 import { HEAD, NOW, PARKED_RUN_ID, PR, installRunFiles, toolEnv, writeCrewSettings } from "./fixtures/loomwright-run-files/harness.js";
@@ -235,8 +236,13 @@ describe("the review-pr and merge-parked run policies (AC4)", () => {
     }
     // Review iteration 1: none of the three admits a script that pushes, spawns a lane or a detached watcher, or posts a webhook.
     for (const [name, list] of [["automate", AUTOMATE_RUN_POLICY.loomwrightScripts ?? []], ["review", review], ["merge", merge]] as const) {
-      for (const s of ["automate-lanes.sh", "automate-wave.sh", "automate-merge-watch.sh", "lane-sampler.sh", "automate-trail.sh"]) expect(list, `${name} ${s}`).not.toContain(s);
+      for (const s of ["automate-wave.sh", "automate-merge-watch.sh", "lane-sampler.sh", "automate-trail.sh"]) expect(list, `${name} ${s}`).not.toContain(s);
     }
+    // 25c: the backlog / resume policy lists automate-lanes.sh for its read-only `scope-outside` alone (allow-only
+    // subcommands); the review and merge policies list none of it.
+    expect(AUTOMATE_RUN_POLICY.loomwrightScripts ?? []).toContain("automate-lanes.sh");
+    expect(LOOMWRIGHT_ALLOWED_SUBCOMMANDS["automate-lanes.sh"]).toEqual(["scope-outside"]);
+    for (const list of [review, merge]) expect(list).not.toContain("automate-lanes.sh");
     // A merge runs no drain.
     expect(merge).not.toContain("review-heal-next-step.sh");
     // A name list admits nothing by itself: with no admitted paths (the manager's alone), a driver call is denied.
