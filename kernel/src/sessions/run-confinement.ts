@@ -276,9 +276,12 @@ function isRunStateAncestor(path: string): boolean {
 /**
  * The verdict on a confined command's resolved operands (pure; the session gate resolves them): the first refusal
  * that applies to any operand, else `undefined` (admitted). `roots` are the resolved checkout and worktree roots.
- * A recursive form, and the first `moved` operands (a move's sources), sweep everything under the operand, so they
- * are judged on ancestry too: an operand that is a root or an ancestor of one is `checkout_root`, and a `.supervisor`
- * directory (an ancestor of run state and the run lock) is `run_state`.
+ * An operand that resolves to a `.supervisor` directory (an ancestor of run state and the run lock) is `run_state` in
+ * every position: a move's source or destination, a `chmod` target, a `git rm` / `git mv` operand (review iteration
+ * 3: `mv automate sv` through a committed `sv -> .supervisor` would create `.supervisor/automate/`, and `chmod 000 sv`
+ * would lock the driver out). A recursive form, and the first `moved` operands (a move's sources), sweep everything
+ * under the operand, so they are judged on ancestry too: an operand that is a root or an ancestor of one is
+ * `checkout_root`.
  */
 export function confinementVerdict(operands: readonly ResolvedOperand[], roots: readonly string[], recursive: boolean, moved = 0): ConfinementRefusal | undefined {
   for (const [i, op] of operands.entries()) {
@@ -286,8 +289,8 @@ export function confinementVerdict(operands: readonly ResolvedOperand[], roots: 
     if (op.underClaude) return "claude_dir";
     if (segmentsOf(op.path).includes(".git")) return "git_dir";
     if (isRunStatePath(op.path)) return "run_state";
+    if (isRunStateAncestor(op.path)) return "run_state";
     const sweeps = recursive || i < moved;
-    if (sweeps && isRunStateAncestor(op.path)) return "run_state";
     if (sweeps && roots.some((root) => isSameOrAncestor(op.path, root))) return "checkout_root";
   }
   return undefined;

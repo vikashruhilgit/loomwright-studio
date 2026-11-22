@@ -25,6 +25,17 @@ function runGit(cwd: string, args: readonly string[]): string {
 }
 
 /**
+ * `git -C <cwd> -c safe.bareRepository=explicit <args>`: every lookup the run-session gate makes (25c review
+ * iteration 3). A directory the session can write (`evil/HEAD`, `evil/config`, `evil/objects/`, `evil/refs/`) is an
+ * implicit bare repository to git, whose config git would read and act on (`core.sshCommand`, `core.fsmonitor`); with
+ * `explicit`, git refuses to treat a directory it discovered as a bare repository, so a lookup run in a
+ * session-chosen directory fails (closed) there.
+ */
+function lookupGit(cwd: string, args: readonly string[]): string {
+  return runGit(cwd, ["-c", "safe.bareRepository=explicit", ...args]);
+}
+
+/**
  * Whether git ignores `relPath` in the checkout at absolute `cwd` (`git check-ignore -q --`): `true`, `false`, or
  * `undefined` when git can't say (not a checkout, another error, a timeout, a relative `cwd`).
  */
@@ -67,7 +78,7 @@ const RUN_STATE_PATH = /(^|\/)\.supervisor\/automate\//i;
  */
 export function refTracksRunState(cwd: unknown, target: string): boolean {
   if (typeof cwd !== "string" || !cwd.startsWith("/")) return true;
-  const git = (args: readonly string[]): string => runGit(cwd, args);
+  const git = (args: readonly string[]): string => lookupGit(cwd, args);
   let tree: string;
   try {
     tree = git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${target}^{tree}`]).trim();
@@ -161,12 +172,17 @@ function trustedWorktree(path: string, common: string): boolean {
  * `/` (fail closed).
  */
 export function confinementRoots(checkout: unknown): readonly string[] | undefined {
+  return confinementRepo(checkout)?.roots;
+}
+
+/** `confinementRoots` and the repository's resolved common `.git` directory (`common`), which `sameRepository` matches. */
+function confinementRepo(checkout: unknown): { readonly roots: readonly string[]; readonly common: string } | undefined {
   if (typeof checkout !== "string" || !checkout.startsWith("/")) return undefined;
   let listed: string;
   let common: string;
   try {
-    listed = runGit(checkout, ["worktree", "list", "--porcelain", "-z"]);
-    const dir = runGit(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim();
+    listed = lookupGit(checkout, ["worktree", "list", "--porcelain", "-z"]);
+    const dir = lookupGit(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim();
     if (!dir.startsWith("/")) return undefined;
     common = resolvedPath(dir);
   } catch {
@@ -186,7 +202,28 @@ export function confinementRoots(checkout: unknown): readonly string[] | undefin
   }
   const kept = records.filter((r) => !r.dropped && trustedWorktree(r.path, common));
   const roots = [resolvedPath(checkout), ...kept.map((r) => resolvedPath(r.path))];
-  return roots.some((r) => r === "/") ? undefined : [...new Set(roots)];
+  return roots.some((r) => r === "/") ? undefined : { roots: [...new Set(roots)], common };
+}
+
+/**
+ * Whether git, run in `dir`, works on this checkout's own repository (25c review iteration 3): its common `.git`
+ * directory resolves to `common` and its work-tree top level to one of `roots`, asked with
+ * `safe.bareRepository=explicit` (`lookupGit`). A directory the session wrote as a bare repository (`HEAD`, `config`,
+ * `objects/`, `refs/`) is refused by git there, and a nested repository, a submodule or a `.git` file redirecting the
+ * work tree answers another common dir or top level. So `git -C <dir> <rest>` never runs a repository config the
+ * session could author. `false` on any git error, a timeout, or output that is not two absolute lines (fail closed).
+ */
+function sameRepository(dir: string, roots: readonly string[], common: string): boolean {
+  let out: string;
+  try {
+    out = lookupGit(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"]);
+  } catch {
+    return false;
+  }
+  const lines = out.replace(/\n$/, "").split("\n");
+  const [gitCommon, top] = lines;
+  if (lines.length !== 2 || gitCommon === undefined || top === undefined || !gitCommon.startsWith("/") || !top.startsWith("/")) return false;
+  return sameResolved(gitCommon, common) && roots.some((r) => sameResolved(top, r));
 }
 
 /**
@@ -261,7 +298,7 @@ export function writeTargetInGitDir(path: string, hookCwd: unknown): boolean {
  */
 export function isLocalBranch(cwd: string, name: string): boolean {
   try {
-    return runGit(cwd, ["rev-parse", "--symbolic-full-name", "--verify", "--end-of-options", name]).trim() === `refs/heads/${name}`;
+    return lookupGit(cwd, ["rev-parse", "--symbolic-full-name", "--verify", "--end-of-options", name]).trim() === `refs/heads/${name}`;
   } catch {
     return false;
   }
@@ -284,11 +321,13 @@ function refusalReason(why: ConfinementRefusal): "checkout_confinement" | "loomw
  * `checkout()`, the session row's cwd):
  * - the `git -C` directory, resolved against the hook's `cwd` (`physicalPath`), must be inside a root, pass
  *   `confinementVerdict`, and have no `.supervisor` segment (`loomwright_run_state`: git reads the rest's relative
- *   words against it, the policy's run-state guard reads them as text; review iteration 2); the command's operands
- *   are then resolved against it;
+ *   words against it, the policy's run-state guard reads them as text; review iteration 2), and git there must work
+ *   on the checkout's own repository (`sameRepository`, review iteration 3); the command's operands are then
+ *   resolved against it;
  * - every operand of `rm`, `mv`, `chmod`, `git rm`, `git mv` must pass `confinementVerdict` (inside a root, not
- *   under `<homeDir>/.claude`, a `.git` directory, `.supervisor/automate/` or `.supervisor/run.lock`, and for a
- *   recursive form or a move's source neither a root nor an ancestor of one, nor a `.supervisor` directory);
+ *   under `<homeDir>/.claude`, a `.git` directory, `.supervisor/automate/` or `.supervisor/run.lock`, not a
+ *   `.supervisor` directory in any position, and for a recursive form or a move's source neither a root nor an
+ *   ancestor of one);
  * - a `git merge`'s branch must be a local branch (`isLocalBranch`) whose tree tracks no run state
  *   (`refTracksRunState`: a merge brings in a tracked run file as a checkout does).
  */
@@ -297,8 +336,9 @@ export function checkoutConfinement(view: RunGateView, hookCwd: unknown, checkou
   const deny = (reason: "checkout_confinement" | "loomwright_run_state"): CheckoutConfinement => ({ kind: "deny", reason });
   if (view.shape.kind === "refuse") return deny("checkout_confinement");
   if (typeof hookCwd !== "string" || !hookCwd.startsWith("/")) return deny("checkout_confinement");
-  const roots = confinementRoots(checkout());
-  if (roots === undefined) return deny("checkout_confinement");
+  const repo = confinementRepo(checkout());
+  if (repo === undefined) return deny("checkout_confinement");
+  const { roots, common } = repo;
   const claude = join(homeDir, ".claude");
   const operandOf = (path: string): ResolvedOperand => ({ path, inside: roots.some((r) => isInsideResolved(path, r)), underClaude: isInsideResolved(path, claude) });
   let base = hookCwd;
@@ -311,6 +351,9 @@ export function checkoutConfinement(view: RunGateView, hookCwd: unknown, checkou
     // outright (review iteration 2). Outside one, a word reaching run state must name `supervisor` itself, which
     // the guard reads.
     if (base.toLowerCase().split("/").includes(".supervisor")) return deny("loomwright_run_state");
+    // Inside a root is not enough: a directory the session wrote as a bare repository would have git run its config
+    // (`core.sshCommand` on a fetch). git in `<dir>` must work on the checkout's own repository (review iteration 3).
+    if (!sameRepository(base, roots, common)) return deny("checkout_confinement");
   }
   if (view.shape.kind === "paths") {
     const why = confinementVerdict(view.shape.operands.map((w) => operandOf(physicalPath(base, w))), roots, view.shape.recursive, view.shape.moved);

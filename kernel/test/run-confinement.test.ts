@@ -5,13 +5,14 @@
 // The I/O half (`src/loomwright/run-state-checkout.ts`): the worktree roots, segment-by-segment resolution, the
 // local-branch lookup and the gate's whole check, against a real git repository in a temp dir.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkoutConfinement, confinementRoots, isLocalBranch, physicalPath, writeTargetInGitDir } from "../src/loomwright/run-state-checkout.js";
+import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
+import { checkoutConfinement, confinementRoots, isLocalBranch, physicalPath, refTracksRunState, writeTargetInGitDir } from "../src/loomwright/run-state-checkout.js";
 import { isInsideResolved } from "../src/protected-paths.js";
-import { runGateView } from "../src/sessions/policy.js";
+import { decideToolUse, runGateView } from "../src/sessions/policy.js";
 import {
   confinedShape,
   confinementVerdict,
@@ -189,6 +190,11 @@ describe("confinementVerdict: the resolved operands", () => {
     expect(confinementVerdict([op("/w/co/.supervisor")], roots, true)).toBe("run_state");
     expect(confinementVerdict([op("/w/co/.Supervisor"), op("/w/co/x")], roots, false, 1)).toBe("run_state");
     expect(confinementVerdict([op("/w/co/.supervisor/jobs")], roots, true)).toBeUndefined();
+    // Review iteration 3: in every position, not only a sweeping one: a move's destination, a plain chmod target.
+    expect(confinementVerdict([op("/w/co/automate"), op("/w/co/.supervisor")], roots, false, 1)).toBe("run_state");
+    expect(confinementVerdict([op("/w/co/.SUPERVISOR")], roots, false)).toBe("run_state");
+    // The brief move into a job folder names `.supervisor/jobs/...`, never `.supervisor` itself.
+    expect(confinementVerdict([op("/w/co/.supervisor/jobs/in-progress/x.md"), op("/w/co/.supervisor/jobs/failed")], roots, false, 1)).toBeUndefined();
   });
 });
 
@@ -457,6 +463,79 @@ describe("checkoutConfinement: the session gate's check (25c)", () => {
     // A directory outside `.supervisor` is admitted by the gate; its words naming run state are the policy's
     // (sessions-policy.test.ts pins `git -C kernel add -f ../.supervisor/automate/x` as loomwright_run_state).
     expect(gate("git -C kernel status")).toEqual({ kind: "ok", gitCwd: join(co, "kernel") });
+  });
+
+  it("refuses a move destination or chmod target that resolves to `.supervisor` through a committed link (review iteration 3)", () => {
+    mkdirSync(join(co, ".supervisor", "jobs", "in-progress"), { recursive: true });
+    mkdirSync(join(co, ".supervisor", "jobs", "failed"), { recursive: true });
+    writeFileSync(join(co, ".supervisor", "jobs", "in-progress", "x.md"), "x\n");
+    mkdirSync(join(co, "automate"));
+    writeFileSync(join(co, "automate", "r1.md"), "- mode: auto-merge\n");
+    symlinkSync(".supervisor", join(co, "sv"));
+    git(co, "add", "sv");
+    git(co, "commit", "-qm", "link");
+    for (const command of ["mv automate sv", "mv automate sv/", "mv -f automate sv", "chmod 000 sv", "chmod +x sv/", "git mv automate sv", "git rm --cached sv"]) {
+      expect(gate(command), command).toEqual(RUN_STATE);
+    }
+    // The brief moves into a job folder stay admitted (observed events 30444, 33369).
+    expect(gate("mv .supervisor/jobs/in-progress/x.md .supervisor/jobs/failed/")).toMatchObject({ kind: "ok" });
+    expect(gate("mv sv/jobs/in-progress/x.md sv/jobs/failed/")).toMatchObject({ kind: "ok" });
+  });
+
+  it("refuses `git -C <dir>` into a directory the session wrote as a bare repository; git there would run its config (review iteration 3)", () => {
+    const marker = join(tmp, "PWNED");
+    const evil = join(co, "evil");
+    mkdirSync(join(evil, "objects"), { recursive: true });
+    mkdirSync(join(evil, "refs"));
+    writeFileSync(join(evil, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(evil, "config"), `[core]\n\trepositoryformatversion = 0\n\tbare = true\n\tsshCommand = touch ${marker}; false\n`);
+    // Committed as a PR could ship it: git reads `evil/` as a bare repository and runs its sshCommand.
+    git(co, "add", "evil");
+    git(co, "commit", "-qm", "evil");
+    try {
+      git(evil, "ls-remote", "ssh://h/x");
+    } catch {
+      // The command fails (`false`); the marker is what matters.
+    }
+    expect(existsSync(marker)).toBe(true);
+    rmSync(marker);
+    for (const command of ["git -C evil fetch", "git -C evil ls-remote ssh://h/x", "git -C evil status", `git -C ${evil} push`, "git -C evil/refs status", "git -C evil merge main"]) {
+      expect(gate(command), command).toEqual(DENY);
+    }
+    expect(existsSync(marker)).toBe(false);
+    // A nested repository (a separate common dir) is not the checkout's repository either.
+    const nested = join(co, "nested");
+    mkdirSync(nested);
+    git(nested, "init", "-q");
+    expect(gate("git -C nested status")).toEqual(DENY);
+    // A `.git` file pointing at the checkout's own `.git` (same common dir) redirects the work tree: its top level is
+    // no root, so it is refused too (the session cannot write a `.git` file; this pins the top-level half).
+    const redir = join(co, "redir");
+    mkdirSync(redir);
+    writeFileSync(join(redir, ".git"), `gitdir: ${join(co, ".git")}\n`);
+    expect(git(redir, "rev-parse", "--path-format=absolute", "--git-common-dir").trim()).toBe(join(co, ".git"));
+    expect(gate("git -C redir status")).toEqual(DENY);
+    // A subdirectory of the checkout and a linked worktree stay admitted.
+    git(co, "worktree", "add", "-q", "-b", "sub", join(tmp, "wt"));
+    mkdirSync(join(co, "kernel"));
+    expect(gate("git -C kernel status")).toEqual({ kind: "ok", gitCwd: join(co, "kernel") });
+    expect(gate("git -C ../wt log")).toEqual({ kind: "ok", gitCwd: join(tmp, "wt") });
+    expect(gate(`git -C ${co} diff`)).toEqual({ kind: "ok", gitCwd: co });
+  });
+
+  it("the plain path never runs git in a session-chosen directory: the hook cwd cannot move (`cd` is no run prefix), and a lookup refuses an implicit bare repository (review iteration 3)", () => {
+    expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command: "cd evil" })).toMatchObject({ decision: "deny" });
+    expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command: "pushd evil" })).toMatchObject({ decision: "deny" });
+    // Were the hook cwd ever a planted bare repository, the gate's own lookups fail closed there.
+    const evil = join(co, "evil");
+    mkdirSync(join(evil, "objects"), { recursive: true });
+    mkdirSync(join(evil, "refs", "heads"), { recursive: true });
+    writeFileSync(join(evil, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(evil, "config"), "[core]\n\trepositoryformatversion = 0\n\tbare = true\n");
+    writeFileSync(join(evil, "refs", "heads", "main"), `${git(co, "rev-parse", "HEAD").trim()}\n`);
+    expect(isLocalBranch(evil, "main")).toBe(false);
+    expect(refTracksRunState(evil, "main")).toBe(true);
+    expect(gate("git merge main", evil)).toEqual(DENY);
   });
 
   it("fails closed with no absolute hook cwd, or roots git cannot list", () => {
