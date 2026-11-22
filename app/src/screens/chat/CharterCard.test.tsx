@@ -669,6 +669,36 @@ describe("19a: a shortened readiness block on the charter card", () => {
   });
 });
 
+// ---- Phase 8 item 25g: a never entry that blocks one of the member's own jobs ----------------------
+
+/** The never line the kernel's readiness check writes when the charter's never list forbids what the ticket run needs. */
+const NEVER_LINE = "Hand tickets to /automate needs to push with git and open a PR; the charter's never list forbids it";
+
+/** A create display whose readiness block flags the ticket job's never conflict, and its duty not covered, as the kernel does. */
+function neverConflictDisplay(): string {
+  return createDisplay({ workspaces: ["/Users/me/code/widgets"] })
+    .replace(
+      "  covered: duty 1 by Hand tickets to /automate: Turn acme/widgets tickets into PRs",
+      "  flagged: duty 1 not covered (the charter's never list forbids what Hand tickets to /automate needs): Turn acme/widgets tickets into PRs",
+    )
+    .replace("  ready: the code jobs: works in acme/widgets at /Users/me/code/widgets", `  ready: the code jobs: works in acme/widgets at /Users/me/code/widgets\n  flagged: ${NEVER_LINE}`);
+}
+
+describe("item 25g: a never entry that blocks the member's own job, on the charter card", () => {
+  it("AC4: the never line shows with its Flagged badge, and the duty it defeats reads flagged not covered", async () => {
+    const display = neverConflictDisplay();
+    expect(display).toContain(`\n  flagged: ${NEVER_LINE}\n`);
+    await renderChat(charterKit([charter(9, display)]));
+    const c = await card();
+    const lines = within(c).getAllByTestId("charter-readiness-line");
+    expect(lines.map((l) => [l.querySelector(".badge")?.textContent, l.querySelector(".approvals-charter-readiness-text")?.textContent])).toEqual([
+      ["Flagged", "duty 1 not covered (the charter's never list forbids what Hand tickets to /automate needs): Turn acme/widgets tickets into PRs"],
+      ["Ready", "the code jobs: works in acme/widgets at /Users/me/code/widgets"],
+      ["Flagged", NEVER_LINE],
+    ]);
+  });
+});
+
 describe("AC11: every part is untrusted text", () => {
   it("head, jobs, never, limits, readiness, each details block and the what-changed line render as text, never markup", async () => {
     const hostile = createDisplay({ head: `Create crew member mason ("${XSS_IMG}", crab crew-teal), proposed by Wright`, jobs: [`<b>Bold</b> job`], never: `git_push, <script>x</script>` });

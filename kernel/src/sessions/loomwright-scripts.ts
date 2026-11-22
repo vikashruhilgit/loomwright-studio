@@ -8,7 +8,9 @@
 // reuses the row's recorded `loomwright_path`, so an update is picked up at the
 // next launch, never mid-session). `decideToolUse` (`policy.ts`) then admits
 // `bash <path>` or `bash "<path>"`, optionally followed by arguments, only for a
-// path in that set, only after its shell-metacharacter check, and never with a
+// path in that set, only after the command parses to plain words
+// (`parseBashCommand`, `shell-words.ts`: no unquoted shell metacharacter, no
+// unmodelled quoting), and never with a
 // subcommand that merges, pushes or starts an unowned process
 // (`LOOMWRIGHT_DENIED_SUBCOMMANDS`), nor with a driver option that turns the
 // run toward a merge or trust its policy's profile refuses
@@ -22,11 +24,13 @@
 // never used here: it over-approximates on purpose so that a refusal fails
 // closed, which would make an admission fail open.
 //
-// A leaf module: it imports node's `fs` and `path` and the one path resolution
-// in `../protected-paths.ts`, so `policy.ts` stays light for its importers.
+// A leaf module: it imports node's `fs` and `path`, the one path resolution
+// in `../protected-paths.ts` and the pure tokenizer in `./shell-words.ts`, so
+// `policy.ts` stays light for its importers.
 import { accessSync, constants, statSync } from "node:fs";
 import { isAbsolute, join, sep } from "node:path";
 import { resolvedPath } from "../protected-paths.js";
+import { scanShellWords } from "./shell-words.js";
 
 /** The install's directory of driver and helper scripts: `<install>/scripts/`. */
 export const LOOMWRIGHT_SCRIPTS_DIR = "scripts";
@@ -231,63 +235,24 @@ export const LOOMWRIGHT_DRIVER_ARGUMENTS: Readonly<Record<LoomwrightDriverProfil
 const UNQUOTED_EXPANSION = /[*?[\]{}~^#!]/;
 
 /**
- * The words bash passes for `args` (already free of every shell
- * metacharacter: `decideToolUse` checks first), or `undefined` when they
- * cannot be read exactly: an unterminated quote, a trailing backslash, or an
- * unquoted `UNQUOTED_EXPANSION` character (fail closed: the shell could expand
- * it into a denied option, for example a glob matching a file the session
- * named `--trust-unprotected`). Single quotes are literal; inside double
- * quotes a backslash escapes only `"` and `\`; an unquoted backslash escapes
- * the next character. Pure: no I/O.
+ * The words bash passes for `args` (already free of every unquoted shell
+ * metacharacter and of a `$` or backtick in double quotes: `decideToolUse`
+ * parses the whole command first, `parseBashCommand`; a metacharacter inside
+ * quotes is text, so a `--result '<json>'` value holding `(`, `;` or `$` is
+ * one word), or `undefined` when they cannot be read exactly: an unterminated
+ * quote, a trailing backslash, or an unquoted `UNQUOTED_EXPANSION` character
+ * (fail closed: the shell could expand it into a denied option, for example a
+ * glob matching a file the session named `--trust-unprotected`). Read by the
+ * kernel's one tokenizer (`scanShellWords`, `shell-words.ts`): single quotes
+ * are literal; inside double quotes a backslash escapes only `"` and `\`; an
+ * unquoted backslash escapes the next character. Pure: no I/O.
  */
 function shellWords(args: string): string[] | undefined {
-  const words: string[] = [];
-  let word = "";
-  let inWord = false;
-  let i = 0;
-  while (i < args.length) {
-    const c = args[i] as string;
-    if (c === " " || c === "\t") {
-      if (inWord) words.push(word);
-      word = "";
-      inWord = false;
-      i += 1;
-    } else if (c === "'") {
-      const close = args.indexOf("'", i + 1);
-      if (close === -1) return undefined;
-      word += args.slice(i + 1, close);
-      inWord = true;
-      i = close + 1;
-    } else if (c === '"') {
-      i += 1;
-      for (;;) {
-        if (i >= args.length) return undefined;
-        const d = args[i] as string;
-        if (d === '"') break;
-        if (d === "\\" && (args[i + 1] === '"' || args[i + 1] === "\\")) {
-          word += args[i + 1];
-          i += 2;
-        } else {
-          word += d;
-          i += 1;
-        }
-      }
-      inWord = true;
-      i += 1;
-    } else if (c === "\\") {
-      if (i + 1 >= args.length) return undefined;
-      word += args[i + 1];
-      inWord = true;
-      i += 2;
-    } else {
-      if (UNQUOTED_EXPANSION.test(c)) return undefined;
-      word += c;
-      inWord = true;
-      i += 1;
-    }
-  }
-  if (inWord) words.push(word);
-  return words;
+  let expands = false;
+  const scan = scanShellWords(args, (c, quoting) => {
+    if (quoting === "unquoted" && UNQUOTED_EXPANSION.test(c)) expands = true;
+  });
+  return expands || scan.open !== "none" ? undefined : scan.words;
 }
 
 /**
@@ -396,7 +361,9 @@ const PLAIN_PATH = /^\/[A-Za-z0-9_./@%+=:,-]*$/;
  * refuses, nor a call of `automate-next-step.sh` with an option `profile`
  * refuses (`LOOMWRIGHT_DRIVER_ARGUMENTS`; absent ⇒ `automate_run`). The caller
  * then denies it `bash_prefix_not_allowed`, as for any unlisted command. The
- * caller runs the shell-metacharacter check first (`decideToolUse`); beyond
+ * caller runs the parsed check first (`decideToolUse`, `parseBashCommand`: an
+ * unquoted metacharacter is `bash_shell_metacharacter`, an unmodelled form
+ * `bash_unparsed`, so a metacharacter reaching here is quoted text); beyond
  * those two checks this does not read the arguments.
  */
 export function matchLoomwrightScript(

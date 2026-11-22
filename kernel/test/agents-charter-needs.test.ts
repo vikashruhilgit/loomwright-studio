@@ -90,6 +90,9 @@ function readiness(charter: Charter, grant: ReadinessGrant, catalogue: ToolCatal
   return charterReadiness({ action: "update", charter, catalogue, grant, dataDir, homeDir: home });
 }
 
+/** Every combination of the fields a request may set that the readiness block depends on (the tools, the workspaces, the never list). */
+const FLOOR_SETS = [false, true].flatMap((tools) => [false, true].flatMap((workspaces) => [false, true].map((never) => ({ tools, workspaces, never }))));
+
 const flagged = (r: ReadinessResult): string[] => r.lines.filter((l) => l.startsWith(READINESS_FLAG_PREFIX));
 const permissionLines = (r: ReadinessResult): string[] => r.lines.filter((l) => l.startsWith(PERMISSION));
 
@@ -237,12 +240,7 @@ describe("item 21b: a ticket duty's tracker line is its own finding, not a job n
     const line = actual.items.find((i) => i.subject === "tracker")?.line ?? "";
     expect(line).not.toBe("");
     const total = (lines: readonly string[]) => lines.join("\n").length;
-    for (const sets of [
-      { tools: false, workspaces: false },
-      { tools: false, workspaces: true },
-      { tools: true, workspaces: false },
-      { tools: true, workspaces: true },
-    ]) {
+    for (const sets of FLOOR_SETS) {
       const floor = readinessFloorLines(charter, CATALOGUE, actual, sets);
       expect(floor, JSON.stringify(sets)).toContain(line);
       expect(total(floor), JSON.stringify(sets)).toBeLessThanOrEqual(total(actual.lines));
@@ -255,17 +253,12 @@ describe("AC3: readinessFloorLines stays a lower bound of the real lines", () =>
     const charter = crew([{ text: "Triage PR comments", jobs: ["triage_pr_comments"] }], ["triage_pr_comments"], { tools: ["Read"] });
     const actual = readiness(charter, { kind: "stored", raw: { github: "write" } });
     const total = (lines: readonly string[]) => lines.join("\n").length;
-    for (const sets of [
-      { tools: false, workspaces: false },
-      { tools: false, workspaces: true },
-      { tools: true, workspaces: false },
-      { tools: true, workspaces: true },
-    ]) {
+    for (const sets of FLOOR_SETS) {
       const floor = readinessFloorLines(charter, CATALOGUE, actual, sets);
       expect(total(floor), JSON.stringify(sets)).toBeLessThanOrEqual(total(actual.lines));
     }
     // The permission lines depend on neither the workspaces nor the connectors: a workspaces-only request keeps them.
-    const workspacesOnly = readinessFloorLines(charter, CATALOGUE, actual, { tools: false, workspaces: true });
+    const workspacesOnly = readinessFloorLines(charter, CATALOGUE, actual, { tools: false, workspaces: true, never: false });
     for (const line of permissionLines(actual)) expect(workspacesOnly).toContain(line);
   });
 });

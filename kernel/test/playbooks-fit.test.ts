@@ -119,8 +119,8 @@ afterEach(() => {
 
 // ---- Fixtures ------------------------------------------------------------------
 
-/** Register crew member `id` (active) from a charter granting `allowedTools`, as the owner's approved charter does. */
-function addMember(allowedTools: readonly string[], id = "mason", workspaces: readonly string[] = [repo]): void {
+/** Register crew member `id` (active) from a charter granting `allowedTools` with never list `never`, as the owner's approved charter does. */
+function addMember(allowedTools: readonly string[], id = "mason", workspaces: readonly string[] = [repo], never: readonly string[] = []): void {
   const charter = {
     id,
     display_name: id.charAt(0).toUpperCase() + id.slice(1),
@@ -130,7 +130,7 @@ function addMember(allowedTools: readonly string[], id = "mason", workspaces: re
     boundaries: ["Never merge a pull request except through Loomwright's gate."],
     model: PLAYBOOK_MODEL,
     permission_mode: "default",
-    tool_policy: { allowedTools: ["Read", ...allowedTools], allowedBashPrefixes: ["gh pr"], never: [] },
+    tool_policy: { allowedTools: ["Read", ...allowedTools], allowedBashPrefixes: ["gh pr"], never },
     workspaces,
     connectors: ["github"],
   };
@@ -280,6 +280,51 @@ describe("AC5: the phase 8 walk's four playbooks against a read-only developer a
       expect(fit?.refused_calls, p.name).toEqual([]);
       expect(fit?.lines.join("\n") ?? "", p.name).not.toContain("D44 leaves this route");
     }
+  });
+});
+
+// ---- Item 25g: a never entry the job's kernel run needs is a refused call --------------------------------------
+
+describe("item 25g: a member whose never list forbids what a named job's kernel run needs", () => {
+  it("the draft's fit is a gap with one `never` refused call for the job, in plain words, never closable and never in proposed_update; the dry run carries it and it gates the enable", async () => {
+    addMember(MASON_TOOLS, "mason", [repo], ["gh_pr_create"]);
+    const created = await draft("GitHub tickets", ["automate_tickets"]);
+    const fit = created.fit;
+    expect(fit?.status).toBe("gap");
+    expect(fit?.missing).toEqual([]);
+    expect(fit?.refused_calls).toEqual([
+      {
+        id: "automate_tickets",
+        label: "Hand tickets to /automate",
+        kind: "never",
+        what: ["open a PR"],
+        closable: false,
+        line: "A real run of Hand tickets to /automate would be refused: Mason's never list forbids it to open a PR; only you can change it: Team → Mason's inspector.",
+      },
+    ]);
+    expect(fit?.lines).toEqual([fit?.refused_calls[0]?.line]);
+    // Removing a never entry is the owner's call: nothing a charter change proposes.
+    expect(fit?.proposed_update).toBeUndefined();
+    expect((await dryRun(created.id)).fit?.refused_calls.map((c) => [c.id, c.kind])).toEqual([["automate_tickets", "never"]]);
+    const row = getPlaybook(store, created.id);
+    if (row === undefined) throw new Error("no row");
+    expect(fitGapOpen(playbookFit(store, row, CATALOGUE))).toBe(true);
+  });
+
+  it("with both a missing tool and a never conflict, proposed_update adds only the missing tools and never touches the never list", async () => {
+    addMember(READ_ONLY, "mason", [repo], ["git_push", "gh_pr_create"]);
+    const { fit } = await draft("GitHub tickets", ["automate_tickets"]);
+    expect(fit?.status).toBe("gap");
+    expect(fit?.refused_calls.find((c) => c.kind === "never")?.what).toEqual(["push with git", "open a PR"]);
+    expect(fit?.proposed_update?.changes).toEqual({ tool_policy: { allowedTools: [...allowedToolsOf(), `${K}kernel_automate_prepare`, `${K}kernel_automate_state`], allowedBashPrefixes: ["gh pr"] } });
+    expect(Object.keys(fit?.proposed_update?.changes.tool_policy ?? {})).not.toContain("never");
+  });
+
+  it("a never list the job's run does not need (or none) fits as before", async () => {
+    addMember(MASON_TOOLS, "mason", [repo], ["mcp_write", "settings_write"]);
+    const { fit } = await draft("GitHub tickets", ["automate_tickets"]);
+    expect(fit?.status).toBe("fits");
+    expect(fit?.refused_calls).toEqual([]);
   });
 });
 

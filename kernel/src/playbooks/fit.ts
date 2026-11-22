@@ -82,7 +82,7 @@ export interface RefusedCall {
   readonly kind: NeedsGapKind;
   /** What the member can't do, in plain words (never a raw tool name or prefix): `run skills`, `GitHub write access`. */
   readonly what: readonly string[];
-  /** `true` when a charter change can close it, so `proposed_update` carries it; `false` when only the owner can (a connector grant, a workspace). */
+  /** `true` when a charter change can close it, so `proposed_update` carries it; `false` when only the owner can (a connector grant, a workspace, a `never` entry). */
   readonly closable: boolean;
   /** The sentence the fit, the dry run and the enable show. */
   readonly line: string;
@@ -186,7 +186,16 @@ function grantNeeds(store: Store, row: PlaybookRow, tools: readonly CatalogueToo
 /** The owner-facing end of a refused-call line: who can close it. */
 function closeText(name: string, kind: NeedsGapKind, closable: boolean): string {
   if (closable) return "a charter change can give it";
+  if (kind === "never") return `only you can change it: Team → ${name}'s inspector`;
   return kind === "workspace" ? "only you know where your copy of the repo is: tell Wright, and it proposes a charter update listing it" : `only you can grant it: Team → ${name}'s inspector`;
+}
+
+/** What the member can't do, after its name: ` can't run skills`, ` has no GitHub write access`, `'s never list forbids it to open a PR` (item 25g). */
+function cantText(kind: NeedsGapKind, what: readonly string[]): string {
+  if (kind === "claude_tool" || kind === "bash_prefix") return ` can't ${andList(what)}`;
+  if (kind === "workspace") return " has no copy of a repo to work in";
+  if (kind === "never") return `'s never list forbids it to ${andList(what)}`;
+  return ` has no ${andList(what)}`;
 }
 
 /**
@@ -195,7 +204,10 @@ function closeText(name: string, kind: NeedsGapKind, closable: boolean): string 
  * and `allowedBashPrefixes`, its connector grant and whether it lists a
  * workspace. A connector gap of a need the job's own tools declare is left to
  * `owner_steps` (item 16's, already shown), so it is not named twice. One
- * entry per job, kind and who can close it.
+ * entry per job, kind and who can close it. The member's `never` list
+ * (`settings.never`) is compared too (item 25g): an outward action a job's
+ * kernel run needs that it forbids is a `"never"` entry, never closable, so it
+ * never reaches `proposed_update`.
  */
 function refusedCalls(jobs: readonly ToolJob[], catalogue: ToolCatalogue, settings: AgentSettings, name: string): { readonly calls: RefusedCall[]; readonly gaps: NeedsGap[] } {
   const held = {
@@ -203,6 +215,7 @@ function refusedCalls(jobs: readonly ToolJob[], catalogue: ToolCatalogue, settin
     allowedBashPrefixes: settings.policy.allowedBashPrefixes,
     connectors: { ...(settings.connectors === undefined ? {} : { connectors: settings.connectors }), ...(settings.githubWrite === undefined ? {} : { githubWrite: settings.githubWrite }) },
     workspace: (settings.workspaces ?? []).length > 0,
+    ...(settings.never === undefined ? {} : { never: settings.never }),
   };
   const calls: RefusedCall[] = [];
   const all: NeedsGap[] = [];
@@ -210,13 +223,12 @@ function refusedCalls(jobs: readonly ToolJob[], catalogue: ToolCatalogue, settin
     const gaps = jobNeedsGaps(resolveJobNeeds(job, catalogue), held).filter((g) => !(g.kind === "connector" && g.source === "tool"));
     all.push(...gaps);
     const label = TOOL_JOBS[job];
-    for (const kind of ["claude_tool", "bash_prefix", "connector", "workspace"] as const) {
+    for (const kind of ["claude_tool", "bash_prefix", "connector", "workspace", "never"] as const) {
       for (const closable of [true, false]) {
         const group = gaps.filter((g) => g.kind === kind && g.closable === closable);
         if (group.length === 0) continue;
         const what = [...new Set(group.map((g) => g.label))];
-        const cant = kind === "claude_tool" || kind === "bash_prefix" ? `can't ${andList(what)}` : kind === "workspace" ? "has no copy of a repo to work in" : `has no ${andList(what)}`;
-        const line = `A real run of ${label} would be refused: ${name} ${cant}; ${closeText(name, kind, closable)}.`;
+        const line = `A real run of ${label} would be refused: ${name}${cantText(kind, what)}; ${closeText(name, kind, closable)}.`;
         calls.push({ id: job, label, kind, what, closable, line });
       }
     }

@@ -361,7 +361,7 @@ export type PushDecision =
   | { readonly kind: "other_deny"; readonly reason: string; readonly command: string | null };
 
 /** The policy's own deny reasons (`decideToolUse`), as opposed to the rail's and the boundary's. */
-const POLICY_DENY_REASONS: readonly string[] = ["tool_not_allowed", "bash_prefix_not_allowed", "bash_command_not_string", "bash_shell_metacharacter"];
+const POLICY_DENY_REASONS: readonly string[] = ["tool_not_allowed", "bash_prefix_not_allowed", "bash_command_not_string", "bash_shell_metacharacter", "bash_unparsed"];
 
 /** Whether a Bash command is a push by the rail's own reading (`classifyToolCall`, `neverCategoriesOf`): any outward form in `git_push`. */
 export function isPushCommand(command: string, ctx: RailContext): boolean {
@@ -430,15 +430,15 @@ const wordCouldBe = (word: string, literal: string): boolean => word.toLowerCase
  * A command the Bash prefix `prefix` lets through the policy that git runs as
  * a push (or as a step that defines one), or null when the prefix allows none.
  * This is a model of git's command line, not a probe list: the policy allows
- * exactly `prefix` and `prefix <words>` with no shell metacharacter
- * (`decideToolUse`), so the question is whether `prefix`'s own words leave
- * git's subcommand free or fix a sending one. In order:
+ * exactly `prefix` and `prefix <words>` that parse to plain words, whose
+ * leading words are the prefix's own (`decideToolUse`, D48), so the question
+ * is whether `prefix`'s own words leave git's subcommand free or fix a
+ * sending one. In order:
  *
- * - The policy allows nothing for it (empty, or a shell metacharacter): null.
- * - Its quoting is open (an unterminated quote, a trailing backslash), so the
- *   command's next text joins its last word: read with the quote closed at
- *   once (`closedPrefix`), the shortest continuation; one that will not close
- *   is counted (fail closed).
+ * - The policy allows nothing for it (empty, a shell metacharacter, or
+ *   quoting the parser leaves open or does not model, `bash_unparsed`): null.
+ *   So a prefix the policy allows as a command has closed quoting, and a word
+ *   the command appends after it is its own word.
  * - Its program (the first word after brace expansion, basename, case-folded
  *   as the rail reads it) is neither `git` nor `git-<sub>` (read as `git
  *   <sub>`): null. A program that runs others (`sh -c`, `env`, `xargs`) can
@@ -466,10 +466,8 @@ const wordCouldBe = (word: string, literal: string): boolean => word.toLowerCase
  */
 export function pushWitnessOf(prefix: string): string | null {
   if (decideToolUse({ allowedTools: ["Bash"], allowedBashPrefixes: [prefix] }, "Bash", { command: prefix }).decision !== "allow") return null;
-  const base = closedPrefix(prefix);
-  if (base === null) return `${prefix} push origin main`;
-  const push = `${base} push origin main`;
-  const [program, ...rest] = shellWords(base).flatMap(braceExpand).filter((w) => w !== "");
+  const push = `${prefix} push origin main`;
+  const [program, ...rest] = shellWords(prefix).flatMap(braceExpand).filter((w) => w !== "");
   if (program === undefined) return null;
   const name = basename(program);
   let args: string[];
@@ -482,30 +480,15 @@ export function pushWitnessOf(prefix: string): string | null {
     if (word.startsWith("-")) {
       const value = Object.prototype.hasOwnProperty.call(GIT_VALUE_OPTIONS, word) ? GIT_VALUE_OPTIONS[word] : undefined;
       if (value === undefined) continue;
-      if (i + 1 === args.length) return `${base} ${value} push origin main`;
+      if (i + 1 === args.length) return `${prefix} ${value} push origin main`;
       i++;
       continue;
     }
-    if (GIT_SENDING_SUBCOMMANDS.some((s) => wordCouldBe(word, s))) return `${base} origin main`;
-    if (GIT_SENDING_GROUPS.some((s) => wordCouldBe(word, s))) return wordCouldBe(word, "config") ? `${base} alias.p push` : push;
+    if (GIT_SENDING_SUBCOMMANDS.some((s) => wordCouldBe(word, s))) return `${prefix} origin main`;
+    if (GIT_SENDING_GROUPS.some((s) => wordCouldBe(word, s))) return wordCouldBe(word, "config") ? `${prefix} alias.p push` : push;
     return null;
   }
   return push;
-}
-
-/** Whether a command's words end where its text does, so a word appended after a space is its own word. */
-const wordsClosed = (command: string): boolean => JSON.stringify(shellWords(`${command} x`)) === JSON.stringify([...shellWords(command), "x"]);
-
-/**
- * `prefix` itself when its quoting is closed; else `prefix` and a space (the
- * policy's `prefix ` form) followed by what closes it at once: a `'`, a `"`,
- * or nothing after a trailing backslash (the space is the escaped character).
- * Null when none closes it.
- */
-function closedPrefix(prefix: string): string | null {
-  if (wordsClosed(prefix)) return prefix;
-  for (const closer of ["'", '"', ""]) if (wordsClosed(`${prefix} ${closer}`)) return `${prefix} ${closer}`;
-  return null;
 }
 
 /**
@@ -628,8 +611,6 @@ describe("pushDeniedBy", () => {
     ["git subtree", "git subtree push origin main"],
     ["git config", "git config alias.p push"],
     ["git -c alias.l=log", "git -c alias.l=log push origin main"],
-    ["git -c '", "git -c ' ' push origin main"],
-    ["git -C \\", "git -C \\  push origin main"],
   ];
 
   it("counts a prefix that lets any push form through the policy, each witness allowed by the real policy and read as a push by the real rail", () => {
@@ -658,7 +639,8 @@ describe("pushDeniedBy", () => {
   it("leaves out a prefix that fixes a non-sending git subcommand or is no git at all, so the policy's own deny still decides", () => {
     // The rail reads `git log push` as a push and over-holds it; git runs `log`: not push-capable.
     expect(isPushCommand("git log push origin main", ctx)).toBe(true);
-    const prefixes = ["git log", "git diff", "git -C /tmp/studio-repo log", "git --no-pager show", "gh pr view", "gh pr diff", "gh pr comment", "", "git push 2>&1", "sh", "env", "git '", "git \\"];
+    // A prefix whose quoting is open admits nothing (D48, `bash_unparsed`): its quote would run into the command's arguments.
+    const prefixes = ["git log", "git diff", "git -C /tmp/studio-repo log", "git --no-pager show", "gh pr view", "gh pr diff", "gh pr comment", "", "git push 2>&1", "sh", "env", "git '", "git \\", "git -c '", "git -C \\"];
     for (const p of prefixes) expect(pushWitnessOf(p), p).toBeNull();
     expect(pushCapablePrefixes(prefixes)).toEqual([]);
     const plain = policyDecision("git push origin main", prefixes);

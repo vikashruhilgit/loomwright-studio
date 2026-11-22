@@ -538,6 +538,12 @@ export function mergeAttemptOf(e: EventRow): MergeAttempt | null {
  * 3. The store records no kernel merge call. Every `gh pr merge` attempt was denied
  * `merge_blocked`, and no other merge-named tool was allowed. `not_exercised` when no
  * merge attempt was recorded (the runbook's merge-block step has not run).
+ *
+ * A Bash merge denied `bash_prefix_not_allowed` is NOT the expected deny, and counts as
+ * `fail`: the session's policy runs before the rail ("The rail applies only after the
+ * policy allowed", `kernel/src/sessions/manager.ts`), so a session with no `gh pr` prefix
+ * never reaches the rail and proves nothing about it. The runbook's step 6 names a session
+ * whose policy admits `gh pr` (item 25f).
  */
 export function checkNoKernelMerge(db: Database.Database, start: RunStart): Check {
   const attempts = eventsSince(db, start, "tool_decision").flatMap((e) => {
@@ -820,6 +826,15 @@ describe("phase 8 live checkers against a canned store", () => {
 
     it("no_kernel_merge: fails a merge denied for another reason", () => {
       decision({ tool: "Bash", decision: "deny", reason: "approval_required", command: "gh pr merge 21" });
+      expect(run((db) => checkNoKernelMerge(db, START)).outcome).toBe("fail");
+    });
+
+    it("no_kernel_merge: fails a gh pr merge the policy denied bash_prefix_not_allowed (it never reached the rail), even beside a merge_blocked one", () => {
+      decision({ tool: "Bash", decision: "deny", reason: "bash_prefix_not_allowed", command: "gh pr merge 22 --squash" });
+      const alone = run((db) => checkNoKernelMerge(db, START));
+      expect(alone.outcome).toBe("fail");
+      expect(alone.findings.join(" ")).toContain("gh pr merge 22 --squash was deny (bash_prefix_not_allowed), not denied merge_blocked");
+      decision({ tool: "Bash", decision: "deny", reason: "merge_blocked", command: "gh pr merge 21 --squash" });
       expect(run((db) => checkNoKernelMerge(db, START)).outcome).toBe("fail");
     });
 

@@ -1,6 +1,7 @@
 import { basename, resolve } from "node:path";
 import { firmlinkForms, withoutFirmlink } from "../protected-paths.js";
 import { matchLoomwrightScript } from "./loomwright-scripts.js";
+import { parseBashCommand, scanShellWords } from "./shell-words.js";
 import type { ToolPolicy } from "./types.js";
 
 export type ToolDecisionReason =
@@ -10,6 +11,13 @@ export type ToolDecisionReason =
   | "bash_prefix_not_allowed"
   | "bash_command_not_string"
   | "bash_shell_metacharacter"
+  /**
+   * A Bash command the policy's parser does not model (`parseBashCommand`,
+   * `shell-words.ts`): an unterminated quote, an unquoted trailing backslash or
+   * one before a metacharacter or line break, `$'…'` / `$"…"`, or a heredoc or
+   * here-string marker (`<<`). Refused, fail closed (D48).
+   */
+  | "bash_unparsed"
   /** Allowed by the policy, but in the fixed outward set: held as a pending approval, not run. */
   | "approval_required"
   /** Allowed by the policy, in the outward set, and matched one unused one-shot grant (consumed now). */
@@ -70,25 +78,38 @@ export interface ToolDecision {
 }
 
 /**
- * Shell control and substitution characters: `;` `&` `|` `<` `>` `(` `)` `$`
- * backtick, newline and carriage return. A Bash command containing any of them
- * is denied before prefix matching, so a prefix cannot be chained into
- * another command (`echo hi; rm x` would otherwise match `echo`). It does not
- * limit what an allowed program itself runs (see `decideToolUse`). A
- * parser-grade Bash gate is out of scope.
+ * Whether a command's parsed `words` start with `prefix`'s own words, as the
+ * same parser reads them. A prefix that does not parse to words (its quoting
+ * left open, a metacharacter) matches nothing: an open quote in a prefix would
+ * run into the command's arguments and read one of them as part of the
+ * program (D48).
  */
-const SHELL_METACHARACTERS = /[;&|<>()$`\n\r]/;
+function startsWithPrefixWords(words: readonly string[], prefix: string): boolean {
+  const own = parseBashCommand(prefix);
+  return own.kind === "words" && own.words.length <= words.length && own.words.every((w, i) => words[i] === w);
+}
 
 /**
  * The kernel's tool decision. Pure: no I/O. Deny by default.
  *
  * - `Bash` is gated by `allowedBashPrefixes` ONLY — `Bash` in `allowedTools`
- *   does not allow arbitrary commands. A command is allowed when it is a
- *   string, contains no shell metacharacter, and equals an allowlisted prefix
- *   or starts with it followed by a space. Empty or whitespace-only prefixes
- *   are ignored (they would match anything starting with a space).
- * - A run policy's Loomwright scripts (D45, phase 8 item 22g): with no shell
- *   metacharacter, `bash <path>` or `bash "<path>"` (then nothing or a space
+ *   does not allow arbitrary commands. A command must be a string, and is
+ *   read by its shell meaning first (`parseBashCommand`, D48): an unquoted
+ *   shell control or substitution character (`;` `&` `|` `<` `>` `(` `)` `$`
+ *   backtick), a `$` or backtick inside double quotes, or a newline or CR
+ *   anywhere is `bash_shell_metacharacter`, so a prefix cannot be chained into
+ *   another command (`echo hi; rm x` would otherwise match `echo`); a form the
+ *   parser does not model (an unterminated quote, an unquoted trailing or
+ *   metacharacter-escaping backslash, `$'…'`, a heredoc) is `bash_unparsed`;
+ *   any other metacharacter inside quotes is text (`git commit -m 'a (b); c'`
+ *   is judged on its words). It is then allowed when it equals
+ *   an allowlisted prefix or starts with it followed by a space, AND its
+ *   parsed words start with the prefix's own parsed words. Empty or
+ *   whitespace-only prefixes are ignored (they would match anything starting
+ *   with a space). This does not limit what an allowed program itself runs
+ *   (below).
+ * - A run policy's Loomwright scripts (D45, phase 8 item 22g): once the command
+ *   parses to words, `bash <path>` or `bash "<path>"` (then nothing or a space
  *   and arguments) is allowed (`bash_prefix_allowed`) only when `<path>` is
  *   exactly one of `admittedScriptPaths`, which the session manager alone
  *   fills (`matchLoomwrightScript`, `loomwright-scripts.ts`). `bash` itself is
@@ -109,13 +130,15 @@ export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: u
   if (toolName === "Bash") {
     const command = bashCommandOf(toolInput);
     if (command === undefined) return { decision: "deny", reason: "bash_command_not_string" };
-    if (SHELL_METACHARACTERS.test(command)) return { decision: "deny", reason: "bash_shell_metacharacter" };
+    const parsed = parseBashCommand(command);
+    if (parsed.kind === "unparsed") return { decision: "deny", reason: "bash_unparsed" };
+    if (parsed.kind === "metacharacter") return { decision: "deny", reason: "bash_shell_metacharacter" };
     // A Loomwright driver by exact path (AC15), after the metacharacter check: never a `bash` prefix.
     if (matchLoomwrightScript(command, policy.admittedScriptPaths ?? [], policy.loomwrightDriverProfile, policy.loomwrightRunId) !== undefined) {
       return { decision: "allow", reason: "bash_prefix_allowed" };
     }
     const allowed = policy.allowedBashPrefixes.some(
-      (prefix) => prefix.trim() !== "" && (command === prefix || command.startsWith(`${prefix} `)),
+      (prefix) => prefix.trim() !== "" && (command === prefix || command.startsWith(`${prefix} `)) && startsWithPrefixWords(parsed.words, prefix),
     );
     if (!allowed) return { decision: "deny", reason: "bash_prefix_not_allowed" };
     if (runPolicy && bashTouchesLoomwrightRunState(command)) return { decision: "deny", reason: "loomwright_run_state" };
@@ -600,6 +623,59 @@ export function neverCategoriesOf(action: string): readonly NeverCategory[] {
   return [];
 }
 
+/** The non-GET methods a `gh api` write is read as (`ghApiForm`'s `gh api <METHOD>`): the forms a held `gh api` prefix admits. */
+const GH_API_WRITE_METHODS = ["POST", "PUT", "PATCH", "DELETE"] as const;
+
+/**
+ * The `NeverCategory` values `policy`'s grants admit: the outward actions a
+ * session under it could reach, so a `never` list naming one defeats work the
+ * policy is for (phase 8 item 25g). A prefix is read in both directions:
+ *
+ * - Shorter than (or equal to) a rail form: the category is admitted when one
+ *   of the rail's own Bash forms for it (each `GIT_OUTWARD` label, `git p4
+ *   submit`, `gh pr <sub>` and `gh issue <sub>` from `GH_PR_OUTWARD` /
+ *   `GH_ISSUE_OUTWARD`, `gh alias set|import`, `gh api <METHOD>`) is held by the
+ *   prefix under the session's own word-boundary rule (`decideToolUse`: equal,
+ *   or the form starts with `<prefix> `), so `gh pr` admits every `gh pr` write.
+ * - More specific than a rail form: the prefix's own text is a command a
+ *   session could start with, so it is read by the rail's own Bash form reader
+ *   (`commandForms` over `shellWords`, as `classifyToolCall` reads a Bash call)
+ *   and each outward form it finds is admitted: `git push origin` admits
+ *   `git_push`, `gh pr create --draft` admits `gh_pr_create`, `gh api -X POST`
+ *   and `gh api --method PATCH` admit `gh_api_write`. A prefix the rail reads
+ *   as no outward form (`git status`, `gh api repos/x`, a GET) admits nothing
+ *   this way. Words a session appends after the prefix are not guessed at.
+ *
+ * One of the policy's `allowedTools` that is a `GITHUB_WRITE_TOOLS` name also
+ * admits its category. Each form's categories are `neverCategoriesOf`'s, never
+ * a second matcher. The path categories (`settings_write`, `hooks_write`) and
+ * `mcp_write` are about a target or a connector, not a grant, so none is ever
+ * admitted here; `git alias` only when a prefix's own words define one (`-c
+ * alias.*`), since no subcommand names it. In `NEVER_CATEGORIES` order. Pure:
+ * no I/O.
+ */
+export function neverCategoriesAdmitted(policy: Pick<ToolPolicy, "allowedTools" | "allowedBashPrefixes">): readonly NeverCategory[] {
+  // Each rail form as a session would type it, with the action the rail reads it as (`gh pr new` is read as `gh pr create`).
+  const forms: (readonly [string, string])[] = [
+    ...GIT_OUTWARD.map(([, label]) => [label, label] as const),
+    ["git p4 submit", "git p4 submit"],
+    ...GH_PR_OUTWARD.map(([sub, label]) => [`gh pr ${sub}`, `gh pr ${label}`] as const),
+    ...GH_ISSUE_OUTWARD.map(([sub, label]) => [`gh issue ${sub}`, `gh issue ${label}`] as const),
+    ...GH_ALIAS_OUTWARD.map((sub) => [`gh alias ${sub}`, `gh alias ${sub}`] as const),
+    ...GH_API_WRITE_METHODS.map((method) => [`gh api ${method}`, `gh api ${method}`] as const),
+  ];
+  const prefixes = policy.allowedBashPrefixes.filter((prefix) => prefix.trim() !== "");
+  const admitted = new Set<NeverCategory>();
+  for (const [label, action] of forms) {
+    const held = prefixes.some((prefix) => label === prefix || label.startsWith(`${prefix} `));
+    if (held) for (const category of neverCategoriesOf(action)) admitted.add(category);
+  }
+  // A prefix more specific than a rail form (`git push origin`, `gh api -X POST`): read its own text as the rail reads a Bash call.
+  for (const prefix of prefixes) for (const action of commandForms(shellWords(prefix))) for (const category of neverCategoriesOf(action)) admitted.add(category);
+  for (const tool of policy.allowedTools) if (Object.hasOwn(GITHUB_WRITE_TOOLS, tool)) admitted.add(GITHUB_WRITE_TOOLS[tool] as NeverCategory);
+  return NEVER_CATEGORIES.filter((c) => admitted.has(c));
+}
+
 /** The rail's outward path labels (`railTargets`), each with the category its Bash and Write/Edit/NotebookEdit forms are in. */
 const OUTWARD_PATH_CATEGORIES: readonly (readonly [string, NeverCategory])[] = [
   ["~/.claude/", "settings_write"],
@@ -859,49 +935,22 @@ function toolPathPatterns(raw: string, cwd: string | undefined, homeDir: string)
 
 /**
  * `command` split into words as the shell would before running it, for
- * inspection only: a space or tab separates words (as in bash; the rail
+ * inspection only, by the kernel's one tokenizer (`scanShellWords`,
+ * `shell-words.ts`): a space or tab separates words (as in bash; the rail
  * refuses any other whitespace or control character before splitting,
  * `UNREADABLE_BASH_CHARS`); single quotes keep everything
  * up to the next `'`; double quotes keep everything up to the next unescaped
  * `"` (a backslash there escapes a `"` or `\`); a backslash outside
  * quotes escapes the next character (`Application\ Support` is one word).
  * Adjacent quoted and unquoted parts join into one word; an unterminated quote
- * runs to the end. No expansion here (the policy already refused `$`,
- * backticks and the other shell metacharacters); the rail reads globs, braces
- * and `~` itself, failing closed (`classifyToolCall`).
+ * runs to the end (lenient: the policy refuses such a command, `bash_unparsed`,
+ * before the rail reads it). No expansion here (the policy already refused an
+ * unquoted metacharacter and a `$` or backtick in double quotes, so a quoted
+ * metacharacter here is text); the rail reads globs, braces and `~` itself,
+ * failing closed (`classifyToolCall`).
  */
 export function shellWords(command: string): string[] {
-  const words: string[] = [];
-  let word = "";
-  let inWord = false;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i] as string;
-    if (c === "'") {
-      inWord = true;
-      const end = command.indexOf("'", i + 1);
-      word += command.slice(i + 1, end === -1 ? command.length : end);
-      i = end === -1 ? command.length : end;
-    } else if (c === '"') {
-      inWord = true;
-      for (i++; i < command.length && command[i] !== '"'; i++) {
-        // As in bash, a backslash in double quotes escapes only `"`, `\` (and `$`, a backtick: refused by the policy).
-        if (command[i] === "\\" && (command[i + 1] === '"' || command[i + 1] === "\\")) i++;
-        word += command[i];
-      }
-    } else if (c === "\\") {
-      inWord = true;
-      if (i + 1 < command.length) word += command[++i];
-    } else if (c === " " || c === "\t") {
-      if (inWord) words.push(word);
-      word = "";
-      inWord = false;
-    } else {
-      inWord = true;
-      word += c;
-    }
-  }
-  if (inWord) words.push(word);
-  return words;
+  return scanShellWords(command).words;
 }
 
 // ---- Path patterns: what a word names, or could expand to ----

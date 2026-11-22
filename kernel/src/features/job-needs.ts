@@ -35,15 +35,31 @@
 // (`closable: false`), because a crew member must not hold `Skill` or a
 // Loomwright shell prefix (invariant 3).
 //
+// A kernel-launched command's outward needs (phase 8 item 25g) are read from
+// the frozen run policy the kernel launches it under (`runPolicy`), through the
+// rail's own labels (`neverCategoriesAdmitted` in `../sessions/policy.ts`),
+// never from a hand list: the run session inherits the crew member's `never`
+// list (D45), so a `never` entry naming one of them defeats the job, and
+// `jobNeedsGaps` reports it as a `"never"` gap only the owner can close.
+//
 // Mechanism only (invariant 1): this module compares lists and grants nothing.
 //
 // CLI-safe like the catalogue: it imports the catalogue, the active-install
-// resolver (node `fs`) and type-level modules, never `../tools/server.js`,
-// `../kernel.js` or the Agent SDK.
+// resolver (node `fs`), the run policies (`../automate/launch.js`, itself
+// CLI-loaded), the rail's pure category reader (`../sessions/policy.js`) and
+// type-level modules, never `../tools/server.js`, `../kernel.js` or the Agent
+// SDK. `../automate/launch.js` closes a runtime import cycle (`launch.ts` →
+// `playbooks/runs.ts` → `playbooks/items.ts` → `playbooks/fit.ts` → this
+// module), so its constants are read only inside functions (each row's lazy
+// `runPolicy`), never while this module loads.
+import { AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, REVIEW_PR_RUN_POLICY } from "../automate/launch.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { resolveLoomwrightInstall } from "../loomwright/active-install.js";
 import type { ResolveLoomwrightInstallOptions } from "../loomwright/active-install.js";
 import type { LoomwrightContractEntry } from "../loomwright/contract.js";
+import { NEVER_CATEGORIES, neverCategoriesAdmitted } from "../sessions/policy.js";
+import type { NeverCategory } from "../sessions/policy.js";
+import type { ToolPolicy } from "../sessions/types.js";
 import {
   CONNECTOR_LABELS,
   KERNEL_TOOL_PREFIX,
@@ -102,6 +118,32 @@ export function bashPrefixNeed(prefix: string): NeedLabel {
 /** The plain words for a workspace need (the app keys its fix on `no copy of a repo to work in`, so readiness words it `no …`). */
 export const WORKSPACE_NEED_LABEL = "a copy of a repo to work in";
 
+/**
+ * A `never` category → the outward action it forbids, in plain words, as the
+ * end of "needs to …" (`push with git`, `open a PR`). Every category has words
+ * (the `Record` type keeps it total); the raw category is never on a readiness
+ * or fit line.
+ */
+export const NEVER_ACTION_LABELS: Readonly<Record<NeverCategory, string>> = Object.freeze({
+  git_push: "push with git",
+  alias_define: "define a command alias",
+  gh_pr_create: "open a PR",
+  gh_pr_comment: "comment on a PR",
+  gh_pr_review: "review a PR",
+  gh_pr_edit: "edit a PR",
+  gh_pr_close: "close a PR",
+  gh_pr_request_reviewers: "ask for reviewers on a PR",
+  gh_pr_comment_reply: "reply to a PR comment",
+  gh_issue_create: "open an issue",
+  gh_issue_comment: "comment on an issue",
+  gh_issue_edit: "edit an issue",
+  gh_issue_close: "close an issue",
+  gh_api_write: "write through the GitHub API",
+  mcp_write: "write through a connector's tools",
+  settings_write: "change Claude's settings files",
+  hooks_write: "change hooks files",
+});
+
 // ---- The pinned Loomwright command table -----------------------------------------------
 
 /** The Loomwright version `LOOMWRIGHT_COMMAND_NEEDS` was read from. A newer install may declare its own needs (contract first). */
@@ -121,6 +163,14 @@ export interface CommandNeeds {
   readonly bashPrefixes: readonly NeedLabel[];
   readonly connectors: readonly ConnectorNeedDeclaration[];
   readonly workspace: boolean;
+  /**
+   * A kernel-launched command's frozen run policy (`../automate/launch.ts`),
+   * read lazily: only when `resolveJobNeeds` runs, never while this module
+   * loads (the import cycle above). Its outward needs are what it admits
+   * (`neverCategoriesAdmitted`). Absent for a crew-launched command. Like
+   * `launch`, never read from a contract.
+   */
+  readonly runPolicy?: () => ToolPolicy;
 }
 
 /** Command needs by invocation. */
@@ -144,7 +194,10 @@ const frozenRow = (row: CommandNeeds): CommandNeeds =>
  * - `/loomwright:review-pr` (`triage_pr_comments`: `kernel_pr_route`'s
  *   `automate_fix` and `review_pr` routes): the fix.
  * - `/loomwright:automate --merge-parked` (`ask_for_merge`:
- *   `kernel_automate_merge_check`'s `go`): the merge.
+ *   `kernel_automate_merge_check`'s `go`): the merge, under
+ *   `MERGE_PARKED_RUN_POLICY`.
+ * The fix runs under `REVIEW_PR_RUN_POLICY`. Each row's `runPolicy` reads its
+ * constant only when called (the import cycle in the header).
  */
 export const LOOMWRIGHT_COMMAND_NEEDS: LoomwrightCommandNeedsTable = Object.freeze({
   "/loomwright:automate": frozenRow({
@@ -155,6 +208,7 @@ export const LOOMWRIGHT_COMMAND_NEEDS: LoomwrightCommandNeedsTable = Object.free
     bashPrefixes: [bashPrefixNeed("git commit"), bashPrefixNeed("git push"), bashPrefixNeed("gh pr")],
     connectors: [],
     workspace: true,
+    runPolicy: () => AUTOMATE_RUN_POLICY,
   }),
   "/loomwright:review-pr": frozenRow({
     invocation: "/loomwright:review-pr",
@@ -164,6 +218,7 @@ export const LOOMWRIGHT_COMMAND_NEEDS: LoomwrightCommandNeedsTable = Object.free
     bashPrefixes: [bashPrefixNeed("git diff"), bashPrefixNeed("git commit"), bashPrefixNeed("git push"), bashPrefixNeed("gh pr")],
     connectors: [],
     workspace: true,
+    runPolicy: () => REVIEW_PR_RUN_POLICY,
   }),
   "/loomwright:automate --merge-parked": frozenRow({
     invocation: "/loomwright:automate --merge-parked",
@@ -173,6 +228,7 @@ export const LOOMWRIGHT_COMMAND_NEEDS: LoomwrightCommandNeedsTable = Object.free
     bashPrefixes: [bashPrefixNeed("gh pr")],
     connectors: [],
     workspace: true,
+    runPolicy: () => MERGE_PARKED_RUN_POLICY,
   }),
 });
 
@@ -180,7 +236,8 @@ export const LOOMWRIGHT_COMMAND_NEEDS: LoomwrightCommandNeedsTable = Object.free
  * The command-needs table: `LOOMWRIGHT_COMMAND_NEEDS`, each row's needs
  * replaced by the install's contract where the contract's entry for the row's
  * `command` declares `needs` (contract first, AC2). `launch` is never read from
- * the contract (it is the kernel's own fact, D44). `commands` undefined (no
+ * the contract (it is the kernel's own fact, D44), and neither is `runPolicy`
+ * (the row's own lazy run-policy accessor is kept). `commands` undefined (no
  * install, or none read) is the pinned table as it is. A declared connector
  * whose kind the kernel does not know is dropped.
  */
@@ -249,6 +306,12 @@ export interface JobCommandReach {
   readonly launch: CommandLaunch;
   readonly claudeTools: readonly NeedLabel[];
   readonly bashPrefixes: readonly NeedLabel[];
+  /**
+   * The outward actions its kernel run policy admits (`neverCategoriesAdmitted`
+   * of the row's `runPolicy`), in `NEVER_CATEGORIES` order: what a `never`
+   * entry can defeat. Empty for a crew-launched command or a row with no run policy.
+   */
+  readonly outward: readonly NeverCategory[];
 }
 
 /** A job's full needs (AC1): all five parts. */
@@ -301,7 +364,14 @@ export function resolveJobNeeds(job: ToolJob, catalogue?: ToolCatalogue): JobNee
     bashPrefixes,
     connectors,
     workspace: declared.workspace || crew.some((c) => c.workspace),
-    commands: reached.map((c) => ({ invocation: c.invocation, launch: c.launch, claudeTools: c.claudeTools, bashPrefixes: c.bashPrefixes })),
+    commands: reached.map((c) => ({
+      invocation: c.invocation,
+      launch: c.launch,
+      claudeTools: c.claudeTools,
+      bashPrefixes: c.bashPrefixes,
+      // Read here, at call time, never at module load (the import cycle in the header).
+      outward: c.launch === "kernel" && c.runPolicy !== undefined ? neverCategoriesAdmitted(c.runPolicy()) : [],
+    })),
   };
 }
 
@@ -323,20 +393,25 @@ export interface HeldNeeds {
   readonly connectors?: HeldConnectors;
   /** Whether the member has a workspace (a copy of a repo): compared when present. */
   readonly workspace?: boolean;
+  /**
+   * The member's `never` list: compared when present, with the outward actions
+   * each kernel-launched command's run policy admits (the run inherits it, D45).
+   */
+  readonly never?: readonly NeverCategory[];
 }
 
-/** What a missing need is. */
-export type NeedsGapKind = "claude_tool" | "bash_prefix" | "connector" | "workspace";
+/** What a missing need is. `never`: an outward action a job's kernel run needs that the member's `never` list forbids. */
+export type NeedsGapKind = "claude_tool" | "bash_prefix" | "connector" | "workspace" | "never";
 
 /** One declared need a member lacks. */
 export interface NeedsGap {
   readonly job: ToolJob;
   readonly kind: NeedsGapKind;
-  /** The raw name (a Claude tool, a Bash prefix, a connector kind): for an `enforced:` line or a proposed update, never for a readiness or fit line. */
+  /** The raw name (a Claude tool, a Bash prefix, a connector kind, a `never` category): for an `enforced:` line or a proposed update, never for a readiness or fit line. */
   readonly name: string;
-  /** The plain words for `name`: `run skills`, `GitHub write access`, `a copy of a repo to work in`. */
+  /** The plain words for `name`: `run skills`, `GitHub write access`, `a copy of a repo to work in`, `open a PR`. */
   readonly label: string;
-  /** `true` when a charter change can close it (a Claude tool or prefix the job itself declares); `false` when only the owner can (a connector grant, a workspace) or no charter should (a crew-launched command's `Skill` and prefixes, D44). */
+  /** `true` when a charter change can close it (a Claude tool or prefix the job itself declares); `false` when only the owner can (a connector grant, a workspace, a `never` entry) or no charter should (a crew-launched command's `Skill` and prefixes, D44). */
   readonly closable: boolean;
   /** The command (invocation) the need comes from, when it is a command's. */
   readonly command?: string;
@@ -356,7 +431,10 @@ export function bashPrefixHeld(held: readonly string[], need: string): boolean {
 
 /**
  * Every declared need of `needs` that `held` lacks, in a stable order: Claude
- * tools, Bash prefixes, connectors, then the workspace. Kernel tools are not
+ * tools, Bash prefixes, connectors, the workspace, then (when `held.never` is
+ * given) each outward action a kernel-launched command's run policy admits that
+ * `held.never` forbids, once per category in `NEVER_CATEGORIES` order, never
+ * closable (removing a `never` entry is the owner's call). Kernel tools are not
  * compared (`jobGranted` / `jobLackingTools` in `./catalogue.ts` are the one
  * rule for them). A job or command that needs Bash prefixes lists `Bash` among
  * its Claude tools too, so a prefix without the tool is a gap of its own.
@@ -379,5 +457,14 @@ export function jobNeedsGaps(needs: JobNeeds, held: HeldNeeds): NeedsGap[] {
     }
   }
   if (held.workspace === false && needs.workspace) gaps.push({ job: needs.job, kind: "workspace", name: "workspace", label: WORKSPACE_NEED_LABEL, closable: false });
+  if (held.never !== undefined) {
+    const never = held.never;
+    for (const category of NEVER_CATEGORIES) {
+      if (!never.includes(category)) continue;
+      const from = needs.commands.find((c) => c.outward.includes(category));
+      if (from === undefined) continue;
+      gaps.push({ job: needs.job, kind: "never", name: category, label: NEVER_ACTION_LABELS[category], closable: false, command: from.invocation });
+    }
+  }
   return gaps;
 }
