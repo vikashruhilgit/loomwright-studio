@@ -54,3 +54,9 @@ docs/architecture/automate.md
 
 Job `.supervisor/jobs/done/2026-11-20-rail-reads-quoted-text-as-text.md` completed (reconciled from the job lifecycle, not self-reported).
 Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-22T12:15:41Z
+- **Brief:** .supervisor/jobs/done/2026-11-20-rail-reads-quoted-text-as-text.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/301
