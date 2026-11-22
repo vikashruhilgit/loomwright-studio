@@ -180,13 +180,24 @@ const RUN_BASH_PREFIXES: readonly string[] = Object.freeze([
   // word boundary (`git commit` admits `git commit -m x`, not `git commit-tree`).
   "git status", "git diff", "git log", "git show", "git add", "git commit", "git checkout", "git switch", "git branch", "git fetch",
   "git push", "git rev-parse", "git worktree", "git stash", "git merge-base", "git ls-files",
+  // 25c: reads (`git remote -v` only as the whole command, `EXACT_RUN_PREFIXES`), and the confined forms: `git rm` /
+  // `git mv` inside the checkout and its worktrees, `git merge <local-branch> [--no-ff] [-m <msg>]`
+  // (`sessions/run-confinement.ts`, checked by the session gate). `git -C <dir>` is no prefix: the policy judges
+  // `git -C <dir> <rest>` as `git <rest>` with `<dir>` confined.
+  "git ls-tree", "git ls-remote", "git remote -v", "git merge", "git rm", "git mv",
   // gh: reads and the PR / issue work; no release, secret, workflow or repo edit / delete.
   "gh pr", "gh issue", "gh api", "gh repo view", "gh auth status", "gh run view",
-  "ls", "cat", "pwd", "date", "mkdir", "test", "wc", "head", "tail", "grep", "sleep", "jq",
+  "ls", "cat", "pwd", "date", "mkdir", "test", "wc", "head", "tail", "grep", "sleep", "jq", "od",
+  // 25c: file operations, each confined to the checkout and its worktrees with a closed option set.
+  "rm", "mv", "chmod",
 ]);
 
-/** The Claude tools every run policy grants. */
-const RUN_TOOLS: readonly string[] = Object.freeze(["Skill", "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent", "AskUserQuestion"]);
+/**
+ * The Claude tools every run policy grants. 25c: `TaskOutput` (the Execute Manager waits on a background worker)
+ * and `Monitor`, admitted only as a shell watch whose `command` is decided as a Bash call (`ws`, an outward
+ * WebSocket, is refused). `SendMessage` is not granted (`RUN_TOOL_DENIALS_OBSERVED`, `run-exclusions.ts`).
+ */
+const RUN_TOOLS: readonly string[] = Object.freeze(["Skill", "Read", "Write", "Edit", "Glob", "Grep", "Bash", "Agent", "AskUserQuestion", "TaskOutput", "Monitor"]);
 
 /**
  * The Loomwright driver and helper scripts the `/automate` run calls, by basename
@@ -199,7 +210,8 @@ const RUN_TOOLS: readonly string[] = Object.freeze(["Skill", "Read", "Write", "E
  * review-heal drain calls. Also left out, because each acts past the kernel when
  * the session calls it directly and safe mode (inline phases, no lanes)
  * never needs it: `automate-lanes.sh` (`lane-launch` starts headless `claude -p`
- * lanes, invariant 2), `automate-wave.sh` (`wave-build` pushes and opens a PR
+ * lanes, invariant 2; 25c admits its read-only `scope-outside` alone, to the inline
+ * phases only, `INLINE_PHASE_SCRIPTS`), `automate-wave.sh` (`wave-build` pushes and opens a PR
  * past the approval gate), `automate-merge-watch.sh` (a detached
  * watcher whose close-out pushes a trail PR and posts a webhook; the driver arms
  * it itself) and `lane-sampler.sh` (a `--parallel` lane sampler that posts a
@@ -229,11 +241,19 @@ const AUTOMATE_SCRIPTS: readonly string[] = Object.freeze([
  * the session, where the rail and the approval gate see them. Left out, each for
  * its reason (a kernel-owned path for each is 23m):
  * - start a `claude` process the kernel does not own (invariant 2):
- *   `dispatch-pr-review.sh`, `hook-dispatch-on-pr-create.sh`, `automate-lanes.sh`, `gate-auto.sh`;
+ *   `dispatch-pr-review.sh`, `hook-dispatch-on-pr-create.sh`, and every `automate-lanes.sh`
+ *   subcommand but `scope-outside` (`lane-launch`, `phase-launch`; the allow-only
+ *   `LOOMWRIGHT_ALLOWED_SUBCOMMANDS` admits `scope-outside` alone, 25c);
  * - post outward past the approval gate (invariant 3): `send-webhook.sh`;
  * - run shell command lines read from files the session can write (the brief, the
- *   rules), which the per-command rail never sees (invariant 3): `run-ground-truth.sh`,
- *   `rules-check.sh`, `worker-rule-selfcheck.sh`, `run-pin-mutations.sh`, `run-benchmark.sh`;
+ *   rules), which the per-command rail never sees (invariant 3): `run-ground-truth.sh`
+ *   (`bash -c` of the brief's lines), `rules-check.sh` and `worker-rule-selfcheck.sh`
+ *   (`bash -c` of each rule's check);
+ * - run project code (25d's class, not admitted here): `run-pin-mutations.sh` runs the
+ *   pinned test files (`bash "$1"`), no `eval` or `bash -c` (corrected in 25c);
+ * - not needed by any step a kernel run takes: `run-benchmark.sh`, which runs no `claude`
+ *   and no file-borne command line (18.1.2 validates a fixed corpus with `jq`; corrected
+ *   in 25c), and only feeds an advisory `benchmark_result`;
  * - persistent memory and contract writes Loomwright keeps for a human-approved
  *   fact (invariant 3): `write-project-memory.sh`, `write-agent-memory.sh`, `write-system-contract.sh`;
  * - a hook the harness fires, never the session: `reproject-state-on-terminal.sh`;
@@ -244,9 +264,26 @@ const AUTOMATE_SCRIPTS: readonly string[] = Object.freeze([
  * (`loomwright/release-refold-gate.ts`).
  * A session's own `--skip-children-check` or `--skip-preflight-sync` is refused
  * (`LOOMWRIGHT_DENIED_SUBCOMMANDS`): those are the owner's flags, never the run's.
+ *
+ * 25c (read from 18.1.2, 2026-11-22) adds four the inline Launch Pad and Supervisor call,
+ * for the backlog and resume kinds only (they run those phases; `review_pr` and the merge
+ * kinds do not):
+ * - `gate-auto.sh` `decide|record|list` only (`LOOMWRIGHT_ALLOWED_SUBCOMMANDS`): it starts
+ *   no `claude`; it answers a lane-catalog `auto` gate from fixed reads and records the
+ *   answer through `automate-helpers.sh progress-append` (live: LP-SAVE answered by the
+ *   model instead, event 37984);
+ * - `phase45-ci-read.sh`: one read of a PR's required checks (gh reads, no write);
+ * - `reconcile-jobs.sh`: moves a stranded brief within `.supervisor/jobs/` (in-progress to
+ *   done or failed) and reads `.supervisor/automate/` run files; it writes nothing under
+ *   `.supervisor/automate/`, never stamps a requirement, pushes nothing and starts no
+ *   `claude` (its base-branch lookup is `resolve-base-branch.sh`, already admitted);
+ * - `automate-lanes.sh` `scope-outside` only (`LOOMWRIGHT_ALLOWED_SUBCOMMANDS`): Launch Pad's
+ *   LP-SCOPE read of a brief's paths outside the item's Touches.
  */
 const INLINE_PHASE_SCRIPTS: readonly string[] = Object.freeze([
   "supervisor-next-step.sh", "launch-pad-phase.sh",
+  // 25c: allow-only subcommands for the first and last (`LOOMWRIGHT_ALLOWED_SUBCOMMANDS`).
+  "gate-auto.sh", "phase45-ci-read.sh", "reconcile-jobs.sh", "automate-lanes.sh",
   "build-state.sh", "emit-progress-event.sh", "check-children-settled.sh", "guard-finalize-publish.sh",
   "reconcile-resume-state.sh", "heal-review-scope.sh", "checkpoint.sh", "worktree-audit.sh", "worktree-salvage.sh",
   // 23q: FINALIZE runs it before any push; the session gate admits it only while the project has no bump script.

@@ -26,7 +26,7 @@ import { TICKET_RUN_SYSTEM_NOTE } from "../src/sessions/policy.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage, HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentMemoryDir, agentSettingsPath } from "../src/agents/index.js";
@@ -91,7 +91,9 @@ describe("AUTOMATE_RUN_POLICY (AC4)", () => {
     expect(Object.isFrozen(AUTOMATE_RUN_POLICY)).toBe(true);
     expect(Object.isFrozen(AUTOMATE_RUN_POLICY.allowedTools)).toBe(true);
     expect(Object.isFrozen(AUTOMATE_RUN_POLICY.allowedBashPrefixes)).toBe(true);
-    expect([...AUTOMATE_RUN_POLICY.allowedTools].sort()).toEqual(["Agent", "AskUserQuestion", "Bash", "Edit", "Glob", "Grep", "Read", "Skill", "Write"]);
+    // 25c: TaskOutput (waiting on a background worker) and Monitor (a shell watch decided as Bash); never SendMessage.
+    expect([...AUTOMATE_RUN_POLICY.allowedTools].sort()).toEqual(["Agent", "AskUserQuestion", "Bash", "Edit", "Glob", "Grep", "Monitor", "Read", "Skill", "TaskOutput", "Write"]);
+    expect(AUTOMATE_RUN_POLICY.allowedTools).not.toContain("SendMessage");
     expect(AUTOMATE_RUN_POLICY.allowedBashPrefixes).toEqual(expect.arrayContaining(["git status", "git commit", "gh pr"]));
     // Never the bare programs: they carry config / alias / hook / release / secret / workflow routes past the rail.
     for (const bare of ["git", "gh"]) expect(AUTOMATE_RUN_POLICY.allowedBashPrefixes, bare).not.toContain(bare);
@@ -121,8 +123,12 @@ describe("AUTOMATE_RUN_POLICY (AC4)", () => {
     // 23k: the inline phases' drivers are admitted; scripts that start an unowned claude, post outward, run command lines
     // read from session-writable files, or write human-approved memory are not.
     expect(scripts).toEqual(expect.arrayContaining(["supervisor-next-step.sh", "launch-pad-phase.sh", "guard-finalize-publish.sh", "build-state.sh"]));
+    // 25c: the inline Launch Pad and Supervisor's gate-auto.sh (decide|record|list), phase45-ci-read.sh, reconcile-jobs.sh and
+    // automate-lanes.sh (scope-outside alone); a merge run, which runs no phase, lists none of them.
+    expect(scripts).toEqual(expect.arrayContaining(["gate-auto.sh", "phase45-ci-read.sh", "reconcile-jobs.sh", "automate-lanes.sh"]));
+    for (const name of ["gate-auto.sh", "phase45-ci-read.sh", "reconcile-jobs.sh", "automate-lanes.sh"]) expect(MERGE_PARKED_RUN_POLICY.loomwrightScripts ?? [], name).not.toContain(name);
     for (const name of [
-      "dispatch-pr-review.sh", "hook-dispatch-on-pr-create.sh", "automate-lanes.sh", "gate-auto.sh", "send-webhook.sh",
+      "dispatch-pr-review.sh", "hook-dispatch-on-pr-create.sh", "send-webhook.sh",
       "run-ground-truth.sh", "rules-check.sh", "worker-rule-selfcheck.sh", "run-pin-mutations.sh", "run-benchmark.sh",
       "write-project-memory.sh", "write-agent-memory.sh", "write-system-contract.sh", "reproject-state-on-terminal.sh",
     ]) expect(scripts, name).not.toContain(name);
@@ -137,7 +143,8 @@ describe("AUTOMATE_RUN_POLICY (AC4)", () => {
     expect(decideToolUse(AUTOMATE_RUN_POLICY, "Skill", { skill: "loomwright:automate" })).toMatchObject({ decision: "allow" });
     expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command: "git status" })).toMatchObject({ decision: "allow" });
     expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command: "git status | cat" })).toEqual({ decision: "deny", reason: "bash_shell_metacharacter" });
-    expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command: "rm -rf x" })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
+    // 25c admits a confined `rm` (the session gate checks its paths); a program no prefix covers is still denied.
+    expect(decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command: "cp -r x y" })).toEqual({ decision: "deny", reason: "bash_prefix_not_allowed" });
     expect(classifyToolCall("Bash", { command: "git push origin main" }, rail)).toMatchObject({ kind: "outward", action: "git push" });
     expect(classifyToolCall("Bash", { command: "gh pr merge 7 --squash" }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
     expect(decideToolUse(AUTOMATE_RUN_POLICY, "AskUserQuestion", {})).toMatchObject({ decision: "allow" });
@@ -827,7 +834,7 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(await run("Read", { file_path: "/x" })).toMatchObject({ permissionDecision: "allow" });
     // Nothing outside the run policy: a tool it does not list, and a command no prefix covers.
     expect(await run("WebFetch", { url: "https://example.test" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "tool_not_allowed" });
-    expect(await run("Bash", { command: "rm -rf build" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
+    expect(await run("Bash", { command: "cp -r build out" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_prefix_not_allowed" });
     // The Bash rail is unchanged: a piped command is still denied.
     expect(await run("Bash", { command: "git log | head" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_shell_metacharacter" });
     // AC15: the run session admits Loomwright's driver at its exact path under the install it loads; the crew session never does.
@@ -925,6 +932,219 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(await run("Bash", { command: "git checkout trail" })).toMatchObject(DENY);
     rmSync(join(dir, "r1.md"));
     expect(await run("Bash", { command: "git checkout trail" })).toMatchObject(DENY);
+  });
+
+  /** A git repository in `ws` (branch mode: `.supervisor/` ignored), with a feature branch, a tag, an origin ref and a worktree. */
+  function gitCheckout(ws: string): { git: (...args: string[]) => string; sha: string; worktree: string } {
+    const git = (...args: string[]): string => execFileSync("git", ["-C", ws, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    writeFileSync(join(ws, ".gitignore"), ".supervisor/*\n");
+    for (const f of ["greeting.sh", "cheer.sh", "drum.sh"]) writeFileSync(join(ws, f), "#!/bin/bash\necho hi\n");
+    git("add", ".gitignore", "greeting.sh", "cheer.sh", "drum.sh");
+    git("commit", "-qm", "init");
+    git("branch", "feature/x");
+    git("tag", "v1.0");
+    git("update-ref", "refs/remotes/origin/main", "HEAD");
+    const worktree = join(tmp, `${ws.split(sep).pop() as string}-sub`);
+    git("worktree", "add", "-q", "-b", "sub", worktree);
+    for (const dir of ["in-progress", "pending", "failed"]) mkdirSync(join(ws, ".supervisor", "jobs", dir), { recursive: true });
+    for (const f of ["2026-11-17-add-cheer-sh.md", "2026-11-18-add-cheer-sh.md"]) writeFileSync(join(ws, ".supervisor", "jobs", "in-progress", f), "# brief\n");
+    return { git, sha: git("rev-parse", "HEAD").trim(), worktree };
+  }
+
+  /** Writes the 25c scripts into the fake install before the launch, so the manager admits them at their exact paths. */
+  function installScripts(r: Rig): void {
+    for (const s of ["gate-auto.sh", "phase45-ci-read.sh", "reconcile-jobs.sh", "automate-lanes.sh"]) writeFileSync(join(r.pluginDir, "scripts", s), "#!/bin/bash\n");
+  }
+
+  it("25c (AC7): each observed denial, replayed through the real policy and gate, is admitted; SendMessage and the composed or project-code calls stay denied", async () => {
+    const r = await rig();
+    installScripts(r);
+    // ranger: never git_push and settings_write, as the live crew member whose 23f reads were denied agent_boundary.
+    const l = await launch(r, "ranger");
+    const run = gateOf(l.run);
+    const ws = r.workspaces["ranger"] as string;
+    gitCheckout(ws);
+    // The recorded commands (studio.db, read-only, 2026-11-22) with the live sandbox and install paths mapped onto this rig.
+    const SANDBOX = "/Users/vikashruhil/studio-work/studio-sandbox";
+    const INSTALL = /\/Users\/vikashruhil\/\.claude\/plugins\/cache\/atelier\/loomwright\/(17\.38\.0|18\.1\.2)/g;
+    const here = (command: string): string => command.split(SANDBOX).join(ws).replace(INSTALL, r.pluginDir);
+    const admitted: readonly (readonly [number, string, Record<string, unknown>])[] = [
+      [28318, "Bash", { command: "bash /Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.38.0/scripts/gate-auto.sh list .supervisor/automate/automate-2026-11-17-001.md" }],
+      [37984, "Bash", { command: 'bash /Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/18.1.2/scripts/gate-auto.sh decide LP-SAVE --offered "Save and exit" --offered "Refine further" --offered "Edit sections" --offered "Discard" --runfile .supervisor/automate/automate-2026-11-20-001.md' }],
+      [38095, "Bash", { command: "bash /Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/18.1.2/scripts/gate-auto.sh list .supervisor/automate/automate-2026-11-20-001.md" }],
+      [28664, "Bash", { command: "git remote -v" }],
+      [29778, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox status --short --branch" }],
+      [29816, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox log --oneline -5 origin/main" }],
+      [29817, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox ls-files -s greeting.sh cheer.sh" }],
+      [29865, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox status --short" }],
+      [30031, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox status --short --branch" }],
+      [30524, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox ls-files -s greeting.sh" }],
+      [31623, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox status --short --branch" }],
+      [32570, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox add cheer.sh" }],
+      [33081, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox branch --show-current" }],
+      [33541, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox status --short" }],
+      [33561, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox add cheer.sh" }],
+      [33797, "Bash", { command: "git -C /Users/vikashruhil/studio-work/studio-sandbox diff origin/main...HEAD" }],
+      [30416, "Bash", { command: "git ls-remote --heads origin" }],
+      [30444, "Bash", { command: "mv .supervisor/jobs/in-progress/2026-11-17-add-cheer-sh.md .supervisor/jobs/pending/2026-11-17-add-cheer-sh.md" }],
+      [33369, "Bash", { command: "mv .supervisor/jobs/in-progress/2026-11-18-add-cheer-sh.md .supervisor/jobs/failed/2026-11-18-add-cheer-sh-stale-attempt.md" }],
+      [30532, "Bash", { command: "od -c /Users/vikashruhil/studio-work/studio-sandbox/greeting.sh" }],
+      [33816, "Bash", { command: "bash /Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.38.0/scripts/phase45-ci-read.sh https://github.com/vikashruhilgit/studio-sandbox/pull/20 --sha bd2de34" }],
+      [33825, "Bash", { command: "bash /Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.38.0/scripts/reconcile-jobs.sh --help" }],
+      [38014, "Bash", { command: "git ls-tree -r --name-only origin/main" }],
+      [38066, "Bash", { command: "chmod +x /Users/vikashruhil/studio-work/studio-sandbox/drum.sh" }],
+      [38074, "Bash", { command: "chmod +x drum.sh" }],
+      // 23f: denied agent_boundary (settings_write) live.
+      [27939, "Bash", { command: 'grep -n "runfile-write" /Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.38.0/skills/automate-loop/helpers.md' }],
+      [29604, "Bash", { command: 'grep -n -e "--result" /Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.38.0/scripts/supervisor-next-step.sh' }],
+      [33438, "Bash", { command: 'grep -n "gate-auto.sh decide" /Users/vikashruhil/.claude/plugins/cache/atelier/loomwright/17.38.0/agents/launch-pad.md' }],
+      // 32486: studio.db recorded no input for the Monitor call; replayed as a shell watch.
+      [32486, "Monitor", { command: "tail -f .supervisor/jobs/in-progress/2026-11-17-add-cheer-sh.md", description: "watch the brief", timeout_ms: 300000 }],
+      // Read from 18.1.2, not observed live: the Execute Manager's TaskOutput, Launch Pad's scope-outside, the parallel path.
+      [0, "TaskOutput", { task_id: "t1", block: true, timeout: 600000 }],
+      [0, "Bash", { command: `bash ${join(r.pluginDir, "scripts", "automate-lanes.sh")} scope-outside .supervisor/requirements/x.md /tmp/brief.md` }],
+      [0, "Bash", { command: "git -C ../ws-ranger-sub add -A" }],
+      [0, "Bash", { command: 'git merge sub --no-ff -m "merge: sub"' }],
+      [0, "Bash", { command: "git rm --cached greeting.sh" }],
+      [0, "Bash", { command: "git mv -k cheer.sh cheer2.sh" }],
+      [0, "Bash", { command: "rm -f greeting.sh" }],
+    ];
+    for (const [event, tool, input] of admitted) {
+      const replayed = typeof input.command === "string" ? { ...input, command: here(input.command) } : input;
+      expect(await run(tool, replayed), `event ${event}: ${tool} ${JSON.stringify(replayed)}`).toMatchObject({ permissionDecision: "allow" });
+    }
+    // Stays denied: SendMessage (33474, 38037), the compound chmod/od line (38063), running the project's own script (29864, 25d).
+    for (const [event, tool, input, reason] of [
+      [33474, "SendMessage", { to: "worker", message: "status?" }, "tool_not_allowed"],
+      [38037, "SendMessage", { to: "worker", message: "status?" }, "tool_not_allowed"],
+      [38063, "Bash", { command: "chmod +x drum.sh && bash drum.sh | od -c | head -2; bash drum.sh; echo rc=$?; bash -n drum.sh; echo syn=$?" }, "bash_shell_metacharacter"],
+      [29864, "Bash", { command: `bash ${join(ws, "cheer.sh")}` }, "bash_prefix_not_allowed"],
+      [0, "Bash", { command: "mv .supervisor/jobs/pending/s1-*.md .supervisor/jobs/failed/" }, "loomwright_run_state"],
+    ] as const) {
+      expect(await run(tool, input), `event ${event}: ${tool}`).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: reason });
+    }
+    // A Monitor's command is recorded on its decision, as a Bash call's is.
+    expect(decisions(r, l.runId).filter((p) => p.tool === "Monitor")).toEqual([expect.objectContaining({ decision: "allow", command: "tail -f .supervisor/jobs/in-progress/2026-11-17-add-cheer-sh.md" })]);
+  });
+
+  it("25c: the gate refuses what leaves the checkout: an outside path, a recursive root, an outside `git -C`, a merge of anything but a local branch, a checkout bringing run state, and a Monitor past the rail", async () => {
+    const r = await rig();
+    const l = await launch(r, "mason");
+    const run = gateOf(l.run);
+    const ws = r.workspaces["mason"] as string;
+    const { git, sha, worktree } = gitCheckout(ws);
+    const CONFINE = { permissionDecision: "deny", permissionDecisionReason: "checkout_confinement" };
+    const RUN_STATE = { permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" };
+    const ALLOW = { permissionDecision: "allow" };
+    mkdirSync(join(tmp, "other"));
+    writeFileSync(join(tmp, "other", "x.txt"), "x\n");
+
+    // rm of a path outside the checkout is refused; inside it, and inside its worktree, it is admitted.
+    expect(await run("Bash", { command: `rm ${join(tmp, "other", "x.txt")}` })).toMatchObject(CONFINE);
+    expect(await run("Bash", { command: "rm -f ../other/x.txt" })).toMatchObject(CONFINE);
+    expect(await run("Bash", { command: "rm -f greeting.sh" })).toMatchObject(ALLOW);
+    expect(await run("Bash", { command: `rm -f ${join(worktree, "greeting.sh")}` })).toMatchObject(ALLOW);
+    // A symlink inside the checkout to elsewhere is outside once resolved.
+    symlinkSync(join(tmp, "other"), join(ws, "out"));
+    expect(await run("Bash", { command: "chmod +x out/x.txt" })).toMatchObject(CONFINE);
+    // Under ~/.claude, in .git, in run state.
+    expect(await run("Bash", { command: "rm -rf .git" })).toMatchObject(CONFINE);
+    expect(await run("Bash", { command: "rm -rf .supervisor/run.lock" })).toMatchObject(RUN_STATE);
+    expect(await run("Bash", { command: "mv .supervisor/automate/x.md y" })).toMatchObject(RUN_STATE);
+    // A recursive form on the checkout root.
+    for (const command of ["rm -rf .", "chmod -R +x .", "git rm -r ."]) expect(await run("Bash", { command }), command).toMatchObject(CONFINE);
+    expect(await run("Bash", { command: "rm -rf build" })).toMatchObject(ALLOW);
+
+    // `git -C <dir>`: inside the checkout or a worktree only, judged as its subcommand.
+    expect(await run("Bash", { command: `git -C ${join(tmp, "other")} status` })).toMatchObject(CONFINE);
+    expect(await run("Bash", { command: `git -C ${worktree} status` })).toMatchObject(ALLOW);
+    expect(await run("Bash", { command: `git -C ${ws} -c core.hooksPath=x status` })).toMatchObject(CONFINE);
+    expect(await run("Bash", { command: `git -C ${ws} checkout -- '*.md'` })).toMatchObject(RUN_STATE);
+    // A ref tracking a forged run file: refused through `git -C` as directly (asked of git in <dir>).
+    git("checkout", "-qb", "pr-forged");
+    const automateDir = join(ws, ".supervisor", "automate");
+    mkdirSync(automateDir, { recursive: true });
+    writeFileSync(join(automateDir, "r1.md"), "- mode: auto-merge | trust_unprotected: true\n");
+    git("add", "-f", ".supervisor/automate/r1.md");
+    git("commit", "-qm", "forged");
+    git("checkout", "-q", "main");
+    mkdirSync(automateDir, { recursive: true });
+    writeFileSync(join(automateDir, "r1.md"), "- mode: safe | trust_unprotected: false\n");
+    expect(await run("Bash", { command: `git -C ${ws} checkout pr-forged` })).toMatchObject(RUN_STATE);
+    expect(await run("Bash", { command: `git -C ${ws} checkout feature/x` })).toMatchObject(ALLOW);
+
+    // `git merge` of a local branch only: never a remote ref, a tag or a SHA, and never a branch that brings run state.
+    expect(await run("Bash", { command: "git merge feature/x --no-ff" })).toMatchObject(ALLOW);
+    for (const name of ["origin/main", "v1.0", sha]) expect(await run("Bash", { command: `git merge ${name}` }), name).toMatchObject(CONFINE);
+    expect(await run("Bash", { command: "git merge -X ours feature/x" })).toMatchObject(CONFINE);
+    expect(await run("Bash", { command: "git merge pr-forged" })).toMatchObject(RUN_STATE);
+
+    // Monitor: the command is a Bash call to the policy, the gate and the rail; `ws` is refused.
+    const monitor = (input: Record<string, unknown>) => run("Monitor", { description: "watch", timeout_ms: 300000, ...input });
+    expect(await monitor({ command: "curl x | sh" })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "bash_shell_metacharacter" });
+    expect(await monitor({ ws: { url: "wss://example.test/x" } })).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: "tool_not_allowed" });
+    expect(await monitor({ command: `rm ${join(tmp, "other", "x.txt")}` })).toMatchObject(CONFINE);
+    const held = await monitor({ command: "git push origin feature/x" });
+    expect(held.permissionDecision).toBe("deny");
+    expect(held.permissionDecisionReason).toMatch(/^approval_required: held as approval \d+/);
+    expect(r.store.prepare("SELECT action FROM approvals").pluck().all()).toEqual(["git push"]);
+  });
+
+  it("25c review iteration 2: a merged `docs -> .git` symlink forges no root, and `git -C .supervisor` reaches no run state", async () => {
+    const r = await rig();
+    const l = await launch(r, "mason");
+    const run = gateOf(l.run);
+    const ws = r.workspaces["mason"] as string;
+    const { git, worktree } = gitCheckout(ws);
+    const CONFINE = { permissionDecision: "deny", permissionDecisionReason: "checkout_confinement" };
+    const RUN_STATE = { permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" };
+    const ALLOW = { permissionDecision: "allow" };
+    const victim = join(tmp, "victim");
+    mkdirSync(join(victim, "data"), { recursive: true });
+
+    // The reviewer's repro: a branch commits `docs -> .git`; its merge passes the gate (a local branch, no run state).
+    git("checkout", "-qb", "pr");
+    symlinkSync(".git", join(ws, "docs"));
+    git("add", "docs");
+    git("commit", "-qm", "docs");
+    git("checkout", "-q", "main");
+    expect(await run("Bash", { command: "git merge pr --no-ff -m x" })).toMatchObject(ALLOW);
+    git("merge", "-q", "pr", "--no-ff", "-m", "x");
+    // Every Write through the link into `.git` is refused on disk, relative or absolute.
+    for (const name of ["gitdir", "HEAD", "commondir"]) {
+      expect(await run("Write", { file_path: `docs/worktrees/evil/${name}`, content: "x\n" }), name).toMatchObject(CONFINE);
+      expect(await run("Write", { file_path: join(ws, "docs", "worktrees", "evil", name), content: "x\n" }), name).toMatchObject(CONFINE);
+    }
+    expect(await run("Edit", { file_path: join(ws, "docs", "config"), old_string: "a", new_string: "b" })).toMatchObject(CONFINE);
+    // Had the entry been forged anyway, the victim is no root: its `.git` does not link back to the entry.
+    const forged = join(ws, ".git", "worktrees", "evil");
+    mkdirSync(forged, { recursive: true });
+    writeFileSync(join(forged, "gitdir"), `${join(victim, ".git")}\n`);
+    writeFileSync(join(forged, "HEAD"), `${git("rev-parse", "HEAD").trim()}\n`);
+    writeFileSync(join(forged, "commondir"), "../..\n");
+    expect(await run("Bash", { command: `rm -rf ${join(victim, "data")}` })).toMatchObject(CONFINE);
+    // Ordinary work stays admitted: a Write in the checkout, the legitimate worktree's files, the brief move.
+    expect(await run("Write", { file_path: join(ws, "notes.md"), content: "x\n" })).toMatchObject(ALLOW);
+    expect(await run("Bash", { command: `rm -f ${join(worktree, "greeting.sh")}` })).toMatchObject(ALLOW);
+    expect(await run("Bash", { command: "mv .supervisor/jobs/in-progress/2026-11-17-add-cheer-sh.md .supervisor/jobs/failed/" })).toMatchObject(ALLOW);
+
+    // `git -C <dir>`: git reads the rest's words against <dir>, so a <dir> in `.supervisor` is refused.
+    mkdirSync(join(ws, ".supervisor", "automate"), { recursive: true });
+    for (const command of ["git -C .supervisor add -f automate/r1.md", "git -C .supervisor checkout -- automate/r1.md", "git -C .supervisor/jobs checkout -- ../automate/r1.md"]) {
+      expect(await run("Bash", { command }), command).toMatchObject(RUN_STATE);
+    }
+    expect(await run("Bash", { command: "git -C . add -f .supervisor/automate/r1.md" })).toMatchObject(RUN_STATE);
+    // The rail reads a relative word wherever git resolves it (its relative form is matched too, not only
+    // against the hook's cwd): a `git -C <dir>` climb into ~/.claude from <dir> is still the ~/.claude target.
+    mkdirSync(join(ws, "a", "b"), { recursive: true });
+    const climb = relative(join(ws, "a", "b"), join(tmp, "home", ".claude", "notes.txt"));
+    const railed = await run("Bash", { command: `git -C a/b diff --output=${climb}` });
+    expect(railed.permissionDecision).toBe("deny");
+    expect(railed.permissionDecisionReason).toMatch(/^approval_required: held as approval \d+/);
+    expect(r.store.prepare("SELECT action FROM approvals").pluck().all()).toEqual(["Bash naming ~/.claude/"]);
   });
 
   it("AC12: a gate question in the run session is allowed by the policy and HELD in Approvals with its header, text and option labels; no always grant covers it (the owner's answer path is unverified)", async () => {

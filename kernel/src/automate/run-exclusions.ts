@@ -131,12 +131,18 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   {
     id: "gate-auto",
     match: { type: "script", deny: NOT_LISTED, scripts: ["gate-auto.sh"] },
-    kinds: ALL,
-    reason_class: "starts a claude process",
-    reason_fact_false: "filed: 25c",
-    reason: "launch.ts:232 says it starts a `claude` process; 18.1.2's gate-auto.sh holds no `claude` at all (it records and reads LP-SAVE gate decisions). 25c admits `decide|record|list` and corrects this reason.",
-    consequence: "consequence if denied: Launch Pad's LP-SAVE gate is answered by the model instead of the recorded decision (24b, event 37984).",
-    filed: "25c",
+    kinds: [...REVIEW, ...MERGE],
+    reason_class: "script not admitted for this kind",
+    reason: "gate-auto.sh starts no `claude` (18.1.2: it answers a lane-catalog `auto` gate from fixed reads and records the answer through `automate-helpers.sh progress-append`). 25c admits `decide|record|list` to the backlog and resume kinds, which run Launch Pad and the Supervisor inline; a review-pr or merge run raises no Launch Pad gate.",
+    consequence: "consequence if denied: a merge run's resume gate (AUT-RESUME) is asked, not auto-answered, and parks when it cannot ask.",
+  },
+  {
+    id: "gate-auto-mention",
+    match: { type: "script", deny: NOT_LISTED, scripts: ["gate-auto.sh"], text: "^(gate-auto\\.sh|bash \"\\$\\{CLAUDE_PLUGIN_ROOT\\}/scripts/gate-auto\\.sh\" …)$" },
+    kinds: AUTOMATE,
+    reason_class: "advisory, never instructed",
+    reason: "the script named alone, or with `…` for its arguments (launch-pad.md:712, launch-pad command, intake, automate command): a mention; LOOMWRIGHT_ALLOWED_SUBCOMMANDS admits only `decide|record|list` at the first argument, and each concrete call the instructions show is decided on its own.",
+    consequence: "consequence if denied: none; the session issues `gate-auto.sh decide|record|list …`.",
   },
   {
     id: "automate-lanes",
@@ -175,21 +181,18 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     id: "run-pin-mutations",
     match: { type: "script", deny: NOT_LISTED, scripts: ["run-pin-mutations.sh"] },
     kinds: ALL,
-    reason_class: "runs eval / bash -c",
-    reason_fact_false: "filed: 25c",
-    reason: "launch.ts:236 says it runs command lines read from files; 18.1.2 holds no `eval` or `bash -c`: it runs pinned test files with `bash \"$1\"` (run-pin-mutations.sh:262), project code (25d's class). 25c corrects the reason.",
+    reason_class: "runs project code",
+    reason: "it runs the brief's pinned test files with `bash \"$1\"` (run-pin-mutations.sh:262): project code, 25d's class. 18.1.2 holds no `eval` or `bash -c`; launch.ts's comment said it ran file-borne command lines (corrected in 25c).",
     consequence: "consequence if denied: pin mutations are not run; Phase 4.5 reports the pins unverified.",
-    filed: "25c",
+    filed: "25d",
   },
   {
     id: "run-benchmark",
     match: { type: "script", deny: NOT_LISTED, scripts: ["run-benchmark.sh"] },
     kinds: ALL,
-    reason_class: "runs eval / bash -c",
-    reason_fact_false: "filed: 25c",
-    reason: "launch.ts:236 says it runs command lines read from files; 18.1.2's run-benchmark.sh holds no `eval` or `bash -c` (it validates a fixed corpus with jq). 25c corrects the reason.",
+    reason_class: "script not admitted for this kind",
+    reason: "no run policy lists it: no step a kernel run takes needs it (it only feeds an advisory benchmark_result). It starts no `claude` and runs no file-borne command line (18.1.2 validates a fixed corpus with jq); launch.ts's comment said it did (corrected in 25c). Not in 25c's list.",
     consequence: "consequence if denied: no benchmark_result in the Supervisor's result (advisory).",
-    filed: "25c",
   },
 
   // ---- Deliberate: outward posts, memory writes, harness hooks, refused subcommands ----
@@ -289,23 +292,14 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
       type: "script",
       deny: NOT_LISTED,
       scripts: [
-        "reconcile-jobs.sh", "phase45-ci-read.sh", "resolve-routing.sh", "setup-memory.sh", "format-twin-delta.sh", "stamp-requirement-status.sh",
+        "resolve-routing.sh", "setup-memory.sh", "format-twin-delta.sh", "stamp-requirement-status.sh",
         "audit-rules.sh", "rules-audit-line.sh", "build-floor.sh", "phase-timing.sh", "proc-registry.sh", "status-line.sh", "setup-base-branch.sh",
       ],
     },
     kinds: AUTOMATE,
     reason_class: "script not admitted for this kind",
-    reason: "readers and `.supervisor/` bookkeeping the 18.1.2 instructions call that no run policy lists; 25c names reconcile-jobs.sh and phase45-ci-read.sh, the rest are not in 25c's list (found by 25a).",
+    reason: "readers and `.supervisor/` bookkeeping the 18.1.2 instructions call that no run policy lists (found by 25a, not in 25c's list; 25c admitted reconcile-jobs.sh and phase45-ci-read.sh).",
     consequence: "consequence if denied: the step is done by the model or skipped (seen live: Phase 4.5's CI read by hand, the brief left in in-progress/, events 33816-33825).",
-    filed: "25c",
-  },
-  {
-    id: "lanes-scope-outside",
-    match: { type: "script", deny: NOT_LISTED, scripts: ["automate-lanes.sh"], text: "\\bscope-outside\\b" },
-    kinds: ALL,
-    reason_class: "script not admitted for this kind",
-    reason: "Launch Pad's LP-SCOPE gate calls `automate-lanes.sh scope-outside` (read-only); automate-lanes.sh is excluded whole. 25c admits this one subcommand.",
-    consequence: "consequence if denied: the LP-SCOPE gate cannot compute which files fall outside the item's Touches.",
     filed: "25c",
   },
   {
@@ -447,7 +441,8 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     id: "never-hand-rolled-file-ops",
     match: {
       type: "command",
-      deny: NOT_LISTED,
+      // 25c: `rm`, `mv` and `git mv` are run prefixes now; with no operand (or `…`) the shape is `checkout_confinement`.
+      deny: [...NOT_LISTED, "checkout_confinement"],
       text: "^(rm -rf|git reset|git mv|git mv -k …|mv …)$",
       files: ["skills/automate-loop/helpers.md", "skills/automate-loop/per-item-loop.md", "skills/self-heal-advisory/completion-tail.md"],
     },
@@ -560,24 +555,34 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     match: {
       type: "command",
       deny: NOT_LISTED,
-      text: "^(git -C \\.\\./\\S+ (add -A|commit -m \"subtask: \\{subtask_a\\} — \\{title\\}\"|merge --no-ff feature/\\S+)|git merge feature/\\S+ --no-ff( -m \"merge: \\{subtask_[abc]\\} \\{title\\}\")?|mv \\.supervisor/jobs/pending/<this-session-id>-\\*\\.md \\.supervisor/jobs/failed/|cp \\.supervisor/state\\.md (\"\\.supervisor/history/sample-sample\\.md\"|\\{scratchpad\\}/supervisor-state\\.md))$",
-      files: [
-        "agents/execute-manager.md", "agents/supervisor.md", "skills/async-orchestration/SKILL.md", "skills/async-orchestration/finalize.md",
-        "skills/autonomous-loop/SKILL.md", "skills/state-management/SKILL.md", "skills/workflow-management/SKILL.md",
-      ],
+      text: "^cp \\.supervisor/state\\.md (\"\\.supervisor/history/sample-sample\\.md\"|\\{scratchpad\\}/supervisor-state\\.md)$",
+      files: ["agents/supervisor.md", "skills/state-management/SKILL.md"],
     },
     kinds: AUTOMATE,
     reason_class: "program or subcommand not admitted",
-    reason: "the parallel path's `git -C ../<worktree> add -A|commit -m|merge --no-ff feature/…`, a local `git merge feature/<subtask> --no-ff`, and `mv` / `cp` of `.supervisor/` files: 25c admits these confined to the checkout (`cp` is not in 25c's list).",
-    consequence: "consequence if denied: an item that moves a `.supervisor/` file, or uses the Supervisor's parallel path, cannot finish (stale brief left in in-progress/, session 238).",
+    reason: "`cp` of `.supervisor/state.md` (a history snapshot, a scratchpad copy): `cp` is not a run prefix (found by 25a, not in 25c's list; 25c admitted the parallel path's `git -C ../<worktree> …`, the local `git merge feature/<subtask> --no-ff`, and `mv` / `rm` / `chmod`, confined to the checkout).",
+    consequence: "consequence if denied: the Supervisor's state snapshot is written with Write instead, or skipped.",
     filed: "25c",
+  },
+  {
+    id: "glob-job-move",
+    match: {
+      type: "command",
+      deny: ["loomwright_run_state"],
+      text: "^mv \\.supervisor/jobs/pending/<this-session-id>-\\*\\.md \\.supervisor/jobs/failed/$",
+      files: ["skills/autonomous-loop/SKILL.md"],
+    },
+    kinds: AUTOMATE,
+    reason_class: "program or subcommand not admitted",
+    reason: "a globbed `mv` of `.supervisor/` briefs: a word naming `supervisor` with a glob is refused by the run-state guard (a glob there could reach `.supervisor/automate/`), and 25c's confinement refuses every glob or brace operand (fail closed). The literal `mv` of one brief is admitted (events 30444, 33369).",
+    consequence: "consequence if denied: the session moves each named brief with its literal path.",
   },
   {
     id: "git-subcommands-unlisted",
     match: {
       type: "command",
       deny: NOT_LISTED,
-      text: "^git (pull( --ff-only)?|restore --staged -- <path>|check-ref-format --branch <value>|remote set-head origin -a|ls-tree -r --name-only sample|check-ignore -q --no-index sample)$",
+      text: "^git (pull( --ff-only)?|restore --staged -- <path>|check-ref-format --branch <value>|remote set-head origin -a|check-ignore -q --no-index sample)$",
       files: [
         "agents/launch-pad.md", "skills/automate-loop/helpers.md", "skills/automate-loop/per-item-loop.md", "skills/preflight-sync/SKILL.md",
         "skills/state-management/SKILL.md", "skills/supervisor-config/SKILL.md",
@@ -585,8 +590,8 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     },
     kinds: [...AUTOMATE, ...MERGE],
     reason_class: "program or subcommand not admitted",
-    reason: "git subcommands the 18.1.2 helpers, per-item loop and Launch Pad use (`pull --ff-only`, `restore --staged`, `check-ref-format`, `remote set-head`, `ls-tree -r --name-only \"origin/$BASE_BRANCH\"` for a cited ref, `check-ignore -q --no-index` in the `.supervisor/` gitignore probe) that RUN_BASH_PREFIXES does not list (found by 25a, not in 25c's list).",
-    consequence: "consequence if denied: the session cannot fast-forward its base, unstage a path, validate a branch name, resolve a cited ref by suffix (`resolves: no`) or probe `.supervisor/`'s ignore state with git.",
+    reason: "git subcommands the 18.1.2 helpers, per-item loop and Launch Pad use (`pull --ff-only`, `restore --staged`, `check-ref-format`, `remote set-head` (only `git remote -v` is a run prefix, as the whole command), `check-ignore -q --no-index` in the `.supervisor/` gitignore probe) that RUN_BASH_PREFIXES does not list (found by 25a, not in 25c's list; 25c admitted `git ls-tree`).",
+    consequence: "consequence if denied: the session cannot fast-forward its base, unstage a path, validate a branch name, set origin's HEAD or probe `.supervisor/`'s ignore state with git.",
     filed: "25c",
   },
   {
@@ -600,10 +605,16 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
   },
   {
     id: "reviewer-scratch-repro",
-    match: { type: "command", deny: NOT_LISTED, text: "^(git -c user\\.name=r -c user\\.email=r@x …|git init|mktemp -d|sed -i|tar -x -C sample|cd sample|git -C sample archive HEAD|rm -rf)$", files: ["agents/code-reviewer.md", "agents/worker.md"] },
+    match: {
+      type: "command",
+      // 25c: `rm -rf` with no operand is a run prefix's refused shape (`checkout_confinement`); the scratch dir it removes is outside the checkout.
+      deny: [...NOT_LISTED, "checkout_confinement"],
+      text: "^(git -c user\\.name=r -c user\\.email=r@x …|git init|mktemp -d|sed -i|tar -x -C sample|cd sample|git -C sample archive HEAD|rm -rf)$",
+      files: ["agents/code-reviewer.md", "agents/worker.md"],
+    },
     kinds: ALL,
     reason_class: "program or subcommand not admitted",
-    reason: "the reviewer's and worker's scratch-dir repro (`mktemp -d`, `git init`, `git -c user.name=…`, `sed -i`, `cd \"$SCRATCH\"`, `git -C <checkout> archive HEAD | tar -x -C \"$SCRATCH/tree\"`, `rm -rf` of the scratch dir only): outside the checkout 25c's confinement still refuses them (not in 25c's list).",
+    reason: "the reviewer's and worker's scratch-dir repro (`mktemp -d`, `git init`, `git -c user.name=…`, `sed -i`, `cd \"$SCRATCH\"`, `git -C <checkout> archive HEAD | tar -x -C \"$SCRATCH/tree\"`, `rm -rf` of the scratch dir only): `git archive` is no run prefix, and outside the checkout 25c's confinement refuses `rm` (not in 25c's list).",
     consequence: "consequence if denied: the self-review and code review skip their adversarial repro in a kernel run.",
     filed: "25c",
   },
@@ -652,15 +663,6 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     reason_class: "program or subcommand not admitted",
     reason: "the drain's escalation re-runs a failed CI run; RUN_BASH_PREFIXES lists only `gh run view` (an outward write; found by 25a, not in 25c's list).",
     consequence: "consequence if denied: a flaky required check is escalated instead of re-run.",
-    filed: "25c",
-  },
-  {
-    id: "task-output",
-    match: { type: "tool", tools: ["TaskOutput"] },
-    kinds: [...AUTOMATE, ...REVIEW],
-    reason_class: "tool not granted",
-    reason: "the Execute Manager waits on a background worker with `TaskOutput`; RUN_TOOLS does not grant it. 25c admits it.",
-    consequence: "consequence if denied: the Supervisor's parallel path cannot collect a background worker's result.",
     filed: "25c",
   },
   {
@@ -790,6 +792,34 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     consequence: "consequence if denied: none in safe mode.",
   },
 ] satisfies readonly RunExclusion[]);
+
+/**
+ * A Claude tool a run session asked for live and is denied on purpose, with no instruction entry in the extracted
+ * files (so no `RUN_EXCLUSIONS` row can match it: the stale check would fail it). Recorded with the studio.db events
+ * that saw it. The test asserts each is denied by every run policy.
+ */
+export interface RunToolDenial {
+  readonly tool: string;
+  readonly kinds: readonly RunSessionKind[];
+  readonly reason_class: ExclusionReasonClass;
+  readonly reason: string;
+  /** `tool_decision` event ids in studio.db (read-only query, 2026-11-22). */
+  readonly events: readonly number[];
+  readonly consequence: string;
+}
+
+/** Tools run sessions asked for and stay denied (phase 8 item 25c). Data only. */
+export const RUN_TOOL_DENIALS_OBSERVED: readonly RunToolDenial[] = Object.freeze([
+  {
+    tool: "SendMessage",
+    kinds: ALL,
+    reason_class: "tool not granted",
+    reason:
+      "RUN_TOOLS does not grant it: it messages another agent session (an agent-team teammate), a channel past the session the kernel owns and gates. A kernel run's subagents are `Agent` calls that return to it, and `TaskOutput` (25c) collects a background worker's result.",
+    events: [33474, 38037],
+    consequence: "consequence if denied: the run waits on its own subagents with `TaskOutput` instead of messaging them.",
+  },
+] satisfies readonly RunToolDenial[]);
 
 /** One command a Loomwright script the run policies admit runs itself, past the rail: recorded, not judged here (25h decides). */
 export interface PastTheRail {
