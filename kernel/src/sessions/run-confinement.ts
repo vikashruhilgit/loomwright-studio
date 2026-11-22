@@ -49,13 +49,14 @@ export type ShapeRefusal =
  * - `none`: not a confined program; nothing more to check here.
  * - `refuse`: the shape is refused (`checkout_confinement`).
  * - `paths`: every word of `operands` must resolve inside the checkout or a worktree (`confinementVerdict`);
- *   `recursive` when an option walks a tree (`-r`, `-R`).
+ *   `recursive` when an option walks a tree (`-r`, `-R`); `moved` is how many leading operands a move takes away
+ *   (`mv`, `git mv`: every operand but the last, the destination; 0 for every other program).
  * - `merge`: `branch` must be a local branch (`refs/heads/<branch>`), asked of git by the session gate.
  */
 export type ConfinedShape =
   | { readonly kind: "none" }
   | { readonly kind: "refuse"; readonly why: ShapeRefusal }
-  | { readonly kind: "paths"; readonly operands: readonly string[]; readonly recursive: boolean }
+  | { readonly kind: "paths"; readonly operands: readonly string[]; readonly recursive: boolean; readonly moved: number }
   | { readonly kind: "merge"; readonly branch: string };
 
 /** One program's closed option set: the short letters it takes (alone or clustered), the long options, and the letters that walk a tree. */
@@ -67,6 +68,8 @@ interface OptionSet {
   readonly endOfOptions: boolean;
   /** At least this many operands. */
   readonly minOperands: number;
+  /** Whether the program moves its leading operands away (`mv`, `git mv`; `-t` is refused, so the last operand is the destination). */
+  readonly moves: boolean;
 }
 
 /**
@@ -76,11 +79,11 @@ interface OptionSet {
  * default.
  */
 const OPTION_SETS: Readonly<Record<"rm" | "mv" | "chmod" | "git rm" | "git mv", OptionSet>> = Object.freeze({
-  rm: { letters: "frRv", long: [], recursive: "rR", endOfOptions: false, minOperands: 1 },
-  mv: { letters: "fnv", long: [], recursive: "", endOfOptions: false, minOperands: 2 },
-  chmod: { letters: "Rv", long: [], recursive: "R", endOfOptions: false, minOperands: 1 },
-  "git rm": { letters: "rfq", long: ["--cached"], recursive: "r", endOfOptions: true, minOperands: 1 },
-  "git mv": { letters: "fknv", long: [], recursive: "", endOfOptions: false, minOperands: 2 },
+  rm: { letters: "frRv", long: [], recursive: "rR", endOfOptions: false, minOperands: 1, moves: false },
+  mv: { letters: "fnv", long: [], recursive: "", endOfOptions: false, minOperands: 2, moves: true },
+  chmod: { letters: "Rv", long: [], recursive: "R", endOfOptions: false, minOperands: 1, moves: false },
+  "git rm": { letters: "rfq", long: ["--cached"], recursive: "r", endOfOptions: true, minOperands: 1, moves: false },
+  "git mv": { letters: "fknv", long: [], recursive: "", endOfOptions: false, minOperands: 2, moves: true },
 });
 
 /**
@@ -133,7 +136,7 @@ function pathShape(args: readonly string[], set: OptionSet, mode: boolean, git: 
     operands.push(w);
   }
   if (!modeSeen || operands.length < set.minOperands) return { kind: "refuse", why: "operands" };
-  return { kind: "paths", operands, recursive };
+  return { kind: "paths", operands, recursive, moved: set.moves ? operands.length - 1 : 0 };
 }
 
 /**
@@ -229,7 +232,11 @@ export type ConfinementRefusal =
   | "git_dir"
   /** Under `.supervisor/automate/` (run state, D45) or Loomwright's run lock `.supervisor/run.lock` (single drain, invariant 4). */
   | "run_state"
-  /** A recursive form whose target is the checkout or a worktree root. */
+  /**
+   * A recursive form (`rm -r`, `chmod -R`, `git rm -r`) or a move (`mv`, `git mv` source) whose operand is the
+   * checkout or a worktree root, or an ancestor of one (`rm -rf .claude` above `.claude/worktrees/w1`), which would
+   * delete or detach a worker's worktree.
+   */
   | "checkout_root";
 
 /** One confined operand after the session gate resolved it (`resolvedPath`, segment by segment). */
@@ -247,9 +254,11 @@ function segmentsOf(path: string): string[] {
   return path.toLowerCase().split("/").filter((s) => s !== "" && s !== ".");
 }
 
-/** Whether `a` and `b` (absolute, resolved) name the same directory, case-folded. */
-function samePath(a: string, b: string): boolean {
-  return segmentsOf(a).join("/") === segmentsOf(b).join("/");
+/** Whether `path` (absolute, resolved) is `root` or an ancestor of it, case-folded, on a segment boundary. */
+function isSameOrAncestor(path: string, root: string): boolean {
+  const p = segmentsOf(path);
+  const r = segmentsOf(root);
+  return p.length <= r.length && p.every((s, i) => r[i] === s);
 }
 
 /** Whether a resolved path is under `.supervisor/automate/` or `.supervisor/run.lock` (or is either directory). */
@@ -258,17 +267,28 @@ function isRunStatePath(path: string): boolean {
   return segs.some((s, i) => s === ".supervisor" && (segs[i + 1] === "automate" || segs[i + 1] === "run.lock"));
 }
 
+/** Whether a resolved path is a `.supervisor` directory itself: an ancestor of `.supervisor/automate/` and the run lock. */
+function isRunStateAncestor(path: string): boolean {
+  const segs = segmentsOf(path);
+  return segs[segs.length - 1] === ".supervisor";
+}
+
 /**
  * The verdict on a confined command's resolved operands (pure; the session gate resolves them): the first refusal
  * that applies to any operand, else `undefined` (admitted). `roots` are the resolved checkout and worktree roots.
+ * A recursive form, and the first `moved` operands (a move's sources), sweep everything under the operand, so they
+ * are judged on ancestry too: an operand that is a root or an ancestor of one is `checkout_root`, and a `.supervisor`
+ * directory (an ancestor of run state and the run lock) is `run_state`.
  */
-export function confinementVerdict(operands: readonly ResolvedOperand[], roots: readonly string[], recursive: boolean): ConfinementRefusal | undefined {
-  for (const op of operands) {
+export function confinementVerdict(operands: readonly ResolvedOperand[], roots: readonly string[], recursive: boolean, moved = 0): ConfinementRefusal | undefined {
+  for (const [i, op] of operands.entries()) {
     if (!op.inside) return "outside";
     if (op.underClaude) return "claude_dir";
     if (segmentsOf(op.path).includes(".git")) return "git_dir";
     if (isRunStatePath(op.path)) return "run_state";
-    if (recursive && roots.some((root) => samePath(root, op.path))) return "checkout_root";
+    const sweeps = recursive || i < moved;
+    if (sweeps && isRunStateAncestor(op.path)) return "run_state";
+    if (sweeps && roots.some((root) => isSameOrAncestor(op.path, root))) return "checkout_root";
   }
   return undefined;
 }

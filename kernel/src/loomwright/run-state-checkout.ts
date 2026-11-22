@@ -98,7 +98,11 @@ export function refTracksRunState(cwd: unknown, target: string): boolean {
 /**
  * The roots a run session's confined commands stay inside (25c): its checkout (`checkout`, the session row's
  * recorded cwd) and every worktree `git worktree list --porcelain -z` names for it (the main one included), each
- * `resolvedPath`'d. `undefined`, so the gate refuses, when the checkout is not an absolute path, git fails or times
+ * `resolvedPath`'d. A record git flags `prunable` (its directory is gone, or its `gitdir` names a path that does not
+ * exist) is dropped: git builds the list from `.git/worktrees/*` and `gitdir` files, and a forged entry there is how a
+ * path outside the checkout would become a root (review iteration 1). The forging write itself is refused in the
+ * policy (a run session's Write, Edit or NotebookEdit under a `.git` segment, `checkout_confinement`); this drop is
+ * the second layer. `undefined`, so the gate refuses, when the checkout is not an absolute path, git fails or times
  * out, git lists a worktree path that is not absolute, or any root resolves to `/` (fail closed).
  */
 export function confinementRoots(checkout: unknown): readonly string[] | undefined {
@@ -109,13 +113,19 @@ export function confinementRoots(checkout: unknown): readonly string[] | undefin
   } catch {
     return undefined;
   }
-  const roots = [resolvedPath(checkout)];
+  // One record per worktree: a `worktree <path>` field, then its attribute fields (`HEAD`, `branch`, `locked`,
+  // `prunable <reason>`, …), each NUL-terminated, records separated by an empty field.
+  const records: { path: string; prunable: boolean }[] = [];
   for (const field of listed.split("\0")) {
-    if (!field.startsWith("worktree ")) continue;
-    const path = field.slice("worktree ".length);
-    if (!path.startsWith("/")) return undefined;
-    roots.push(resolvedPath(path));
+    if (field.startsWith("worktree ")) {
+      const path = field.slice("worktree ".length);
+      if (!path.startsWith("/")) return undefined;
+      records.push({ path, prunable: false });
+    } else if ((field === "prunable" || field.startsWith("prunable ")) && records.length > 0) {
+      (records[records.length - 1] as { prunable: boolean }).prunable = true;
+    }
   }
+  const roots = [resolvedPath(checkout), ...records.filter((r) => !r.prunable).map((r) => resolvedPath(r.path))];
   return roots.some((r) => r === "/") ? undefined : [...new Set(roots)];
 }
 
@@ -166,7 +176,7 @@ function refusalReason(why: ConfinementRefusal): "checkout_confinement" | "loomw
  *   `confinementVerdict`; the command's operands are then resolved against it;
  * - every operand of `rm`, `mv`, `chmod`, `git rm`, `git mv` must pass `confinementVerdict` (inside a root, not
  *   under `<homeDir>/.claude`, a `.git` directory, `.supervisor/automate/` or `.supervisor/run.lock`, and for a
- *   recursive form not a root itself);
+ *   recursive form or a move's source neither a root nor an ancestor of one, nor a `.supervisor` directory);
  * - a `git merge`'s branch must be a local branch (`isLocalBranch`) whose tree tracks no run state
  *   (`refTracksRunState`: a merge brings in a tracked run file as a checkout does).
  */
@@ -186,7 +196,7 @@ export function checkoutConfinement(view: RunGateView, hookCwd: unknown, checkou
     if (why !== undefined) return deny(refusalReason(why));
   }
   if (view.shape.kind === "paths") {
-    const why = confinementVerdict(view.shape.operands.map((w) => operandOf(physicalPath(base, w))), roots, view.shape.recursive);
+    const why = confinementVerdict(view.shape.operands.map((w) => operandOf(physicalPath(base, w))), roots, view.shape.recursive, view.shape.moved);
     if (why !== undefined) return deny(refusalReason(why));
   }
   if (view.shape.kind === "merge") {

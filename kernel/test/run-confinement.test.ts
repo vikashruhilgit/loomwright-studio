@@ -36,20 +36,21 @@ const shape = (command: string) => confinedShape(words(command));
 
 describe("confinedShape: the closed option sets and the refused operand forms", () => {
   it.each([
-    ["rm a.txt", ["a.txt"], false],
-    ["rm -f a b", ["a", "b"], false],
-    ["rm -rf build", ["build"], true],
-    ["rm -Rv build", ["build"], true],
-    ["mv .supervisor/jobs/in-progress/x.md .supervisor/jobs/failed/x.md", [".supervisor/jobs/in-progress/x.md", ".supervisor/jobs/failed/x.md"], false],
-    ["mv -fnv a b", ["a", "b"], false],
-    ["chmod +x drum.sh", ["drum.sh"], false],
-    ["chmod 755 a b", ["a", "b"], false],
-    ["chmod -R u+x,g-w dir", ["dir"], true],
-    ["git rm --cached -q a", ["a"], false],
-    ["git rm -r -- -odd", ["-odd"], true],
-    ["git mv -k a b", ["a", "b"], false],
-  ] as const)("`%s` is a confined path shape", (command, operands, recursive) => {
-    expect(shape(command)).toEqual({ kind: "paths", operands, recursive });
+    ["rm a.txt", ["a.txt"], false, 0],
+    ["rm -f a b", ["a", "b"], false, 0],
+    ["rm -rf build", ["build"], true, 0],
+    ["rm -Rv build", ["build"], true, 0],
+    ["mv .supervisor/jobs/in-progress/x.md .supervisor/jobs/failed/x.md", [".supervisor/jobs/in-progress/x.md", ".supervisor/jobs/failed/x.md"], false, 1],
+    ["mv -fnv a b", ["a", "b"], false, 1],
+    ["mv a b dir", ["a", "b", "dir"], false, 2],
+    ["chmod +x drum.sh", ["drum.sh"], false, 0],
+    ["chmod 755 a b", ["a", "b"], false, 0],
+    ["chmod -R u+x,g-w dir", ["dir"], true, 0],
+    ["git rm --cached -q a", ["a"], false, 0],
+    ["git rm -r -- -odd", ["-odd"], true, 0],
+    ["git mv -k a b", ["a", "b"], false, 1],
+  ] as const)("`%s` is a confined path shape", (command, operands, recursive, moved) => {
+    expect(shape(command)).toEqual({ kind: "paths", operands, recursive, moved });
   });
 
   it.each([
@@ -168,6 +169,26 @@ describe("confinementVerdict: the resolved operands", () => {
     expect(confinementVerdict([op("/w/co/build")], roots, true)).toBeUndefined();
     // Not recursive: the root itself is a plain operand (chmod +x . changes one directory's mode).
     expect(confinementVerdict([op("/w/co")], roots, false)).toBeUndefined();
+  });
+
+  it("judges a recursive form and a move's sources on ancestry: a root's ancestor, or a `.supervisor` directory (review iteration 1)", () => {
+    const nested = ["/w/co", "/w/co/.claude/worktrees/w1"];
+    // `rm -rf .claude` above a worktree, `chmod -R` on it, and the `.claude/worktrees` between.
+    expect(confinementVerdict([op("/w/co/.claude")], nested, true)).toBe("checkout_root");
+    expect(confinementVerdict([op("/w/co/.Claude/Worktrees")], nested, true)).toBe("checkout_root");
+    expect(confinementVerdict([op("/w/co/.claude/other")], nested, true)).toBeUndefined();
+    // A segment boundary: `.claude/worktrees/w10` is no ancestor of `w1`.
+    expect(confinementVerdict([op("/w/co/.claude/worktrees/w10")], nested, true)).toBeUndefined();
+    // `mv .claude/worktrees/w1 moved` and `mv .claude moved` detach the worktree; moving into it is fine.
+    expect(confinementVerdict([op("/w/co/.claude/worktrees/w1"), op("/w/co/moved")], nested, false, 1)).toBe("checkout_root");
+    expect(confinementVerdict([op("/w/co/.claude"), op("/w/co/moved")], nested, false, 1)).toBe("checkout_root");
+    expect(confinementVerdict([op("/w/co/a"), op("/w/co/.claude/worktrees/w1")], nested, false, 1)).toBeUndefined();
+    // Not recursive and not moved: an ancestor is a plain operand.
+    expect(confinementVerdict([op("/w/co/.claude")], nested, false)).toBeUndefined();
+    // A `.supervisor` directory holds run state and the run lock.
+    expect(confinementVerdict([op("/w/co/.supervisor")], roots, true)).toBe("run_state");
+    expect(confinementVerdict([op("/w/co/.Supervisor"), op("/w/co/x")], roots, false, 1)).toBe("run_state");
+    expect(confinementVerdict([op("/w/co/.supervisor/jobs")], roots, true)).toBeUndefined();
   });
 });
 
@@ -323,6 +344,33 @@ describe("checkoutConfinement: the session gate's check (25c)", () => {
     for (const command of ["rm -rf .", "rm -r ./", `rm -rf ${co}`, "chmod -R +x .", "git rm -r .", "git rm -r --cached ."]) expect(gate(command), command).toEqual(DENY);
     // The same path, not recursive, is one operand.
     expect(gate("chmod +x .")).toMatchObject({ kind: "ok" });
+  });
+
+  it("refuses a recursive form or a move on an ancestor of a worktree root (review iteration 1)", () => {
+    const w1 = join(co, ".claude", "worktrees", "w1");
+    mkdirSync(join(co, ".claude", "worktrees"), { recursive: true });
+    git(co, "worktree", "add", "-q", "-b", "w1", w1);
+    mkdirSync(join(co, ".claude", "other"));
+    for (const command of ["rm -rf .claude", "rm -rf .claude/worktrees", "chmod -R +x .claude", "git rm -r .claude", "mv .claude/worktrees/w1 moved", "mv .claude moved", "git mv .claude moved"]) {
+      expect(gate(command), command).toEqual(DENY);
+    }
+    expect(gate("rm -rf .claude/other")).toMatchObject({ kind: "ok" });
+    expect(gate("mv a.txt .claude/worktrees/w1/a.txt")).toMatchObject({ kind: "ok" });
+  });
+
+  it("drops a worktree git flags prunable: a forged `.git/worktrees/<x>` entry is no root (review iteration 1)", () => {
+    const victim = join(tmp, "victim");
+    mkdirSync(join(victim, "data"), { recursive: true });
+    const forged = join(co, ".git", "worktrees", "evil");
+    mkdirSync(forged, { recursive: true });
+    writeFileSync(join(forged, "gitdir"), `${join(victim, ".git")}\n`);
+    writeFileSync(join(forged, "HEAD"), `${git(co, "rev-parse", "HEAD").trim()}\n`);
+    writeFileSync(join(forged, "commondir"), "../..\n");
+    // git lists it (prunable); it is not a root, so the victim's files stay outside.
+    expect(git(co, "worktree", "list", "--porcelain")).toContain(`worktree ${victim}`);
+    expect(confinementRoots(co)).toEqual([co]);
+    expect(gate(`rm -rf ${join(victim, "data")}`)).toEqual(DENY);
+    expect(gate(`git -C ${victim} status`)).toEqual(DENY);
   });
 
   it("fails closed with no absolute hook cwd, or roots git cannot list", () => {

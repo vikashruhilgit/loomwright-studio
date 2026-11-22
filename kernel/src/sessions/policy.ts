@@ -78,8 +78,9 @@ export type ToolDecisionReason =
    * `git merge` outside its admitted shape (`run-confinement.ts`: an option outside the program's closed set, a
    * glob, brace, `~` or `..` operand, a second git global option, a merge that is not `git merge <name> [--no-ff]
    * [-m <msg>]`), or, decided in the session gate, one naming a path outside the session's checkout and its git
-   * worktrees, under `~/.claude/` or a `.git` directory, a recursive form on the checkout root, or a merge of
-   * anything but a local branch.
+   * worktrees, under `~/.claude/` or a `.git` directory, a recursive form or a move on the checkout or a
+   * worktree root (or an ancestor of one), or a merge of anything but a local branch. Also a run session's Write,
+   * Edit or NotebookEdit of a path under a `.git` segment (`writesGitDir`, review iteration 1).
    */
   | "checkout_confinement";
 
@@ -182,7 +183,25 @@ export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: u
     return command === undefined ? { decision: "deny", reason: "tool_not_allowed" } : decideToolUse(policy, "Bash", { command });
   }
   if (runPolicy && writesLoomwrightRunState(toolName, toolInput)) return { decision: "deny", reason: "loomwright_run_state" };
+  if (runPolicy && writesGitDir(toolName, toolInput)) return { decision: "deny", reason: "checkout_confinement" };
   return { decision: "allow", reason: "tool_allowed" };
+}
+
+/**
+ * Whether a Write, Edit or NotebookEdit call's path lies under a `.git` segment (or is one: a worktree's `.git`
+ * file), case-folded, after `..` is applied, read as `writesLoomwrightRunState` reads it (25c, review iteration 1).
+ * The session gate takes a run session's confinement roots from `git worktree list`, which git builds from
+ * `.git/worktrees/*` (`gitdir`, `HEAD`, `commondir`), and git runs what `.git/config` and `.git/hooks/` name; so a
+ * run session writes nothing there with a file tool. No Loomwright step does: its own `.git/info/exclude` line is
+ * written by `supervisor-next-step.sh` (18.1.2), not by a file tool. Honest limit: the path text is read, not the
+ * file system (a run policy grants no program that makes a symlink). Pure.
+ */
+function writesGitDir(toolName: string, toolInput: unknown): boolean {
+  const field = Object.prototype.hasOwnProperty.call(WRITE_TOOLS, toolName) ? WRITE_TOOLS[toolName] : undefined;
+  if (field === undefined || typeof toolInput !== "object" || toolInput === null) return false;
+  const raw = (toolInput as Record<string, unknown>)[field];
+  if (typeof raw !== "string" || raw === "") return false;
+  return resolve("/", raw.toLowerCase()).split("/").includes(".git");
 }
 
 /**

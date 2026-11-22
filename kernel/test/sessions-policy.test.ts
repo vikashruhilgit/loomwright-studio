@@ -1452,6 +1452,33 @@ describe("25c: the run policy's new shapes (decideToolUse)", () => {
     expect(decideToolUse(plain, "Bash", { command: "rm -x src/*.ts" })).toEqual(ALLOW);
   });
 
+  it("a run session's Write, Edit or NotebookEdit under a `.git` segment is refused (review iteration 1: forged worktrees, config, hooks)", () => {
+    const TOOL = { decision: "allow", reason: "tool_allowed" };
+    for (const [tool, input] of [
+      ["Write", { file_path: ".git/worktrees/x/gitdir", content: "/elsewhere/.git\n" }],
+      ["Write", { file_path: "/w/co/.git/worktrees/x/HEAD", content: "" }],
+      ["Write", { file_path: "/w/co/.git/config", content: "" }],
+      ["Write", { file_path: "/w/co/.git/hooks/x", content: "" }],
+      ["Write", { file_path: "/w/co/.GIT/Config", content: "" }],
+      ["Write", { file_path: "/w/co/build/../.git/config", content: "" }],
+      // A worktree's own `.git` file (its back-pointer), and a `.git` file planted in a subdirectory.
+      ["Write", { file_path: "/w/wt/.git", content: "gitdir: /elsewhere/.git\n" }],
+      ["Edit", { file_path: "/w/co/.git/config", old_string: "a", new_string: "b" }],
+    ] as const) {
+      expect(decideToolUse(RUN, tool, input), `${tool} ${JSON.stringify(input)}`).toEqual(CONFINE);
+    }
+    // NotebookEdit is no run tool; a run policy that granted it would refuse it the same way.
+    const withNotebook: ToolPolicy = { ...RUN, allowedTools: [...RUN.allowedTools, "NotebookEdit"] };
+    expect(decideToolUse(withNotebook, "NotebookEdit", { notebook_path: "/w/co/.git/x.ipynb", new_source: "" })).toEqual(CONFINE);
+    // Names that only start with `.git` are work files.
+    expect(decideToolUse(RUN, "Write", { file_path: "/w/co/.gitignore", content: "" })).toEqual(TOOL);
+    expect(decideToolUse(RUN, "Write", { file_path: "/w/co/.github/workflows/ci.yml", content: "" })).toEqual(TOOL);
+    expect(decideToolUse(RUN, "Write", { file_path: "/w/co/src/a.ts", content: "" })).toEqual(TOOL);
+    // Outside a run policy nothing changes.
+    const plain: ToolPolicy = { allowedTools: ["Write"], allowedBashPrefixes: [] };
+    expect(decideToolUse(plain, "Write", { file_path: "/w/co/.git/config", content: "" })).toEqual(TOOL);
+  });
+
   it("TaskOutput and Monitor are run tools; SendMessage is not", () => {
     expect(decideToolUse(RUN, "TaskOutput", { task_id: "t1", block: true, timeout: 1000 })).toEqual({ decision: "allow", reason: "tool_allowed" });
     expect(decideToolUse(RUN, "SendMessage", { to: "w", message: "x" })).toEqual({ decision: "deny", reason: "tool_not_allowed" });
