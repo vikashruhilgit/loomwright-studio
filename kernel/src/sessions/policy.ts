@@ -80,7 +80,8 @@ export type ToolDecisionReason =
    * [-m <msg>]`), or, decided in the session gate, one naming a path outside the session's checkout and its git
    * worktrees, under `~/.claude/` or a `.git` directory, a recursive form or a move on the checkout or a
    * worktree root (or an ancestor of one), or a merge of anything but a local branch. Also a run session's Write,
-   * Edit or NotebookEdit of a path under a `.git` segment (`writesGitDir`, review iteration 1).
+   * Edit or NotebookEdit of a path under a `.git` segment: as text here (`writesGitDir`, review iteration 1), and
+   * resolved on disk through every symlink in the session gate (`writeTargetInGitDir`, review iteration 2).
    */
   | "checkout_confinement";
 
@@ -188,20 +189,29 @@ export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: u
 }
 
 /**
+ * The path a Write, Edit or NotebookEdit call writes (`file_path` / `notebook_path`, as given), else `undefined`.
+ * The session gate resolves it on disk for a run session (`writeTargetInGitDir`, 25c review iteration 2). Pure.
+ */
+export function writeToolPath(toolName: string, toolInput: unknown): string | undefined {
+  const field = Object.prototype.hasOwnProperty.call(WRITE_TOOLS, toolName) ? WRITE_TOOLS[toolName] : undefined;
+  if (field === undefined || typeof toolInput !== "object" || toolInput === null) return undefined;
+  const raw = (toolInput as Record<string, unknown>)[field];
+  return typeof raw === "string" && raw !== "" ? raw : undefined;
+}
+
+/**
  * Whether a Write, Edit or NotebookEdit call's path lies under a `.git` segment (or is one: a worktree's `.git`
  * file), case-folded, after `..` is applied, read as `writesLoomwrightRunState` reads it (25c, review iteration 1).
- * The session gate takes a run session's confinement roots from `git worktree list`, which git builds from
- * `.git/worktrees/*` (`gitdir`, `HEAD`, `commondir`), and git runs what `.git/config` and `.git/hooks/` name; so a
+ * git runs what `.git/config` and `.git/hooks/` name, and builds `git worktree list` from `.git/worktrees/*`; so a
  * run session writes nothing there with a file tool. No Loomwright step does: its own `.git/info/exclude` line is
- * written by `supervisor-next-step.sh` (18.1.2), not by a file tool. Honest limit: the path text is read, not the
- * file system (a run policy grants no program that makes a symlink). Pure.
+ * written by `supervisor-next-step.sh` (18.1.2), not by a file tool. This is the first layer and reads the path
+ * text only: a symlink into `.git` (which `git checkout`, `git merge` or `gh pr checkout` can create from a
+ * committed link) is not seen here. The session gate resolves the same path on disk for a run session and refuses
+ * it there too (`writeTargetInGitDir`, `loomwright/run-state-checkout.ts`, review iteration 2). Pure.
  */
 function writesGitDir(toolName: string, toolInput: unknown): boolean {
-  const field = Object.prototype.hasOwnProperty.call(WRITE_TOOLS, toolName) ? WRITE_TOOLS[toolName] : undefined;
-  if (field === undefined || typeof toolInput !== "object" || toolInput === null) return false;
-  const raw = (toolInput as Record<string, unknown>)[field];
-  if (typeof raw !== "string" || raw === "") return false;
-  return resolve("/", raw.toLowerCase()).split("/").includes(".git");
+  const raw = writeToolPath(toolName, toolInput);
+  return raw !== undefined && resolve("/", raw.toLowerCase()).split("/").includes(".git");
 }
 
 /**

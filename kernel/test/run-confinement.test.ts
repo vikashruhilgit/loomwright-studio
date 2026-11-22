@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkoutConfinement, confinementRoots, isLocalBranch, physicalPath } from "../src/loomwright/run-state-checkout.js";
+import { checkoutConfinement, confinementRoots, isLocalBranch, physicalPath, writeTargetInGitDir } from "../src/loomwright/run-state-checkout.js";
 import { isInsideResolved } from "../src/protected-paths.js";
 import { runGateView } from "../src/sessions/policy.js";
 import {
@@ -371,6 +371,92 @@ describe("checkoutConfinement: the session gate's check (25c)", () => {
     expect(confinementRoots(co)).toEqual([co]);
     expect(gate(`rm -rf ${join(victim, "data")}`)).toEqual(DENY);
     expect(gate(`git -C ${victim} status`)).toEqual(DENY);
+  });
+
+  it("drops a forged entry naming an EXISTING directory: its `.git` must link back to the entry (review iteration 2)", () => {
+    const victim = join(tmp, "victim");
+    mkdirSync(join(victim, "data"), { recursive: true });
+    const forged = join(co, ".git", "worktrees", "evil");
+    mkdirSync(forged, { recursive: true });
+    writeFileSync(join(forged, "gitdir"), `${join(victim, ".git")}\n`);
+    writeFileSync(join(forged, "HEAD"), `${git(co, "rev-parse", "HEAD").trim()}\n`);
+    writeFileSync(join(forged, "commondir"), "../..\n");
+    // A `.git` directory in the victim (an existing repo): not prunable to git, still no root.
+    mkdirSync(join(victim, ".git"));
+    expect(git(co, "worktree", "list", "--porcelain")).not.toContain("prunable");
+    expect(confinementRoots(co)).toEqual([co]);
+    expect(gate(`rm -rf ${join(victim, "data")}`)).toEqual(DENY);
+    // A `.git` file pointing at the forged entry is not enough while the entry is a forgery of another worktree's;
+    // and one pointing at a legitimate worktree's entry fails the link back.
+    rmSync(join(victim, ".git"), { recursive: true });
+    git(co, "worktree", "add", "-q", "-b", "sub", join(tmp, "wt"));
+    writeFileSync(join(victim, ".git"), `gitdir: ${join(co, ".git", "worktrees", "wt")}\n`);
+    expect(confinementRoots(co)).toEqual([co, join(tmp, "wt")]);
+    // A symlinked `.git` file is never trusted, even one whose target links back.
+    rmSync(join(victim, ".git"));
+    writeFileSync(join(tmp, "dotgit"), `gitdir: ${forged}\n`);
+    symlinkSync(join(tmp, "dotgit"), join(victim, ".git"));
+    expect(confinementRoots(co)).toEqual([co, join(tmp, "wt")]);
+  });
+
+  it("keeps every worktree `git worktree add` made, absolute or relative links", () => {
+    git(co, "worktree", "add", "-q", "-b", "abs", join(tmp, "wt-abs"));
+    git(co, "worktree", "add", "-q", "--relative-paths", "-b", "rel", join(tmp, "wt-rel"));
+    mkdirSync(join(co, ".claude", "worktrees"), { recursive: true });
+    git(co, "worktree", "add", "-q", "-b", "w1", join(co, ".claude", "worktrees", "w1"));
+    const all = [co, join(tmp, "wt-abs"), join(tmp, "wt-rel"), join(co, ".claude", "worktrees", "w1")].sort();
+    expect([...(confinementRoots(co) ?? [])].sort()).toEqual(all);
+    // From inside a linked worktree, the main checkout is a root too.
+    expect([...(confinementRoots(join(tmp, "wt-abs")) ?? [])].sort()).toEqual(all);
+  });
+
+  it("writeTargetInGitDir resolves a file tool's path on disk: a committed link into `.git`, a final-component link, a dangling one (review iteration 2)", () => {
+    symlinkSync(".git", join(co, "docs"));
+    expect(writeTargetInGitDir("docs/worktrees/evil/gitdir", co)).toBe(true);
+    expect(writeTargetInGitDir(join(co, "docs", "config"), co)).toBe(true);
+    expect(writeTargetInGitDir(join(co, "docs"), co)).toBe(true);
+    // A final-component link, existing target or dangling (a write through it creates the target).
+    symlinkSync(join(co, ".git", "config"), join(co, "cfg"));
+    symlinkSync(join(co, ".git", "hooks", "pre-commit"), join(co, "hook"));
+    symlinkSync("../.git/worktrees/evil/gitdir", join(co, "sub-link"));
+    mkdirSync(join(co, "sub"));
+    symlinkSync("../.git/worktrees/evil/gitdir", join(co, "sub", "x"));
+    expect(writeTargetInGitDir("cfg", co)).toBe(true);
+    expect(writeTargetInGitDir("hook", co)).toBe(true);
+    expect(writeTargetInGitDir("sub/x", co)).toBe(true);
+    // The text forms the policy also refuses, case-folded.
+    expect(writeTargetInGitDir(".GIT/config", co)).toBe(true);
+    expect(writeTargetInGitDir("w/.git", co)).toBe(true);
+    // Ordinary writes: an existing file, a new file in a new directory, a link to a work file.
+    symlinkSync("a.txt", join(co, "alias"));
+    for (const path of ["a.txt", join(co, "src", "new", "x.ts"), "alias", "gitdir-notes.md", ".github/workflows/ci.yml"]) expect(writeTargetInGitDir(path, co), path).toBe(false);
+    // Fail closed: a relative path with no absolute cwd, a link loop.
+    expect(writeTargetInGitDir("a.txt", undefined)).toBe(true);
+    expect(writeTargetInGitDir("a.txt", "relative")).toBe(true);
+    symlinkSync("loop2", join(co, "loop1"));
+    symlinkSync("loop1", join(co, "loop2"));
+    expect(writeTargetInGitDir("loop1", co)).toBe(true);
+  });
+
+  it("refuses a `git -C` directory in `.supervisor`: git reads the rest's words against it, the guard reads them as text (review iteration 2)", () => {
+    mkdirSync(join(co, ".supervisor", "jobs"), { recursive: true });
+    mkdirSync(join(co, ".supervisor", "automate"), { recursive: true });
+    mkdirSync(join(co, "kernel"));
+    for (const command of [
+      "git -C .supervisor add -f automate/r1.md",
+      "git -C .supervisor checkout -- automate/r1.md",
+      "git -C .supervisor/jobs checkout -- ../automate/r1.md",
+      "git -C .SUPERVISOR status",
+      `git -C ${join(co, ".supervisor")} rm --cached automate/r1.md`,
+    ]) {
+      expect(gate(command), command).toEqual(RUN_STATE);
+    }
+    // A symlink to `.supervisor` is the same directory once resolved.
+    symlinkSync(".supervisor", join(co, "sv"));
+    expect(gate("git -C sv add -f automate/r1.md")).toEqual(RUN_STATE);
+    // A directory outside `.supervisor` is admitted by the gate; its words naming run state are the policy's
+    // (sessions-policy.test.ts pins `git -C kernel add -f ../.supervisor/automate/x` as loomwright_run_state).
+    expect(gate("git -C kernel status")).toEqual({ kind: "ok", gitCwd: join(co, "kernel") });
   });
 
   it("fails closed with no absolute hook cwd, or roots git cannot list", () => {

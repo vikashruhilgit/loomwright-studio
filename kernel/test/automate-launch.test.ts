@@ -26,7 +26,7 @@ import { TICKET_RUN_SYSTEM_NOTE } from "../src/sessions/policy.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage, HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentMemoryDir, agentSettingsPath } from "../src/agents/index.js";
@@ -1091,6 +1091,60 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(held.permissionDecision).toBe("deny");
     expect(held.permissionDecisionReason).toMatch(/^approval_required: held as approval \d+/);
     expect(r.store.prepare("SELECT action FROM approvals").pluck().all()).toEqual(["git push"]);
+  });
+
+  it("25c review iteration 2: a merged `docs -> .git` symlink forges no root, and `git -C .supervisor` reaches no run state", async () => {
+    const r = await rig();
+    const l = await launch(r, "mason");
+    const run = gateOf(l.run);
+    const ws = r.workspaces["mason"] as string;
+    const { git, worktree } = gitCheckout(ws);
+    const CONFINE = { permissionDecision: "deny", permissionDecisionReason: "checkout_confinement" };
+    const RUN_STATE = { permissionDecision: "deny", permissionDecisionReason: "loomwright_run_state" };
+    const ALLOW = { permissionDecision: "allow" };
+    const victim = join(tmp, "victim");
+    mkdirSync(join(victim, "data"), { recursive: true });
+
+    // The reviewer's repro: a branch commits `docs -> .git`; its merge passes the gate (a local branch, no run state).
+    git("checkout", "-qb", "pr");
+    symlinkSync(".git", join(ws, "docs"));
+    git("add", "docs");
+    git("commit", "-qm", "docs");
+    git("checkout", "-q", "main");
+    expect(await run("Bash", { command: "git merge pr --no-ff -m x" })).toMatchObject(ALLOW);
+    git("merge", "-q", "pr", "--no-ff", "-m", "x");
+    // Every Write through the link into `.git` is refused on disk, relative or absolute.
+    for (const name of ["gitdir", "HEAD", "commondir"]) {
+      expect(await run("Write", { file_path: `docs/worktrees/evil/${name}`, content: "x\n" }), name).toMatchObject(CONFINE);
+      expect(await run("Write", { file_path: join(ws, "docs", "worktrees", "evil", name), content: "x\n" }), name).toMatchObject(CONFINE);
+    }
+    expect(await run("Edit", { file_path: join(ws, "docs", "config"), old_string: "a", new_string: "b" })).toMatchObject(CONFINE);
+    // Had the entry been forged anyway, the victim is no root: its `.git` does not link back to the entry.
+    const forged = join(ws, ".git", "worktrees", "evil");
+    mkdirSync(forged, { recursive: true });
+    writeFileSync(join(forged, "gitdir"), `${join(victim, ".git")}\n`);
+    writeFileSync(join(forged, "HEAD"), `${git("rev-parse", "HEAD").trim()}\n`);
+    writeFileSync(join(forged, "commondir"), "../..\n");
+    expect(await run("Bash", { command: `rm -rf ${join(victim, "data")}` })).toMatchObject(CONFINE);
+    // Ordinary work stays admitted: a Write in the checkout, the legitimate worktree's files, the brief move.
+    expect(await run("Write", { file_path: join(ws, "notes.md"), content: "x\n" })).toMatchObject(ALLOW);
+    expect(await run("Bash", { command: `rm -f ${join(worktree, "greeting.sh")}` })).toMatchObject(ALLOW);
+    expect(await run("Bash", { command: "mv .supervisor/jobs/in-progress/2026-11-17-add-cheer-sh.md .supervisor/jobs/failed/" })).toMatchObject(ALLOW);
+
+    // `git -C <dir>`: git reads the rest's words against <dir>, so a <dir> in `.supervisor` is refused.
+    mkdirSync(join(ws, ".supervisor", "automate"), { recursive: true });
+    for (const command of ["git -C .supervisor add -f automate/r1.md", "git -C .supervisor checkout -- automate/r1.md", "git -C .supervisor/jobs checkout -- ../automate/r1.md"]) {
+      expect(await run("Bash", { command }), command).toMatchObject(RUN_STATE);
+    }
+    expect(await run("Bash", { command: "git -C . add -f .supervisor/automate/r1.md" })).toMatchObject(RUN_STATE);
+    // The rail reads a relative word wherever git resolves it (its relative form is matched too, not only
+    // against the hook's cwd): a `git -C <dir>` climb into ~/.claude from <dir> is still the ~/.claude target.
+    mkdirSync(join(ws, "a", "b"), { recursive: true });
+    const climb = relative(join(ws, "a", "b"), join(tmp, "home", ".claude", "notes.txt"));
+    const railed = await run("Bash", { command: `git -C a/b diff --output=${climb}` });
+    expect(railed.permissionDecision).toBe("deny");
+    expect(railed.permissionDecisionReason).toMatch(/^approval_required: held as approval \d+/);
+    expect(r.store.prepare("SELECT action FROM approvals").pluck().all()).toEqual(["Bash naming ~/.claude/"]);
   });
 
   it("AC12: a gate question in the run session is allowed by the policy and HELD in Approvals with its header, text and option labels; no always grant covers it (the owner's answer path is unverified)", async () => {

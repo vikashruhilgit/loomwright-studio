@@ -12,7 +12,7 @@
 // shape half is pure (`sessions/run-confinement.ts`).
 
 import { execFileSync } from "node:child_process";
-import { lstatSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isInsideResolved, resolvedPath } from "../protected-paths.js";
 import type { RunGateView } from "../sessions/policy.js";
@@ -95,37 +95,97 @@ export function refTracksRunState(cwd: unknown, target: string): boolean {
 
 // ---- 25c: a run session's file operations, `git -C` and `git merge` stay inside its checkout ----
 
+/** Whether two paths name the same place once resolved (`isInsideResolved` both ways: case-folded, firmlink-free). */
+function sameResolved(a: string, b: string): boolean {
+  return isInsideResolved(a, b) && isInsideResolved(b, a);
+}
+
+/** The text of a regular file (`lstat`: never through a symlink), else `undefined`. */
+function regularFileText(path: string): string | undefined {
+  try {
+    return lstatSync(path).isFile() ? readFileSync(path, "utf8") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A path git wrote in a link file (`<root>/.git`'s `gitdir:` line, `.git/worktrees/<id>/gitdir`): one line, absolute or relative to `dir`. */
+function linkTarget(dir: string, text: string): string | undefined {
+  const line = text.replace(/\r?\n$/, "");
+  if (line === "" || line.includes("\n")) return undefined;
+  return resolvedPath(line.startsWith("/") ? line : join(dir, line));
+}
+
+/**
+ * Whether a worktree git listed is one git itself made for this repository, judged on files the session cannot write
+ * (review iteration 2), with `common` the repository's resolved common `.git` directory:
+ * - the main worktree: `<path>/.git` is a directory (`lstat`: not a symlink) that resolves to `common`;
+ * - a linked worktree: `<path>/.git` is a regular file whose `gitdir:` line resolves to a directory directly under
+ *   `<common>/worktrees/`, and that entry's own `gitdir` file resolves back to `<path>/.git`.
+ * A forged `.git/worktrees/<id>` entry naming an existing directory elsewhere fails the second rule unless that
+ * directory already holds a `.git` file pointing back at the entry, and a run session writes neither (the policy and
+ * the gate refuse a Write, Edit or NotebookEdit under a `.git` segment, resolved on disk: `writeTargetInGitDir`).
+ */
+function trustedWorktree(path: string, common: string): boolean {
+  const dotGit = join(path, ".git");
+  let stat;
+  try {
+    stat = lstatSync(dotGit);
+  } catch {
+    return false;
+  }
+  if (stat.isDirectory()) return sameResolved(dotGit, common);
+  const text = stat.isFile() ? regularFileText(dotGit) : undefined;
+  const m = text === undefined ? null : /^gitdir: (.+)$/.exec(text.replace(/\r?\n$/, ""));
+  if (m === null) return false;
+  const admin = linkTarget(path, m[1] as string);
+  if (admin === undefined || !sameResolved(dirname(admin), join(common, "worktrees"))) return false;
+  try {
+    if (!lstatSync(admin).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  const back = regularFileText(join(admin, "gitdir"));
+  const backTarget = back === undefined ? undefined : linkTarget(admin, back);
+  return backTarget !== undefined && sameResolved(backTarget, dotGit);
+}
+
 /**
  * The roots a run session's confined commands stay inside (25c): its checkout (`checkout`, the session row's
  * recorded cwd) and every worktree `git worktree list --porcelain -z` names for it (the main one included), each
- * `resolvedPath`'d. A record git flags `prunable` (its directory is gone, or its `gitdir` names a path that does not
- * exist) is dropped: git builds the list from `.git/worktrees/*` and `gitdir` files, and a forged entry there is how a
- * path outside the checkout would become a root (review iteration 1). The forging write itself is refused in the
- * policy (a run session's Write, Edit or NotebookEdit under a `.git` segment, `checkout_confinement`); this drop is
- * the second layer. `undefined`, so the gate refuses, when the checkout is not an absolute path, git fails or times
- * out, git lists a worktree path that is not absolute, or any root resolves to `/` (fail closed).
+ * `resolvedPath`'d. git builds that list from `.git/worktrees/*` and their `gitdir` files, so a listed path is kept
+ * only when the files git made for it agree (`trustedWorktree`): not flagged `prunable`, not `bare`, and its `.git`
+ * links back to the entry that listed it (review iterations 1 and 2). A forged entry naming a path outside the
+ * checkout is how that path would otherwise become a root. `undefined`, so the gate refuses, when the checkout is not
+ * an absolute path, git fails or times out, git lists a worktree path that is not absolute, or any root resolves to
+ * `/` (fail closed).
  */
 export function confinementRoots(checkout: unknown): readonly string[] | undefined {
   if (typeof checkout !== "string" || !checkout.startsWith("/")) return undefined;
   let listed: string;
+  let common: string;
   try {
     listed = runGit(checkout, ["worktree", "list", "--porcelain", "-z"]);
+    const dir = runGit(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim();
+    if (!dir.startsWith("/")) return undefined;
+    common = resolvedPath(dir);
   } catch {
     return undefined;
   }
-  // One record per worktree: a `worktree <path>` field, then its attribute fields (`HEAD`, `branch`, `locked`,
+  // One record per worktree: a `worktree <path>` field, then its attribute fields (`HEAD`, `branch`, `bare`, `locked`,
   // `prunable <reason>`, …), each NUL-terminated, records separated by an empty field.
-  const records: { path: string; prunable: boolean }[] = [];
+  const records: { path: string; dropped: boolean }[] = [];
   for (const field of listed.split("\0")) {
     if (field.startsWith("worktree ")) {
       const path = field.slice("worktree ".length);
       if (!path.startsWith("/")) return undefined;
-      records.push({ path, prunable: false });
-    } else if ((field === "prunable" || field.startsWith("prunable ")) && records.length > 0) {
-      (records[records.length - 1] as { prunable: boolean }).prunable = true;
+      records.push({ path, dropped: false });
+    } else if ((field === "prunable" || field.startsWith("prunable ") || field === "bare") && records.length > 0) {
+      (records[records.length - 1] as { dropped: boolean }).dropped = true;
     }
   }
-  const roots = [resolvedPath(checkout), ...records.filter((r) => !r.prunable).map((r) => resolvedPath(r.path))];
+  const kept = records.filter((r) => !r.dropped && trustedWorktree(r.path, common));
+  const roots = [resolvedPath(checkout), ...kept.map((r) => resolvedPath(r.path))];
   return roots.some((r) => r === "/") ? undefined : [...new Set(roots)];
 }
 
@@ -141,6 +201,56 @@ export function physicalPath(base: string, word: string): string {
     current = seg === ".." ? dirname(current) : resolvedPath(join(current, seg));
   }
   return current;
+}
+
+/**
+ * `word` resolved against the absolute `base` as a file tool writes it: segment by segment, every symlink followed
+ * through `readlink` (a dangling one too, since a write through it creates its target), then `resolvedPath`. A word
+ * that does not exist yet is kept as written past its longest existing prefix. `undefined` past 40 links, or on any
+ * error but "not there" (fail closed).
+ */
+function writtenPath(base: string, word: string): string | undefined {
+  const pending = (word.startsWith("/") ? word : `${base}/${word}`).split("/");
+  let current = "/";
+  let links = 0;
+  while (pending.length > 0) {
+    const seg = pending.shift() as string;
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      current = dirname(current);
+      continue;
+    }
+    const next = join(current, seg);
+    let link: string | undefined;
+    try {
+      if (lstatSync(next).isSymbolicLink()) link = readlinkSync(next);
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") return undefined;
+    }
+    if (link === undefined) {
+      current = next;
+      continue;
+    }
+    links += 1;
+    if (links > 40) return undefined;
+    pending.unshift(...link.split("/"));
+    if (link.startsWith("/")) current = "/";
+  }
+  return resolvedPath(current);
+}
+
+/**
+ * Whether a run session's Write, Edit or NotebookEdit of `path` lands under a `.git` segment (or on one: a worktree's
+ * `.git` file) once resolved on disk (review iteration 2): `path` against the hook's absolute `hookCwd`, every
+ * symlink followed (`writtenPath`), so a committed `docs -> .git` or a final-component link into `.git` is caught,
+ * which the policy's text check (`writesGitDir`, `sessions/policy.ts`) cannot see. `true` (refuse) when a relative
+ * path has no absolute `hookCwd`, or the path cannot be resolved.
+ */
+export function writeTargetInGitDir(path: string, hookCwd: unknown): boolean {
+  if (!path.startsWith("/") && (typeof hookCwd !== "string" || !hookCwd.startsWith("/"))) return true;
+  const written = writtenPath(typeof hookCwd === "string" ? hookCwd : "/", path);
+  return written === undefined || written.toLowerCase().split("/").includes(".git");
 }
 
 /**
@@ -172,8 +282,10 @@ function refusalReason(why: ConfinementRefusal): "checkout_confinement" | "loomw
  * shape (`view`, `runGateView`). A command with no `git -C` directory and no confined shape needs nothing (and runs
  * no git). Otherwise, failing closed on no absolute hook `cwd` and on unreadable roots (`confinementRoots` of
  * `checkout()`, the session row's cwd):
- * - the `git -C` directory, resolved against the hook's `cwd` (`physicalPath`), must be inside a root and pass
- *   `confinementVerdict`; the command's operands are then resolved against it;
+ * - the `git -C` directory, resolved against the hook's `cwd` (`physicalPath`), must be inside a root, pass
+ *   `confinementVerdict`, and have no `.supervisor` segment (`loomwright_run_state`: git reads the rest's relative
+ *   words against it, the policy's run-state guard reads them as text; review iteration 2); the command's operands
+ *   are then resolved against it;
  * - every operand of `rm`, `mv`, `chmod`, `git rm`, `git mv` must pass `confinementVerdict` (inside a root, not
  *   under `<homeDir>/.claude`, a `.git` directory, `.supervisor/automate/` or `.supervisor/run.lock`, and for a
  *   recursive form or a move's source neither a root nor an ancestor of one, nor a `.supervisor` directory);
@@ -194,6 +306,11 @@ export function checkoutConfinement(view: RunGateView, hookCwd: unknown, checkou
     base = physicalPath(hookCwd, view.dir);
     const why = confinementVerdict([operandOf(base)], roots, false);
     if (why !== undefined) return deny(refusalReason(why));
+    // git reads `<rest>`'s relative words against `<dir>`, while the policy's run-state guard reads them as text
+    // (`git -C .supervisor add -f automate/r1.md`): a `<dir>` at or under a `.supervisor` directory is refused
+    // outright (review iteration 2). Outside one, a word reaching run state must name `supervisor` itself, which
+    // the guard reads.
+    if (base.toLowerCase().split("/").includes(".supervisor")) return deny("loomwright_run_state");
   }
   if (view.shape.kind === "paths") {
     const why = confinementVerdict(view.shape.operands.map((w) => operandOf(physicalPath(base, w))), roots, view.shape.recursive, view.shape.moved);

@@ -1437,6 +1437,12 @@ describe("25c: the run policy's new shapes (decideToolUse)", () => {
     expect(bash("git -C /w/co remote -v add x y")).toEqual(CONFINE);
   });
 
+  it("`git -C <dir>` words that climb back into run state from outside `.supervisor` are read by the run-state guard (review iteration 2)", () => {
+    expect(bash("git -C kernel add -f ../.supervisor/automate/x")).toEqual(RUN_STATE);
+    expect(bash("git -C kernel checkout -- ../.supervisor")).toEqual(RUN_STATE);
+    expect(bash("git -C kernel/src checkout -- ../../.supervisor/automate/r1.md")).toEqual(RUN_STATE);
+  });
+
   it("`git -C` with any other global option is refused (each its own case)", () => {
     expect(bash("git -C /w/co -c core.hooksPath=x status")).toEqual(CONFINE);
     expect(bash("git --git-dir=x -C /w/co status")).toEqual(CONFINE);
