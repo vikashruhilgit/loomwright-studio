@@ -29,6 +29,7 @@ import {
   PAST_THE_RAIL,
   RUN_EXCLUSIONS,
   RUN_SESSION_KINDS,
+  RUN_TOOL_DENIALS_OBSERVED,
 } from "../src/automate/run-exclusions.js";
 import type { RunExclusion, RunSessionKind } from "../src/automate/run-exclusions.js";
 import { resolveLoomwrightInstall } from "../src/loomwright/active-install.js";
@@ -675,7 +676,8 @@ describe("a row matches only the shapes its reason describes (review iteration 2
   const SYN = "skills/synthetic/SKILL.md";
   // Each shape once in a file no row lists, and once in a file the row that used to absorb it lists (so the text bites, not only `files`).
   const shapes: readonly (readonly [string, string])[] = [
-    ["git -C ../wt push --force origin main", "skills/async-orchestration/finalize.md"],
+    // 25c: `git -C <dir> push …` is judged as `git push` (held by the rail); a second global option stays refused.
+    ["git -C ../wt -c core.hooksPath=x push --force origin main", "skills/async-orchestration/finalize.md"],
     ["git -C . reset --hard origin/main", "skills/async-orchestration/finalize.md"],
     ["git reset --hard origin/main", "skills/automate-loop/per-item-loop.md"],
     ["git merge --abort", "skills/workflow-management/SKILL.md"],
@@ -702,8 +704,9 @@ describe("a row matches only the shapes its reason describes (review iteration 2
 
   it("the shapes the rows record still match in their own files", () => {
     const real = [
-      at("skills/async-orchestration/finalize.md", "git -C ../project-{subtask_a} add -A"),
-      at("skills/workflow-management/SKILL.md", "git merge feature/BD-XXa --no-ff"),
+      // 25c admits the parallel path's `git -C ../<worktree> add -A` and `git merge feature/<x> --no-ff`; these stay denied.
+      at("skills/autonomous-loop/SKILL.md", "mv .supervisor/jobs/pending/<this-session-id>-*.md .supervisor/jobs/failed/"),
+      at("skills/state-management/SKILL.md", "cp .supervisor/state.md {scratchpad}/supervisor-state.md"),
       at("agents/code-reviewer.md", "rm -rf"),
       at("skills/review-heal/SKILL.md", "claude -p"),
       at("skills/workflow-management/SKILL.md", "npm run lint"),
@@ -776,5 +779,31 @@ describe("no row hides a de-admitted script, prefix or tool (review iteration 3)
       }
     }
     expect(hidden).toEqual([]);
+  });
+});
+
+describe("a tool a run asked for live and is denied on purpose is recorded with its events (25c)", () => {
+  it("SendMessage is denied by every run policy and listed in the observed-denials record (events 33474, 38037)", () => {
+    const send = RUN_TOOL_DENIALS_OBSERVED.find((d) => d.tool === "SendMessage");
+    expect(send).toMatchObject({ reason_class: "tool not granted", events: [33474, 38037] });
+    expect(send?.kinds).toEqual(RUN_SESSION_KINDS);
+    expect(send?.consequence).toMatch(/^consequence if denied: ./);
+    for (const kind of RUN_SESSION_KINDS) {
+      expect(decideToolUse(POLICIES[kind], "SendMessage", { to: "worker", message: "x" }), kind).toEqual({ decision: "deny", reason: "tool_not_allowed" });
+    }
+    // Every recorded tool is denied by every kind it names, in a known reason class, and has no extracted entry to sit on as a row.
+    for (const d of RUN_TOOL_DENIALS_OBSERVED) {
+      expect(EXCLUSION_REASON_CLASSES, d.tool).toContain(d.reason_class);
+      for (const kind of d.kinds) expect(decideToolUse(POLICIES[kind], d.tool, {}).decision, `${kind}: ${d.tool}`).toBe("deny");
+      expect(src.entries.some((e) => e.type === "tool" && e.text === d.tool), d.tool).toBe(false);
+    }
+  });
+
+  it("TaskOutput and Monitor are granted to every run kind; no exclusion row names them any more", () => {
+    for (const kind of RUN_SESSION_KINDS) {
+      expect(POLICIES[kind].allowedTools, kind).toEqual(expect.arrayContaining(["TaskOutput", "Monitor"]));
+      expect(POLICIES[kind].allowedTools, kind).not.toContain("SendMessage");
+    }
+    expect(RUN_EXCLUSIONS.filter((r) => r.match.tools?.some((t) => t === "TaskOutput" || t === "Monitor"))).toEqual([]);
   });
 });

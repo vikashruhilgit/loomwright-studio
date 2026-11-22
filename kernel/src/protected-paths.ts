@@ -140,6 +140,20 @@ export function isInsidePath(path: string, root: string): boolean {
 }
 
 /**
+ * Whether `path` is `root` or inside it, comparing their RESOLVED forms only
+ * (`resolvedPath`: symlinks as far as each exists, then the firmlink prefix
+ * removed), case-insensitively on a path-segment boundary (`isInside`). For an
+ * admission (25c: a run session's file operation must stay in its checkout):
+ * unlike `isInsidePath`, which answers `true` when EITHER the written or the
+ * resolved form is inside (right for a refusal, fail-open for an admission), a
+ * written path inside `root` through a symlink to elsewhere is not inside
+ * here. Reads the file system (realpath).
+ */
+export function isInsideResolved(path: string, root: string): boolean {
+  return isInside(withoutFirmlink(resolvedPath(path)), withoutFirmlink(resolvedPath(root)));
+}
+
+/**
  * Whether `path` (absolute, or resolved against the cwd) is one of
  * `PROTECTED_LOCATIONS` under `homeDir` or inside one (`isInsidePath`, so
  * after symlink resolution where it exists). Each location is compared both as

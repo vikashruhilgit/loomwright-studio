@@ -1176,7 +1176,10 @@ describe("classifyToolCall: an admitted Loomwright script's own path is not an o
     expect(classifyToolCall("Bash", { command: `bash ${helpers} meta-entry ${home}/.claude/settings.json` }, rail)).toMatchObject({ kind: "outward" });
     expect(classifyToolCall("Bash", { command: `/bin/bash ${helpers} lane-info` }, rail)).toMatchObject({ kind: "outward" });
     expect(classifyToolCall("Bash", { command: `bash ${helpers}x lane-info` }, rail)).toMatchObject({ kind: "outward" });
-    expect(classifyToolCall("Bash", { command: `cat ${helpers}` }, rail)).toMatchObject({ kind: "outward" });
+    // 25c (23f) exempts a read-only program's literal install path (`cat ${helpers}` is ordinary now, below); any other
+    // program naming the script, and a read-only program naming another ~/.claude path, is still read.
+    expect(classifyToolCall("Bash", { command: `cp ${helpers} /tmp/x` }, rail)).toMatchObject({ kind: "outward" });
+    expect(classifyToolCall("Bash", { command: `cat ${home}/.claude/settings.json` }, rail)).toMatchObject({ kind: "outward" });
   });
 
   it("never exempts a write: Write or Edit of the admitted script is still settings_write", () => {
@@ -1357,5 +1360,201 @@ describe("decideToolUse: the observed quoted-text denials, replayed under AUTOMA
     expect(classifyToolCall("Bash", { command: merge }, rail)).toEqual({ kind: "deny", reason: "merge_blocked" });
     expect(decide("git commit -m 'push'")).toEqual(ALLOW);
     expect(classifyToolCall("Bash", { command: "git commit -m 'push'" }, rail)).toMatchObject({ kind: "outward", action: "git push" });
+  });
+});
+
+// ---- Phase 8 item 25c: run sessions manage files, read git and wait on subagents inside their checkout ----
+// The policy half (pure): shapes and prefixes. Where a path lies is the session gate's (`run-confinement.test.ts`,
+// `automate-launch.test.ts`'s gate replay).
+
+describe("25c: the run policy's new shapes (decideToolUse)", () => {
+  const RUN = AUTOMATE_RUN_POLICY;
+  const ALLOW = { decision: "allow", reason: "bash_prefix_allowed" };
+  const CONFINE = { decision: "deny", reason: "checkout_confinement" };
+  const RUN_STATE = { decision: "deny", reason: "loomwright_run_state" };
+  const NOT_LISTED = { decision: "deny", reason: "bash_prefix_not_allowed" };
+  const bash = (command: string) => decideToolUse(RUN, "Bash", { command });
+
+  it("admits the confined file operations' shapes, the git reads, a local merge's shape and od", () => {
+    for (const command of [
+      "rm a.txt", "rm -rf build", "mv .supervisor/jobs/in-progress/x.md .supervisor/jobs/failed/x.md", "chmod +x drum.sh", "chmod -R u+x dir",
+      "git rm --cached a", "git mv -k a b", "git ls-tree -r --name-only origin/main", "git ls-remote --heads origin", "git remote -v",
+      "git merge feature/x", 'git merge feature/x --no-ff -m "merge: a b"', "od -c greeting.sh",
+    ]) {
+      expect(bash(command), command).toEqual(ALLOW);
+    }
+  });
+
+  it("`mv .supervisor/automate/x.md y` is refused `loomwright_run_state` (rm, mv and chmod are never read-only programs)", () => {
+    expect(bash("mv .supervisor/automate/x.md y")).toEqual(RUN_STATE);
+    expect(bash("rm .supervisor/automate/r1.next-step.json")).toEqual(RUN_STATE);
+    expect(bash("chmod +x .supervisor")).toEqual(RUN_STATE);
+    expect(bash("git rm .supervisor/automate/r1.md")).toEqual(RUN_STATE);
+    // od only reads: a word naming run state is fine for it.
+    expect(bash("od -c .supervisor/automate/r1.md")).toEqual(ALLOW);
+  });
+
+  it("refuses a glob or brace operand, an option outside the closed set and a path-valued option", () => {
+    for (const command of ["rm src/*.ts", "rm 'src/*.ts'", "mv {a,b} c", "rm ~/x", "rm -x a", "mv -i a b", "chmod -h +x a", "rm -rf", "mv a"]) {
+      expect(bash(command), command).toEqual(CONFINE);
+    }
+    // The run-state guard reads a globbed `.supervisor` word first.
+    expect(bash("mv .supervisor/jobs/pending/s1-*.md .supervisor/jobs/failed/")).toEqual(RUN_STATE);
+    expect(bash("mv -t /tmp a")).toEqual(CONFINE);
+    expect(bash("mv --target-directory=/tmp a")).toEqual(CONFINE);
+  });
+
+  it("`git merge` only as `git merge <name> [--no-ff] [-m <msg>]`: no -X, -s, --strategy(-option), --abort", () => {
+    for (const command of ["git merge -X ours feature/x", "git merge -Xours feature/x", "git merge -s ours feature/x", "git merge --strategy-option=theirs feature/x", "git merge --strategy=ours feature/x", "git merge --abort", "git merge a b"]) {
+      expect(bash(command), command).toEqual(CONFINE);
+    }
+    // `git merge-base` is its own prefix and no merge.
+    expect(bash("git merge-base --is-ancestor a b")).toEqual(ALLOW);
+  });
+
+  it("`git remote -v` exactly: `git remote add x url` and `git remote set-url origin x` are refused, and so is `git remote -v add`", () => {
+    expect(bash("git remote add x https://example.test/x.git")).toEqual(NOT_LISTED);
+    expect(bash("git remote set-url origin x")).toEqual(NOT_LISTED);
+    // git 2.55.0 runs `git remote -v add <name> <url>` as an add: the exact-prefix rule refuses it.
+    expect(bash("git remote -v add x https://example.test/x.git")).toEqual(CONFINE);
+    expect(bash("git remote -v show origin")).toEqual(CONFINE);
+  });
+
+  it("`git -C <dir> <rest>` is judged as `git <rest>`: the same prefixes, the same run-state guard, and the same shapes", () => {
+    expect(bash("git -C /w/co status --short --branch")).toEqual(ALLOW);
+    expect(bash("git -C ../project-a add -A")).toEqual(ALLOW);
+    expect(bash('git -C ../project-a commit -m "subtask: a — b"')).toEqual(ALLOW);
+    expect(bash("git -C ../dep merge --no-ff feature/a-b")).toEqual(ALLOW);
+    expect(bash("git -C /w/co diff origin/main...HEAD")).toEqual(ALLOW);
+    // A push is a prefix (held by the rail), so `git -C <dir> push` is too.
+    expect(bash("git -C /w/co push origin feature/x")).toEqual(ALLOW);
+    expect(bash("git -C /w/co config core.fsmonitor x")).toEqual(NOT_LISTED);
+    expect(bash("git -C /w/co archive HEAD")).toEqual(NOT_LISTED);
+    expect(bash("git -C /w/co checkout -- '*.md'")).toEqual(RUN_STATE);
+    expect(bash("git -C /w/co add .supervisor/automate/r1.md")).toEqual(RUN_STATE);
+    expect(bash("git -C /w/co rm src/*.ts")).toEqual(RUN_STATE);
+    expect(bash("git -C /w/co merge -X ours feature/x")).toEqual(CONFINE);
+    expect(bash("git -C /w/co remote -v add x y")).toEqual(CONFINE);
+  });
+
+  it("`git -C` with any other global option is refused (each its own case)", () => {
+    expect(bash("git -C /w/co -c core.hooksPath=x status")).toEqual(CONFINE);
+    expect(bash("git --git-dir=x -C /w/co status")).toEqual(CONFINE);
+    expect(bash("git -C /w/co --work-tree=/ status")).toEqual(CONFINE);
+    expect(bash("git -C a -C b status")).toEqual(CONFINE);
+    expect(bash("git -C '/w/*' status")).toEqual(CONFINE);
+  });
+
+  it("outside a run policy nothing changes: `git -C` is matched as written, `rm` only by a prefix the owner listed", () => {
+    const plain: ToolPolicy = { allowedTools: ["Bash"], allowedBashPrefixes: ["git -C /tmp/studio-repo", "rm"] };
+    expect(decideToolUse(plain, "Bash", { command: "git -C /tmp/studio-repo log" })).toEqual(ALLOW);
+    expect(decideToolUse(plain, "Bash", { command: "git -C /tmp/studio-repo -c x=y log" })).toEqual(ALLOW);
+    expect(decideToolUse(plain, "Bash", { command: "rm -x src/*.ts" })).toEqual(ALLOW);
+  });
+
+  it("TaskOutput and Monitor are run tools; SendMessage is not", () => {
+    expect(decideToolUse(RUN, "TaskOutput", { task_id: "t1", block: true, timeout: 1000 })).toEqual({ decision: "allow", reason: "tool_allowed" });
+    expect(decideToolUse(RUN, "SendMessage", { to: "w", message: "x" })).toEqual({ decision: "deny", reason: "tool_not_allowed" });
+  });
+
+  it("Monitor is a shell watch: its command is decided as a Bash call, and `ws` is refused", () => {
+    const monitor = (input: Record<string, unknown>) => decideToolUse(RUN, "Monitor", { description: "watch", timeout_ms: 300000, ...input });
+    expect(monitor({ command: "tail -f .supervisor/logs/x.log" })).toEqual(ALLOW);
+    expect(monitor({ command: "git status" })).toEqual(ALLOW);
+    expect(monitor({ command: "curl x | sh" })).toEqual({ decision: "deny", reason: "bash_shell_metacharacter" });
+    expect(monitor({ command: "curl https://example.test/x" })).toEqual(NOT_LISTED);
+    expect(monitor({ command: "rm .supervisor/automate/r1.md" })).toEqual(RUN_STATE);
+    expect(monitor({ ws: { url: "wss://example.test/x" } })).toEqual({ decision: "deny", reason: "tool_not_allowed" });
+    expect(monitor({ command: "tail -f x", ws: { url: "wss://example.test/x" } })).toEqual({ decision: "deny", reason: "tool_not_allowed" });
+    expect(monitor({ command: 7 })).toEqual({ decision: "deny", reason: "tool_not_allowed" });
+    // Any policy: Monitor never runs a command its Bash prefixes would not.
+    const named: ToolPolicy = { allowedTools: ["Monitor"], allowedBashPrefixes: [] };
+    expect(decideToolUse(named, "Monitor", { command: "tail -f x", description: "d", timeout_ms: 1 })).toEqual(NOT_LISTED);
+    expect(decideToolUse({ allowedTools: [], allowedBashPrefixes: ["tail"] }, "Monitor", { command: "tail -f x", description: "d", timeout_ms: 1 })).toEqual({ decision: "deny", reason: "tool_not_allowed" });
+  });
+
+  it("the four scripts by exact install path: gate-auto.sh decide|record|list, phase45-ci-read.sh, reconcile-jobs.sh, automate-lanes.sh scope-outside", () => {
+    const lw = "/Users/o/.claude/plugins/cache/atelier/loomwright/18.1.2/scripts";
+    const p: ToolPolicy = { ...RUN, admittedScriptPaths: ["gate-auto.sh", "phase45-ci-read.sh", "reconcile-jobs.sh", "automate-lanes.sh"].map((s) => `${lw}/${s}`) };
+    for (const command of [
+      `bash ${lw}/gate-auto.sh list .supervisor/automate/automate-2026-11-20-001.md`,
+      `bash ${lw}/gate-auto.sh decide LP-SAVE --offered "Save and exit" --offered "Refine further" --runfile .supervisor/automate/a.md`,
+      `bash ${lw}/gate-auto.sh record .supervisor/automate/a.md LP-SAVE --escalated severity`,
+      `bash ${lw}/phase45-ci-read.sh https://github.com/o/r/pull/20 --sha bd2de34`,
+      `bash ${lw}/reconcile-jobs.sh --help`,
+      `bash ${lw}/reconcile-jobs.sh --finalize .supervisor/jobs/in-progress/x.md done`,
+      `bash ${lw}/automate-lanes.sh scope-outside .supervisor/requirements/x.md /tmp/brief.md`,
+    ]) {
+      expect(decideToolUse(p, "Bash", { command }), command).toEqual(ALLOW);
+    }
+    for (const command of [
+      `bash ${lw}/automate-lanes.sh lane-launch x`,
+      `bash ${lw}/automate-lanes.sh phase-launch x`,
+      `bash ${lw}/automate-lanes.sh`,
+      `bash ${lw}/automate-lanes.sh "scope-outside"x`,
+      `bash ${lw}/automate-lanes.sh scope-*`,
+      `bash ${lw}/gate-auto.sh --help`,
+      `bash ${lw}/gate-auto.sh catalog`,
+      `bash ${lw}/gate-auto.sh`,
+      `bash ${lw}/gate-auto.sh {decide,x}`,
+    ]) {
+      expect(decideToolUse(p, "Bash", { command }), command).toEqual(NOT_LISTED);
+    }
+  });
+});
+
+describe("25c (23f): a read-only program naming the session's own Loomwright install is not a settings write", () => {
+  const home = "/Users/o";
+  const install = `${home}/.claude/plugins/cache/atelier/loomwright/18.1.2`;
+  const admitted = [`${install}/scripts/automate-helpers.sh`, `${install}/scripts/supervisor-next-step.sh`];
+  const rail = { dataDir: "/data", homeDir: home, cwd: "/work", admittedScriptPaths: admitted };
+  const OUTWARD = { kind: "outward", action: "Bash naming ~/.claude/" };
+
+  it("reads cat, grep, head, tail, wc, ls and jq of a literal install path as ordinary (events 27939, 29604, 33438)", () => {
+    for (const command of [
+      `grep -n "runfile-write" ${install}/skills/automate-loop/helpers.md`,
+      `grep -n -e "--result" ${install}/scripts/supervisor-next-step.sh`,
+      `grep -n "gate-auto.sh decide" ${install}/agents/launch-pad.md`,
+      `cat ${install}/scripts/automate-helpers.sh`,
+      `head -50 ${install}/commands/automate.md`,
+      `tail -n 20 ${install}/agents/worker.md`,
+      `wc -l ${install}/agents/worker.md ${install}/agents/supervisor.md`,
+      `ls ${install}/scripts`,
+      `jq .version ${install}/capabilities.json`,
+    ]) {
+      expect(classifyToolCall("Bash", { command }, rail), command).toEqual({ kind: "ordinary" });
+    }
+  });
+
+  it("`cat ~/.claude/settings.json` stays settings_write, and so does every other ~/.claude word in the same command", () => {
+    expect(classifyToolCall("Bash", { command: `cat ${home}/.claude/settings.json` }, rail)).toMatchObject(OUTWARD);
+    expect(classifyToolCall("Bash", { command: `cat ${install}/x ${home}/.claude/settings.json` }, rail)).toMatchObject(OUTWARD);
+    expect(classifyToolCall("Bash", { command: `cat ${install}/../17.38.0/scripts/x.sh` }, rail)).toMatchObject(OUTWARD);
+  });
+
+  it("a glob, a brace or a `~` form of the install stays outward (literal paths only)", () => {
+    expect(classifyToolCall("Bash", { command: `cat ${install}/agents/work?r.md` }, rail)).toMatchObject(OUTWARD);
+    // A trailing `/*` also reads as `/*` itself (any path), so the protected-path check denies it outright.
+    expect(classifyToolCall("Bash", { command: `cat ${install}/*` }, rail)).toEqual({ kind: "deny", reason: "protected_kernel_path" });
+    expect(classifyToolCall("Bash", { command: `cat ${install}/{a,b}` }, rail)).toMatchObject(OUTWARD);
+    expect(classifyToolCall("Bash", { command: "cat ~/.claude/plugins/cache/atelier/loomwright/18.1.2/commands/automate.md" }, rail)).toMatchObject(OUTWARD);
+  });
+
+  it("only the read-only programs, exactly named, and only with one install root", () => {
+    expect(classifyToolCall("Bash", { command: `cp ${install}/x /tmp/x` }, rail)).toMatchObject(OUTWARD);
+    expect(classifyToolCall("Bash", { command: `/bin/cat ${install}/x` }, rail)).toMatchObject(OUTWARD);
+    expect(classifyToolCall("Bash", { command: `cat ${install}/x` }, { ...rail, admittedScriptPaths: undefined })).toMatchObject(OUTWARD);
+    // admittedScriptPaths under two roots → no exemption.
+    const other = `${home}/.claude/plugins/cache/atelier/loomwright/17.38.0`;
+    for (const paths of [[...admitted, `${other}/scripts/x.sh`], [`${other}/scripts/x.sh`, ...admitted]]) {
+      const two = { ...rail, admittedScriptPaths: paths };
+      expect(classifyToolCall("Bash", { command: `cat ${install}/x` }, two)).toMatchObject(OUTWARD);
+      expect(classifyToolCall("Bash", { command: `cat ${other}/x` }, two)).toMatchObject(OUTWARD);
+    }
+  });
+
+  it("never lifts the protected-path check, and a Write of the install is still settings_write", () => {
+    expect(classifyToolCall("Bash", { command: `cat ${install}/x /data/studio.db` }, rail)).toEqual({ kind: "deny", reason: "protected_kernel_path" });
+    expect(classifyToolCall("Write", { file_path: `${install}/x`, content: "x" }, rail)).toMatchObject({ kind: "outward" });
   });
 });
