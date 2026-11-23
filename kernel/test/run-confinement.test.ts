@@ -112,6 +112,50 @@ describe("confinedShape: the closed option sets and the refused operand forms", 
     }
   });
 
+  it("25d: a fetch refspec naming a destination, `--refmap`, or a push destination that could name a remote-tracking or replace ref is `ref_destination`", () => {
+    for (const command of [
+      "git fetch . +HEAD:refs/remotes/origin/main",
+      "git fetch . HEAD:refs/remotes/origin/main",
+      "git fetch . run:remotes/origin/main",
+      "git fetch . HEAD:refs/REMOTES/origin/main",
+      "git fetch origin +main",
+      "git fetch origin main:main",
+      "git fetch -q . -- HEAD:refs/replace/abc",
+      "git fetch '--refmap=+refs/heads/*:refs/remotes/origin/*' . run",
+      "git fetch --refmap '+refs/heads/*:refs/remotes/origin/*' . run",
+      "git push . HEAD:refs/remotes/origin/main",
+      "git push . +run:refs/remotes/origin/main",
+      "git push ../worktree HEAD:origin/main",
+      "git push . HEAD:origin",
+      "git push . HEAD:remotes/origin/main",
+      "git push . run:refs/replace/0123456789abcdef0123456789abcdef01234567",
+      "git push . HEAD:refs/Remotes/origin/main",
+      "git push . refs/remotes/origin/main",
+      "git push --prune . '+refs/heads/*:refs/remotes/origin/*'",
+      "git push -o x origin main",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "refuse", why: "ref_destination" });
+    }
+    // Loomwright's own forms (the conformance fixture, 18.1.2) stay `none`.
+    for (const command of [
+      "git fetch",
+      "git fetch origin",
+      "git fetch -q origin",
+      "git fetch --quiet origin main",
+      "git fetch origin main",
+      "git push",
+      "git push -u origin feature/x-1",
+      "git push origin HEAD:feature/widget-config",
+      "git push origin HEAD:refs/heads/main",
+      "git push -q origin main",
+      "git push origin HEAD",
+      "git push origin --delete eval/a/arm-2",
+      "git push origin v1.0:refs/tags/v1.0",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "none" });
+    }
+  });
+
   it("any other command is `none`", () => {
     for (const command of ["git status", "git merge-base a b", "cp a b", "/bin/rm a", "git remote -v", "ls -la"]) expect(shape(command), command).toEqual({ kind: "none" });
   });

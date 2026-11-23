@@ -383,7 +383,7 @@ export type CommittedFile =
 
 /** The base commit's reads the declared-check reader takes (`automate/declared-checks.ts`): git, never the working tree. */
 export interface CommittedReads {
-  /** The commit `ref` names (`<ref>^{commit}`), else `undefined`. */
+  /** The commit the exact ref `ref` (`refs/…`, never expanded by git's ref matching) points at, else `undefined`. */
   readonly commitOf: (ref: string) => string | undefined;
   /** The ref `refs/remotes/origin/HEAD` points at (`refs/remotes/origin/<branch>`), else `undefined`. */
   readonly originHead: () => string | undefined;
@@ -402,11 +402,19 @@ interface TreeEntry {
   readonly path: string;
 }
 
+/**
+ * `lookupGit` with `--no-replace-objects`: a replace ref (`refs/replace/<sha>`) makes git show another commit's tree
+ * and blobs for `<sha>` (reproduced git 2.55.0, 2026-11-23), so the declared-check reads never honour one.
+ */
+function committedGit(cwd: string, args: readonly string[]): string {
+  return lookupGit(cwd, ["--no-replace-objects", ...args]);
+}
+
 /** `git ls-tree -z -l --full-tree --end-of-options <sha> -- <path>` in `cwd`, parsed; `undefined` on any git error. */
 function lsTree(cwd: string, sha: string, path: string): readonly TreeEntry[] | undefined {
   let out: string;
   try {
-    out = lookupGit(cwd, ["ls-tree", "-z", "-l", "--full-tree", "--end-of-options", sha, "--", path]);
+    out = committedGit(cwd, ["ls-tree", "-z", "-l", "--full-tree", "--end-of-options", sha, "--", path]);
   } catch {
     return undefined;
   }
@@ -429,16 +437,22 @@ function isRegularBlob(entry: TreeEntry): boolean {
 /**
  * The committed reads a run's declared checks are taken from (25d), in the checkout at absolute `cwd`: each a fixed
  * argument shape through `lookupGit`, failing closed (`undefined`, `unreadable`) on any git error or timeout. Only
- * committed objects are read (`rev-parse`, `symbolic-ref`, `ls-tree`, `cat-file` of a commit id), never the working
- * tree or the index. The kernel never fetches: the refs are what the checkout last fetched.
+ * committed objects are read (`show-ref --verify`, `rev-parse`, `symbolic-ref`, `ls-tree`, `cat-file` of a commit id,
+ * each with `--no-replace-objects`), never the working tree or the index. The kernel never fetches: the refs are what
+ * the checkout last fetched, and a run session may not write them itself (`ref_destination`,
+ * `sessions/run-confinement.ts`).
  */
 export function committedReads(cwd: string): CommittedReads {
   const absolute = cwd.startsWith("/");
   return {
     commitOf(ref) {
-      if (!absolute) return undefined;
+      if (!absolute || !ref.startsWith("refs/")) return undefined;
       try {
-        const sha = lookupGit(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]).trim();
+        // `show-ref --verify` reads exactly `ref`: `rev-parse` would also take `refs/heads/<ref>` when `ref` is
+        // missing, a branch a run session can create (`git branch refs/remotes/origin/main`, git 2.55.0, 2026-11-23).
+        const id = committedGit(cwd, ["show-ref", "--verify", "--hash", ref]).trim();
+        if (!COMMIT_ID.test(id)) return undefined;
+        const sha = committedGit(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${id}^{commit}`]).trim();
         return COMMIT_ID.test(sha) ? sha : undefined;
       } catch {
         return undefined;
@@ -447,7 +461,7 @@ export function committedReads(cwd: string): CommittedReads {
     originHead() {
       if (!absolute) return undefined;
       try {
-        const ref = lookupGit(cwd, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
+        const ref = committedGit(cwd, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
         return ref.startsWith("refs/remotes/origin/") && !ref.includes("\n") ? ref : undefined;
       } catch {
         return undefined;
@@ -469,7 +483,7 @@ export function committedReads(cwd: string): CommittedReads {
       if (!isRegularBlob(entry) || !COMMIT_ID.test(entry.id)) return { kind: "unreadable", why: "not_a_regular_file" };
       if (entry.size === undefined || entry.size > MAX_COMMITTED_FILE_BYTES) return { kind: "unreadable", why: "too_large" };
       try {
-        return { kind: "file", text: lookupGit(cwd, ["cat-file", "blob", "--end-of-options", entry.id]) };
+        return { kind: "file", text: committedGit(cwd, ["cat-file", "blob", "--end-of-options", entry.id]) };
       } catch {
         return { kind: "unreadable", why: "git_failed" };
       }

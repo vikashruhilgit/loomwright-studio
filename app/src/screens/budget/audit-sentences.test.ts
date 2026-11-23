@@ -141,6 +141,33 @@ describe("the sentences", () => {
     for (const [kind, payload, expected, o] of cases) expect(auditSentence(kind, payload, refs(o)), `${kind} ${JSON.stringify(payload)}`).toBe(expected);
   });
 
+  it("run_declared_checks: no base, admitted with and without skipped lines, the count fallback and plurals", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const at = { repo: "o/r", base_ref: "refs/remotes/origin/main", base_sha: sha };
+    const said = (payload: unknown) => auditSentence("run_declared_checks", payload, refs({ sessionId: 41 }));
+    expect(said({ repo: "o/r", base_ref: null, base_sha: null, reason: "base_unresolved", admitted: [], skipped: [] })).toBe(
+      "The kernel found no base branch for o/r, so session 41 may run none of its checks: base unresolved.",
+    );
+    expect(said({ base_sha: null })).toBe("The kernel found no base branch for the repo, so session 41 may run none of its checks.");
+    // A command declared twice (a workflow and a script) is named once; skipped_count is the whole total.
+    expect(said({ ...at, admitted: [{ command: "npm test" }, { command: "npm run lint" }, { command: "npm test" }], skipped: [{ text: "x" }], skipped_count: 3 })).toBe(
+      "The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run o/r's declared checks (npm test, npm run lint); 3 declared lines were skipped.",
+    );
+    // No skipped_count: the listed skipped lines are counted; one reads singular.
+    expect(said({ ...at, admitted: [{ command: "npm test" }], skipped: [{ text: "x" }] })).toBe(
+      "The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run o/r's declared checks (npm test); 1 declared line was skipped.",
+    );
+    // Nothing skipped, and nothing admitted.
+    expect(said({ ...at, admitted: [{ command: "npm test" }], skipped: [], skipped_count: 0 })).toBe(
+      "The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run o/r's declared checks (npm test).",
+    );
+    expect(said({ ...at, admitted: [], skipped: [], skipped_count: 0 })).toBe("The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run none of o/r's checks.");
+    // A count that is not a whole number falls back to the list.
+    expect(said({ ...at, admitted: [], skipped: [{}, {}], skipped_count: -1 })).toBe(
+      "The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run none of o/r's checks; 2 declared lines were skipped.",
+    );
+  });
+
   it("no sentence carries a dollar figure (D24)", () => {
     const payloads = [{ spend_usd: 12.5, ceiling_usd: 20, playbook: "review-prs", slug: "review-prs", agent: "mason", kind: "start" }];
     for (const kind of ["api_key_ceiling_reached", "api_key_fallback_admitted"]) for (const p of payloads) expect(auditSentence(kind, p, refs())).not.toMatch(/\$|usd|12\.5/i);

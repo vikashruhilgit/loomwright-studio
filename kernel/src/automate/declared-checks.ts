@@ -12,9 +12,12 @@
 // The base commit is the stored repo policy's `default_branch` as `refs/remotes/origin/<branch>`, else the target of
 // `refs/remotes/origin/HEAD`; when neither resolves the run declares nothing (`base_unresolved`), never `HEAD` and
 // never the working tree. So a script or workflow the run adds on its own branch, committed or not, is never declared.
+// The run cannot move that ref itself: its policy refuses a fetch or push that writes a remote-tracking or replace ref
+// (`ref_destination`, `sessions/run-confinement.ts`), and `committedReads` reads the exact ref with replace objects off.
 //
 // This module starts no process and reads no file itself: its git reads are `committedReads`
 // (`loomwright/run-state-checkout.ts`, the kernel's one git caller for a run checkout), passed in.
+import { clip } from "../loop/internal.js";
 import { parseBashCommand } from "../sessions/shell-words.js";
 import type { CommittedFile, CommittedReads } from "../loomwright/run-state-checkout.js";
 
@@ -74,10 +77,6 @@ export interface DeclaredChecksRead {
 /** The longest declaration text kept in a result (a longer one is cut, with `…`). */
 const MAX_TEXT = 200;
 
-function clip(text: string): string {
-  return text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}…` : text;
-}
-
 /** A branch name the kernel builds a remote ref from: git's own characters, no `..`, no leading `-` or `/`, no empty segment. */
 function isBranchName(name: string): boolean {
   return (
@@ -121,10 +120,10 @@ export function declaredChecksAt(sha: string, reads: Pick<CommittedReads, "listF
   const skipped: SkippedDeclaration[] = [];
   const consider = (text: string, source: string): void => {
     const parsed = parseBashCommand(text);
-    if (parsed.kind === "metacharacter") skipped.push({ text: clip(text), source, reason: "shell_metacharacter" });
-    else if (parsed.kind === "unparsed") skipped.push({ text: clip(text), source, reason: "unparsed" });
-    else if (parsed.words.length === 0) skipped.push({ text: clip(text), source, reason: "empty" });
-    else admitted.push({ command: clip(text), words: Object.freeze([...parsed.words]), source });
+    if (parsed.kind === "metacharacter") skipped.push({ text: clip(text, MAX_TEXT), source, reason: "shell_metacharacter" });
+    else if (parsed.kind === "unparsed") skipped.push({ text: clip(text, MAX_TEXT), source, reason: "unparsed" });
+    else if (parsed.words.length === 0) skipped.push({ text: clip(text, MAX_TEXT), source, reason: "empty" });
+    else admitted.push({ command: clip(text, MAX_TEXT), words: Object.freeze([...parsed.words]), source });
   };
 
   const names = reads.listFiles(sha, WORKFLOWS_DIR);
@@ -138,8 +137,8 @@ export function declaredChecksAt(sha: string, reads: Pick<CommittedReads, "listF
     }
     for (const line of workflowRunLines(file.text)) {
       const source = line.job === undefined ? `workflow ${path}` : `workflow ${path} job ${line.job}`;
-      if (line.kind === "skip") skipped.push({ text: clip(line.text), source, reason: line.reason });
-      else if (line.job === undefined) skipped.push({ text: clip(line.text), source, reason: "not_in_job" });
+      if (line.kind === "skip") skipped.push({ text: clip(line.text, MAX_TEXT), source, reason: line.reason });
+      else if (line.job === undefined) skipped.push({ text: clip(line.text, MAX_TEXT), source, reason: "not_in_job" });
       else consider(line.text, source);
     }
   }
@@ -169,14 +168,14 @@ function npmChecks(file: CommittedFile, consider: (text: string, source: string)
   const scripts = (json.scripts ?? {}) as Record<string, unknown>;
   if (typeof scripts.test === "string") consider("npm test", "package.json scripts.test");
   for (const [name, body] of Object.entries(scripts)) {
-    const source = `package.json scripts.${clip(name)}`;
+    const source = `package.json scripts.${clip(name, MAX_TEXT)}`;
     if (typeof body !== "string") {
-      skipped.push({ text: clip(name), source, reason: "invalid_package_json" });
+      skipped.push({ text: clip(name, MAX_TEXT), source, reason: "invalid_package_json" });
       continue;
     }
     const own = parseBashCommand(name);
     if (own.kind !== "words" || own.words.length !== 1 || own.words[0] !== name || name.startsWith("-")) {
-      skipped.push({ text: clip(name), source, reason: "not_one_word" });
+      skipped.push({ text: clip(name, MAX_TEXT), source, reason: "not_one_word" });
       continue;
     }
     consider(`npm run ${name}`, source);

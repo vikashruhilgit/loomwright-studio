@@ -42,7 +42,14 @@ export type ShapeRefusal =
   /** `git -C` with any other global option before the subcommand (`-c`, `--git-dir`, `--work-tree`, `--exec-path`, a second `-C`). */
   | "global_option"
   /** A `git merge` that is not `git merge <name> [--no-ff] [-m <msg>]`. */
-  | "merge_shape";
+  | "merge_shape"
+  /**
+   * A `git fetch` or `git push` that could write a ref the kernel reads a run's base from (25d, `refShape`): a fetch
+   * refspec naming a destination (`<src>:<dst>`, a leading `+`) or `--refmap`; a push destination that could name a
+   * remote-tracking or replace ref (`refs/…` outside `refs/heads/` and `refs/tags/`, or `origin…`, `remotes/…`,
+   * `replace/…`, which git's push matching expands under `refs/`).
+   */
+  | "ref_destination";
 
 /**
  * A confined command's shape (`confinedShape`):
@@ -167,9 +174,63 @@ function mergeShape(args: readonly string[]): ConfinedShape {
 }
 
 /**
+ * Whether a `git push` destination could name a ref outside the checkout's branches and tags (25d). A qualified one
+ * (`refs/…`) is admitted only under `refs/heads/` or `refs/tags/`. An unqualified one is matched by git against the
+ * target's existing refs through `refs/%s`, `refs/remotes/%s` and `refs/remotes/%s/HEAD`, so a first segment of
+ * `origin`, `remotes` or `replace` is refused (`HEAD:origin/main` pushed to `.` or to a worktree path moves
+ * `refs/remotes/origin/main`). Case-folded: on a case-insensitive file system `refs/REMOTES/…` is the same loose ref.
+ */
+function pushDestinationRefused(dst: string): boolean {
+  const d = dst.toLowerCase();
+  if (d.startsWith("refs/")) return !(d.startsWith("refs/heads/") || d.startsWith("refs/tags/"));
+  const first = d.split("/")[0];
+  return first === "origin" || first === "remotes" || first === "replace";
+}
+
+/**
+ * `git fetch` and `git push` (25d): the kernel reads a run's declared checks at `refs/remotes/origin/<default>` (or
+ * the target of `refs/remotes/origin/HEAD`) and reads committed objects, which a replace ref (`refs/replace/<sha>`)
+ * can stand in for, so a run session may not write those refs into its own repository. `args` are the words after
+ * the subcommand; the first operand (a word not starting with `-`, or any word after `--`) is the repository and every
+ * later operand a refspec.
+ * - fetch: `--refmap` (any form) is refused, and so is a refspec with a leading `+` or a `:` (an explicit
+ *   destination: `git fetch . +HEAD:refs/remotes/origin/main` writes the run's commit there, and git expands an
+ *   unqualified one). `git fetch`, `git fetch origin`, `git fetch origin <branch>` stay `none`: what they write comes
+ *   from the configured remote, which a run session cannot change (no file tool writes under `.git/`).
+ * - push: a refspec's destination (after its last `:`, else the refspec itself, a leading `+` dropped) is refused when
+ *   `pushDestinationRefused`. Pushing a branch (`git push -u origin <branch>`, `git push origin HEAD:<branch>`,
+ *   `HEAD:refs/heads/<branch>`) stays `none`.
+ * Pure.
+ */
+function refShape(sub: "fetch" | "push", args: readonly string[]): ConfinedShape {
+  const REFUSE = { kind: "refuse", why: "ref_destination" } as const;
+  let options = true;
+  let operand = 0;
+  for (const w of args) {
+    if (options && w === "--") {
+      options = false;
+      continue;
+    }
+    if (options && w.startsWith("-")) {
+      if (sub === "fetch" && w.startsWith("--refmap")) return REFUSE;
+      continue;
+    }
+    operand += 1;
+    if (operand === 1) continue;
+    if (sub === "fetch" && (w.startsWith("+") || w.includes(":"))) return REFUSE;
+    if (sub === "push") {
+      const spec = w.startsWith("+") ? w.slice(1) : w;
+      const colon = spec.lastIndexOf(":");
+      if (pushDestinationRefused(colon === -1 ? spec : spec.slice(colon + 1))) return REFUSE;
+    }
+  }
+  return { kind: "none" };
+}
+
+/**
  * The shape of a run session's command `words` (already parsed by `parseBashCommand`, and for `git -C` already
- * stripped of `-C <dir>`): `rm`, `mv`, `chmod` (the program word exactly), `git rm`, `git mv` and `git merge`.
- * Every other command is `none`. Pure.
+ * stripped of `-C <dir>`): `rm`, `mv`, `chmod` (the program word exactly), `git rm`, `git mv` and `git merge`, and
+ * `git fetch` / `git push` (refused or `none`, `refShape`). Every other command is `none`. Pure.
  */
 export function confinedShape(words: readonly string[]): ConfinedShape {
   const [program, sub] = words;
@@ -179,6 +240,7 @@ export function confinedShape(words: readonly string[]): ConfinedShape {
   if (sub === "rm") return pathShape(words.slice(2), OPTION_SETS["git rm"], false, true);
   if (sub === "mv") return pathShape(words.slice(2), OPTION_SETS["git mv"], false, true);
   if (sub === "merge") return mergeShape(words.slice(2));
+  if (sub === "fetch" || sub === "push") return refShape(sub, words.slice(2));
   return { kind: "none" };
 }
 
