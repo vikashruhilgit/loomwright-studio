@@ -9,7 +9,8 @@
 // checkout (`gitIgnores`, 23t: the kernel writes Loomwright's config there only when no worker could commit it).
 // And it is the I/O half of a run session's checkout confinement (phase 8 item 25c, `checkoutConfinement`): the
 // session's worktree roots, each confined operand resolved on disk, and whether a merge names a local branch. The
-// shape half is pure (`sessions/run-confinement.ts`).
+// shape half is pure (`sessions/run-confinement.ts`). And it reads a run's declared checks from the base branch's
+// committed files (phase 8 item 25d, `committedReads`): the parsing half is `automate/declared-checks.ts`.
 
 import { execFileSync } from "node:child_process";
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
@@ -291,6 +292,28 @@ export function writeTargetInGitDir(path: string, hookCwd: unknown): boolean {
 }
 
 /**
+ * Whether a run session's Write, Edit or NotebookEdit of `path` lands in a git config file git reads for every
+ * repository of the user (25d review iteration 3), resolved as `writeTargetInGitDir` resolves it: `<home>/.gitconfig`,
+ * anything under `<home>/.config/git/` or `$XDG_CONFIG_HOME/git/`, or `$GIT_CONFIG_GLOBAL` (read from `env`, the
+ * kernel's environment, which a session inherits). A Write of `~/.gitconfig` naming `url.<checkout>.insteadOf` for the
+ * origin URL, then the admitted `git branch -f main <run>` and `git fetch origin`, moved `refs/remotes/origin/main` to
+ * the run's commit (reproduced with git 2.55.0 and a scratch `HOME`). `true` (refuse) when a relative path has no
+ * absolute `hookCwd` or the path cannot be resolved. Honest limit: a file the user's config includes
+ * (`include.path`, `includeIf`) elsewhere is not known here.
+ */
+export function writeTargetInGitConfig(path: string, hookCwd: unknown, homeDir: string, env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  if (!path.startsWith("/") && (typeof hookCwd !== "string" || !hookCwd.startsWith("/"))) return true;
+  const written = writtenPath(typeof hookCwd === "string" ? hookCwd : "/", path);
+  if (written === undefined) return true;
+  const xdg = env.XDG_CONFIG_HOME;
+  const global = env.GIT_CONFIG_GLOBAL;
+  const targets = [join(homeDir, ".gitconfig"), join(homeDir, ".config", "git")];
+  if (xdg !== undefined && xdg.startsWith("/")) targets.push(join(xdg, "git"));
+  if (global !== undefined && global.startsWith("/")) targets.push(global);
+  return targets.some((t) => isInsideResolved(written, t));
+}
+
+/**
  * Whether `name` is a local branch in the checkout at absolute `cwd`: git's own reading of it
  * (`rev-parse --symbolic-full-name --verify --end-of-options <name>`, the reading `git merge` uses) must be exactly
  * `refs/heads/<name>`. A remote ref, a tag (which also wins an ambiguous name), a SHA, `HEAD`, `@{-1}`, an
@@ -329,7 +352,9 @@ function refusalReason(why: ConfinementRefusal): "checkout_confinement" | "loomw
  *   `.supervisor` directory in any position, and for a recursive form or a move's source neither a root nor an
  *   ancestor of one);
  * - a `git merge`'s branch must be a local branch (`isLocalBranch`) whose tree tracks no run state
- *   (`refTracksRunState`: a merge brings in a tracked run file as a checkout does).
+ *   (`refTracksRunState`: a merge brings in a tracked run file as a checkout does);
+ * - a `git worktree add|move|repair` destination may lie outside the roots, but never inside the repository's git
+ *   dir or common dir (`destinationInGitDir`, 25d review iteration 3; `git -C <dir>` resolves it against `<dir>`).
  */
 export function checkoutConfinement(view: RunGateView, hookCwd: unknown, checkout: () => unknown, homeDir: string): CheckoutConfinement {
   if (view.dir === undefined && view.shape.kind === "none") return { kind: "ok", gitCwd: hookCwd };
@@ -363,5 +388,175 @@ export function checkoutConfinement(view: RunGateView, hookCwd: unknown, checkou
     if (!isLocalBranch(base, view.shape.branch)) return deny("checkout_confinement");
     if (refTracksRunState(base, view.shape.branch)) return deny("loomwright_run_state");
   }
+  if (view.shape.kind === "destinations") {
+    const dirs = gitDirsOf(base);
+    if (dirs === undefined) return deny("checkout_confinement");
+    for (const word of view.shape.operands) {
+      if (destinationInGitDir(base, word, [common, ...dirs])) return deny("checkout_confinement");
+    }
+  }
   return { kind: "ok", gitCwd: base };
+}
+
+/**
+ * The git dir and common dir git uses in `dir` (`rev-parse --path-format=absolute --git-dir --git-common-dir`, through
+ * `lookupGit`), each `resolvedPath`'d; `undefined` on any git error, a timeout or output that is not two absolute
+ * lines. In a linked worktree the git dir is `<common>/worktrees/<id>` and the common dir the main repository's `.git`.
+ */
+function gitDirsOf(dir: string): readonly string[] | undefined {
+  let out: string;
+  try {
+    out = lookupGit(dir, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]);
+  } catch {
+    return undefined;
+  }
+  const lines = out.replace(/\n$/, "").split("\n");
+  if (lines.length !== 2 || lines.some((l) => !l.startsWith("/"))) return undefined;
+  return lines.map((l) => resolvedPath(l));
+}
+
+/**
+ * Whether a path git will create or write (`destinations`: `git worktree add`'s path, `move`'s new path, `repair`'s
+ * paths), resolved against `base` as a file tool's write is (`writtenPath`: every symlink followed, a dangling one
+ * too, `..` applied after the link it follows), lands under a `.git` segment (case-folded) or inside one of
+ * `gitDirs` (the checkout's common dir and `base`'s git and common dirs, `isInsideResolved`: case-folded,
+ * firmlink-free) (25d review iteration 3). `true` (refuse) when the path cannot be resolved. A worktree checked out
+ * inside `.git/` writes its files as git's own: `git worktree add .git/refs/remotes/origin <branch>` made a committed
+ * file `main` the loose ref `refs/remotes/origin/main`, and the same route reaches any empty or missing directory
+ * there (`.git/remotes/`, `.git/refs/replace/`).
+ */
+function destinationInGitDir(base: string, word: string, gitDirs: readonly string[]): boolean {
+  const written = writtenPath(base, word);
+  if (written === undefined) return true;
+  if (written.toLowerCase().split("/").includes(".git")) return true;
+  return gitDirs.some((d) => isInsideResolved(written, d));
+}
+
+// ---- 25d: a run's declared checks, read from the base branch's committed files ----
+
+/** A commit id as git prints it (SHA-1 or SHA-256). */
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** The largest committed file the declared-check reader takes (a bigger one reads `too_large`). */
+export const MAX_COMMITTED_FILE_BYTES = 1024 * 1024;
+
+/** One committed file at a commit: its text, or that the commit has none there, or why it can't be read. */
+export type CommittedFile =
+  | { readonly kind: "file"; readonly text: string }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unreadable"; readonly why: "not_a_regular_file" | "too_large" | "git_failed" };
+
+/** The base commit's reads the declared-check reader takes (`automate/declared-checks.ts`): git, never the working tree. */
+export interface CommittedReads {
+  /** The commit the exact ref `ref` (`refs/…`, never expanded by git's ref matching) points at, else `undefined`. */
+  readonly commitOf: (ref: string) => string | undefined;
+  /** The ref `refs/remotes/origin/HEAD` points at (`refs/remotes/origin/<branch>`), else `undefined`. */
+  readonly originHead: () => string | undefined;
+  /** The names of the regular files directly under `dir` at commit `sha`; `[]` when it has no such directory, `undefined` when git can't say. */
+  readonly listFiles: (sha: string, dir: string) => readonly string[] | undefined;
+  /** The file at `path` in commit `sha`. */
+  readonly readFile: (sha: string, path: string) => CommittedFile;
+}
+
+/** One `git ls-tree -z -l` entry: mode, type, object id, size and path. */
+interface TreeEntry {
+  readonly mode: string;
+  readonly type: string;
+  readonly id: string;
+  readonly size: number | undefined;
+  readonly path: string;
+}
+
+/**
+ * `lookupGit` with `--no-replace-objects`: a replace ref (`refs/replace/<sha>`) makes git show another commit's tree
+ * and blobs for `<sha>` (reproduced git 2.55.0, 2026-11-23), so the declared-check reads never honour one.
+ */
+function committedGit(cwd: string, args: readonly string[]): string {
+  return lookupGit(cwd, ["--no-replace-objects", ...args]);
+}
+
+/** `git ls-tree -z -l --full-tree --end-of-options <sha> -- <path>` in `cwd`, parsed; `undefined` on any git error. */
+function lsTree(cwd: string, sha: string, path: string): readonly TreeEntry[] | undefined {
+  let out: string;
+  try {
+    out = committedGit(cwd, ["ls-tree", "-z", "-l", "--full-tree", "--end-of-options", sha, "--", path]);
+  } catch {
+    return undefined;
+  }
+  const entries: TreeEntry[] = [];
+  for (const field of out.split("\0")) {
+    const tab = field.indexOf("\t");
+    if (tab === -1) continue;
+    const [mode, type, id, size] = field.slice(0, tab).split(/ +/);
+    if (mode === undefined || type === undefined || id === undefined) return undefined;
+    entries.push({ mode, type, id, size: size !== undefined && /^\d+$/.test(size) ? Number(size) : undefined, path: field.slice(tab + 1) });
+  }
+  return entries;
+}
+
+/** Whether a tree entry is a regular file (a blob of mode 100644 or 100755: never a symlink or a submodule). */
+function isRegularBlob(entry: TreeEntry): boolean {
+  return entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755");
+}
+
+/**
+ * The committed reads a run's declared checks are taken from (25d), in the checkout at absolute `cwd`: each a fixed
+ * argument shape through `lookupGit`, failing closed (`undefined`, `unreadable`) on any git error or timeout. Only
+ * committed objects are read (`show-ref --verify`, `rev-parse`, `symbolic-ref`, `ls-tree`, `cat-file` of a commit id,
+ * each with `--no-replace-objects`), never the working tree or the index. The kernel never fetches: the refs are what
+ * the checkout last fetched, in a checkout the run session itself can write. The routes found by which a session's
+ * own commands could write them are refused (`ref_destination`, `option`, `file_output`, `remote_branch`, a
+ * `git worktree` destination inside the git dir, a file tool's write under `.git/` or into the user's global git
+ * config: `sessions/run-confinement.ts`, `checkoutConfinement`, `writeTargetInGitDir`, `writeTargetInGitConfig`).
+ * That closes known routes; it cannot prove none remain, so the base read here is only as trusted as the checkout
+ * (open point "What can still move the base", `docs/architecture/automate.md`; pinning the base or a kernel-only ref
+ * namespace is the owner's decision).
+ */
+export function committedReads(cwd: string): CommittedReads {
+  const absolute = cwd.startsWith("/");
+  return {
+    commitOf(ref) {
+      if (!absolute || !ref.startsWith("refs/")) return undefined;
+      try {
+        // `show-ref --verify` reads exactly `ref`: `rev-parse` would also take `refs/heads/<ref>` when `ref` is
+        // missing, a branch a run session can create (`git branch refs/remotes/origin/main`, git 2.55.0, 2026-11-23).
+        const id = committedGit(cwd, ["show-ref", "--verify", "--hash", ref]).trim();
+        if (!COMMIT_ID.test(id)) return undefined;
+        const sha = committedGit(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${id}^{commit}`]).trim();
+        return COMMIT_ID.test(sha) ? sha : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    originHead() {
+      if (!absolute) return undefined;
+      try {
+        const ref = committedGit(cwd, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
+        return ref.startsWith("refs/remotes/origin/") && !ref.includes("\n") ? ref : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    listFiles(sha, dir) {
+      if (!absolute || !COMMIT_ID.test(sha)) return undefined;
+      const entries = lsTree(cwd, sha, `${dir.replace(/\/+$/, "")}/`);
+      if (entries === undefined) return undefined;
+      const prefix = `${dir.replace(/\/+$/, "")}/`;
+      return entries.filter((e) => isRegularBlob(e) && e.path.startsWith(prefix) && !e.path.slice(prefix.length).includes("/")).map((e) => e.path.slice(prefix.length));
+    },
+    readFile(sha, path) {
+      if (!absolute || !COMMIT_ID.test(sha)) return { kind: "unreadable", why: "git_failed" };
+      const entries = lsTree(cwd, sha, path);
+      if (entries === undefined) return { kind: "unreadable", why: "git_failed" };
+      const entry = entries.find((e) => e.path === path);
+      if (entry === undefined) return { kind: "absent" };
+      if (!isRegularBlob(entry) || !COMMIT_ID.test(entry.id)) return { kind: "unreadable", why: "not_a_regular_file" };
+      if (entry.size === undefined || entry.size > MAX_COMMITTED_FILE_BYTES) return { kind: "unreadable", why: "too_large" };
+      try {
+        return { kind: "file", text: committedGit(cwd, ["cat-file", "blob", "--end-of-options", entry.id]) };
+      } catch {
+        return { kind: "unreadable", why: "git_failed" };
+      }
+    },
+  };
 }

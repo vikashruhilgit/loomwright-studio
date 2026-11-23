@@ -235,6 +235,8 @@ describe("handleAutomateRun starts a resume run (23j)", () => {
           allowedBashPrefixes: [...AUTOMATE_RUN_POLICY.allowedBashPrefixes],
           loomwrightScripts: [...(AUTOMATE_RUN_POLICY.loomwrightScripts ?? [])],
           loomwrightDriverProfile: "automate_run",
+          // 25d: a resume carries its repo's declared checks; this checkout has no base commit, so none.
+          declaredChecks: [],
         },
         playbook: 5,
         playbookVersion: 2,

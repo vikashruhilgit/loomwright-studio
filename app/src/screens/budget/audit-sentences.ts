@@ -348,6 +348,21 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
       ? `The kernel did not hand ${repo}'s required checks to its run${withText(typeof f.skipped === "string" ? f.skipped : undefined, ": ")}.`
       : `The kernel handed ${repo}'s required checks (${written.join(", ")}) to its run's review.`;
   },
+  run_declared_checks: (p, r) => {
+    const f = fields(p);
+    const repo = plain(f.repo) ?? "the repo";
+    const session = sessionNo(r).toLowerCase();
+    if (typeof f.base_sha !== "string") {
+      return `The kernel found no base branch for ${repo}, so ${session} may run none of its checks${withText(words(plain(f.reason)), ": ")}.`;
+    }
+    // One command can be declared in a workflow and as a script: each is named once.
+    const commands = Array.isArray(f.admitted) ? [...new Set((f.admitted as unknown[]).map((c) => plain(fields(c).command)))] : [];
+    const admitted = listed(commands);
+    const skipped = typeof f.skipped_count === "number" && Number.isSafeInteger(f.skipped_count) && f.skipped_count >= 0 ? f.skipped_count : Array.isArray(f.skipped) ? f.skipped.length : 0;
+    const base = `${plain(f.base_ref) ?? "its base branch"} at ${plain(f.base_sha.slice(0, 12)) ?? "a commit"}`;
+    const ran = admitted === undefined ? `may run none of ${repo}'s checks` : `may run ${repo}'s declared checks (${admitted})`;
+    return `The kernel read ${base}: ${session} ${ran}${skipped > 0 ? `; ${skipped} declared line${skipped === 1 ? " was" : "s were"} skipped` : ""}.`;
+  },
   run_reply_sent: (p, r) => {
     const g = reader(p);
     return `You replied to ${sessionNo(r).toLowerCase()}${withText(g("run_id"), ", run ")}; the run carries on from where it stopped.`;

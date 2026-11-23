@@ -8,8 +8,10 @@
 //
 // A row `filed: 25b|25c|25d` is a known gap the named story closes (25b: the rail reads quoted text as text; 25c:
 // run sessions manage files, read git and run the helper scripts they need inside their checkout; 25d: a run runs
-// the repo's declared checks), which then removes the row. A row with no `filed` is a denial kept on purpose (a
-// refused subcommand, a `claude` process, an outward post, a persistent memory write) or a text that is not an
+// the repo's declared checks), which then removes the row. The test's stale-exclusion check (25d) fails a `filed`
+// row whose match covers an entry its kind's policy now admits, and its unused-row check fails a row that matches no
+// denied entry. A row with no `filed` is a denial kept on purpose (a refused subcommand, a `claude` process, an
+// outward post, a persistent memory write, project code the repo does not declare) or a text that is not an
 // instruction (`advisory, never instructed`). Where a row is filed to a story whose criteria do not name the
 // command yet, its reason says "not in 25x's list": 25a found it, and that story's owner decides.
 //
@@ -182,9 +184,8 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     match: { type: "script", deny: NOT_LISTED, scripts: ["run-pin-mutations.sh"] },
     kinds: ALL,
     reason_class: "runs project code",
-    reason: "it runs the brief's pinned test files with `bash \"$1\"` (run-pin-mutations.sh:262): project code, 25d's class. 18.1.2 holds no `eval` or `bash -c`; launch.ts's comment said it ran file-borne command lines (corrected in 25c).",
+    reason: "it runs the brief's pinned test files with `bash \"$1\"` (run-pin-mutations.sh:262): project code chosen by a file the session writes (the brief), refused on purpose. 25d admits project code only as a check the repo declares on its base branch (`declared_check`), never a script that runs the files it is given. 18.1.2 holds no `eval` or `bash -c`; launch.ts's comment said it ran file-borne command lines (corrected in 25c).",
     consequence: "consequence if denied: pin mutations are not run; Phase 4.5 reports the pins unverified.",
-    filed: "25d",
   },
   {
     id: "run-benchmark",
@@ -468,29 +469,25 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     consequence: "consequence if denied: none.",
   },
 
-  // ---- Gaps the rail's quote handling causes (25b) ----
+  // ---- What 25b's quote handling still refuses on purpose ----
+  // 25d's stale-exclusion check removed 25a's two `filed: 25b` rows (`quoted-metacharacters`,
+  // `quoted-metacharacters-scripts`): 25b admits their quoted `jq 'has(…)'` filter and quoted progress note. The two
+  // shapes they also held stay refused by 25b's design, so each is its own deliberate row.
   {
-    id: "quoted-metacharacters",
-    match: {
-      type: "command",
-      deny: SHELL_META,
-      text: "^(git commit -m \"feat\\(auth\\)|jq 'has\\()",
-      files: ["commands/automate.md", "skills/commit/SKILL.md"],
-    },
-    kinds: [...AUTOMATE, ...MERGE],
+    id: "multi-line-commit-message",
+    match: { type: "command", deny: SHELL_META, text: "^git commit -m \"feat\\(auth\\)", files: ["skills/commit/SKILL.md"] },
+    kinds: AUTOMATE,
     reason_class: "quoted text the rail reads as shell",
-    reason: "a multi-line commit message: the newline sits inside quotes, but the rail refuses any newline (observed: the Co-Authored-By trailer, events 29902-33100).",
-    consequence: "consequence if denied: the commit goes in without its body or trailer, or not as a conventional commit (session 231, c54de0b).",
-    filed: "25b",
+    reason: "a multi-line commit message: the newline sits inside quotes, and 25b keeps a line break refused anywhere (D48), quoted or not.",
+    consequence: "consequence if denied: the session gives each paragraph its own `-m` (admitted since 25b, a `Co-Authored-By: … <…>` trailer included).",
   },
   {
-    id: "quoted-metacharacters-scripts",
-    match: { type: "script", deny: SHELL_META, text: "(\\(attempt N/3\\)|\"reconcile-status: would stamp)", files: ["commands/launch-pad.md", "skills/automate-loop/resume.md"] },
-    kinds: [...AUTOMATE, ...MERGE],
-    reason_class: "quoted text the rail reads as shell",
-    reason: "a driver or marker call whose note holds `(`…`)`: `launch-pad-phase.sh 5.5 PASS (attempt 1/3)` (observed, event 33441) and a quoted progress note.",
-    consequence: "consequence if denied: the call is retried with the note stripped.",
-    filed: "25b",
+    id: "unquoted-note-parentheses",
+    match: { type: "script", deny: SHELL_META, text: "\\(attempt N/3\\)", files: ["commands/launch-pad.md"] },
+    kinds: AUTOMATE,
+    reason_class: "shell composition",
+    reason: "Launch Pad's phase-marker call as its text writes it, `launch-pad-phase.sh 5.5 <decision> (attempt N/3)` (observed: `… PASS (attempt 1/3)`, event 33441): the `(`…`)` is unquoted, and the rail reads only a quoted one as text (25b).",
+    consequence: "consequence if denied: the session retries with the note quoted or stripped.",
   },
 
   // ---- Shell composition and variables the rail refuses by design ----
@@ -683,7 +680,7 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     consequence: "consequence if denied: agents that list them in `tools:` work without them.",
   },
 
-  // ---- Gaps: running the repo's code (25d) ----
+  // ---- Deliberate: running the repo's code (25d admits declared checks only) ----
   {
     id: "project-checks",
     match: {
@@ -697,9 +694,8 @@ export const RUN_EXCLUSIONS: readonly RunExclusion[] = Object.freeze([
     },
     kinds: [...AUTOMATE, ...REVIEW],
     reason_class: "runs project code",
-    reason: "the worker and reviewer run the project's own checks (`npm test`, `npm run build|lint`, `tsc --noEmit`, `go vet`, `scripts/ci-local.sh`). 25d admits exactly the repo's declared checks.",
-    consequence: "consequence if denied: the worker cannot verify its change and the Supervisor checkpoints with no PR (24a, events 38063-38078).",
-    filed: "25d",
+    reason: "the worker and reviewer run the project's own checks (`npm test`, `npm run build|lint`, `tsc --noEmit`, `go vet`, `scripts/ci-local.sh`). No run prefix admits project code: a backlog, resume or review-pr run admits these only as `declared_check`, exactly a command line the repo declares on its base branch (a workflow `run:` line, `npm test`, `npm run <script>`, read at launch by automate/declared-checks.ts). The run policies decided here carry no repo's declarations.",
+    consequence: "consequence if denied: where the repo does not declare the check, the worker cannot verify its change and the Supervisor's checkpoint says so (24a, events 38063-38078).",
   },
   {
     id: "bash-c",

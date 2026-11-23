@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AUTOMATE_RUN_POLICY } from "../src/automate/launch.js";
-import { checkoutConfinement, confinementRoots, isLocalBranch, physicalPath, refTracksRunState, writeTargetInGitDir } from "../src/loomwright/run-state-checkout.js";
+import { checkoutConfinement, confinementRoots, isLocalBranch, physicalPath, refTracksRunState, writeTargetInGitConfig, writeTargetInGitDir } from "../src/loomwright/run-state-checkout.js";
 import { isInsideResolved } from "../src/protected-paths.js";
 import { decideToolUse, runGateView } from "../src/sessions/policy.js";
 import {
@@ -109,6 +109,104 @@ describe("confinedShape: the closed option sets and the refused operand forms", 
       "git merge HEAD:x",
     ]) {
       expect(shape(command), command).toEqual({ kind: "refuse", why: "merge_shape" });
+    }
+  });
+
+  it("25d: a fetch refspec naming a destination, or a push destination that could name a remote-tracking or replace ref, is `ref_destination`", () => {
+    for (const command of [
+      "git fetch . +HEAD:refs/remotes/origin/main",
+      "git fetch . HEAD:refs/remotes/origin/main",
+      "git fetch . run:remotes/origin/main",
+      "git fetch . HEAD:refs/REMOTES/origin/main",
+      "git fetch origin +main",
+      "git fetch origin main:main",
+      "git fetch -q . -- HEAD:refs/replace/abc",
+      "git push . HEAD:refs/remotes/origin/main",
+      "git push . +run:refs/remotes/origin/main",
+      "git push ../worktree HEAD:origin/main",
+      "git push . HEAD:origin",
+      "git push . HEAD:remotes/origin/main",
+      "git push . run:refs/replace/0123456789abcdef0123456789abcdef01234567",
+      "git push . HEAD:refs/Remotes/origin/main",
+      "git push . refs/remotes/origin/main",
+      "git push -q . '+refs/heads/*:refs/remotes/origin/*'",
+      "git stash export --to-ref refs/remotes/origin/main",
+      "git stash export --print",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "refuse", why: "ref_destination" });
+    }
+    // An option outside fetch's, push's or ls-remote's closed set is `option` (review iteration 2): git takes any
+    // unambiguous abbreviation of a long option and a value as the next word, so `--refm=` is `--refmap=` and
+    // `--upload-pa=` is `--upload-pack=` (each reproduced with git 2.55.0).
+    for (const command of [
+      "git fetch '--refmap=+refs/heads/*:refs/remotes/origin/*' . run",
+      "git fetch --refmap '+refs/heads/*:refs/remotes/origin/*' . run",
+      "git fetch --refm=+refs/heads/run:refs/remotes/origin/main . run",
+      "git fetch --refma=+refs/heads/run:refs/remotes/origin/main . run",
+      "git fetch \"--upload-pack=sh -c 'touch PWNED' --\" .",
+      "git fetch \"--upload-pa=sh -c 'touch PWNED' --\" .",
+      "git fetch --upload-pack 'sh -c x' .",
+      "git fetch --multiple . +HEAD:refs/remotes/origin/main",
+      "git fetch --stdin .",
+      "git fetch -j 2 origin",
+      "git fetch -qf origin",
+      "git fetch --depth 1 origin",
+      "git ls-remote \"--upload-pack=sh -c 'touch PWNED' --\" .",
+      "git ls-remote \"--upload-pa=sh -c 'touch PWNED' --\" .",
+      "git ls-remote -u 'sh -c x' .",
+      "git ls-remote -o x origin",
+      "git push \"--receive-pack=sh -c 'touch PWNED' --\" . HEAD:refs/heads/x",
+      "git push \"--receive-pa=sh -c x\" . HEAD:refs/heads/x",
+      "git push \"--exec=sh -c x\" . HEAD:refs/heads/x",
+      "git push \"--exe=sh -c x\" . HEAD:refs/heads/x",
+      "git push --repo=. HEAD:refs/remotes/origin/main",
+      "git push --mirror .",
+      "git push --force origin main",
+      "git push -f origin main",
+      "git push -o x origin main",
+      "git push --prune . '+refs/heads/*:refs/remotes/origin/*'",
+      "git push - origin main",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "refuse", why: "option" });
+    }
+    // `--output` on the log / diff family writes the output to any path, `.git/` included (review iteration 2).
+    for (const command of [
+      "git log -1 --format=%H --output=.git/refs/remotes/origin/main HEAD",
+      "git log -1 --output .git/refs/remotes/origin/main HEAD",
+      "git show --output=.git/config HEAD",
+      "git diff --output=.git/config",
+      "git diff --stat --output x",
+      "git stash show -p --output=.git/config",
+      "git stash list --output=.git/config",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "refuse", why: "file_output" });
+    }
+    for (const command of ["git log --oneline -5", "git diff --stat", "git show HEAD", "git diff --output-indicator-new=+ HEAD", "git stash", "git stash list", "git status"]) {
+      expect(shape(command), command).toEqual({ kind: "none" });
+    }
+    // Loomwright's own forms (the conformance fixture, 18.1.2) stay `none`.
+    for (const command of [
+      "git fetch",
+      "git fetch origin",
+      "git fetch -q origin",
+      "git fetch --quiet origin main",
+      "git fetch origin main",
+      "git push",
+      "git push -u origin feature/x-1",
+      "git push origin HEAD:feature/widget-config",
+      "git push origin HEAD:refs/heads/main",
+      "git push -q origin main",
+      "git push origin HEAD",
+      "git push origin --delete eval/a/arm-2",
+      "git push origin v1.0:refs/tags/v1.0",
+      "git push -qu origin feature/x-1",
+      "git fetch -qp origin",
+      "git fetch --prune --tags origin",
+      "git ls-remote --exit-code --heads origin main",
+      "git ls-remote --heads origin",
+      "git ls-remote",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "none" });
     }
   });
 
@@ -572,5 +670,141 @@ describe("checkoutConfinement: the session gate's check (25c)", () => {
     git(co, "commit", "-qm", "forged");
     git(co, "checkout", "-q", "main");
     expect(gate("git merge forged")).toEqual(RUN_STATE);
+  });
+});
+
+// ---- 25d review iteration 3: a worktree destination stays out of the git dir; no remote-tracking branch deletion ----
+
+describe("25d review iteration 3: `git worktree` destinations and `git branch` on remote-tracking branches", () => {
+  const DENY = { kind: "deny", reason: "checkout_confinement" };
+  const CONFINED = { decision: "deny", reason: "checkout_confinement" } as const;
+  const ALLOWED = { decision: "allow", reason: "bash_prefix_allowed" } as const;
+  const bash = (command: string) => decideToolUse(AUTOMATE_RUN_POLICY, "Bash", { command });
+
+  it("confinedShape reads `git worktree add|move|repair` destinations past a closed option set", () => {
+    for (const [command, operands] of [
+      ["git worktree add .git/refs/remotes/origin forge", [".git/refs/remotes/origin"]],
+      ["git worktree add ../lane-x feature/x", ["../lane-x"]],
+      ["git worktree add -b feature/x-dep ../repo-x-dep main", ["../repo-x-dep"]],
+      ["git worktree add -q --reason=why --lock -B y ../w", ["../w"]],
+      ["git worktree add --reason why -- -odd", ["-odd"]],
+      ["git worktree move ../w1 ../w2", ["../w2"]],
+      ["git worktree move -f ../w1 .git/xx", [".git/xx"]],
+      ["git worktree repair ../w1 ../w2", ["../w1", "../w2"]],
+      ["git worktree repair", []],
+    ] as const) {
+      expect(shape(command), command).toEqual({ kind: "destinations", operands });
+    }
+    for (const [command, why] of [
+      ["git worktree add --rea x ../w", "option"],
+      ["git worktree add -fb x ../w", "option"],
+      ["git worktree add -bx ../w", "option"],
+      ["git worktree add --frobnicate ../w", "option"],
+      ["git worktree --x add ../w", "option"],
+      ["git worktree add", "operands"],
+      ["git worktree add -b", "operands"],
+      ["git worktree add a b c", "operands"],
+      ["git worktree move ../w1", "operands"],
+      ["git worktree add '../w*' x", "pattern"],
+      ["git worktree add ~/w x", "pattern"],
+    ] as const) {
+      expect(shape(command), command).toEqual({ kind: "refuse", why });
+    }
+    for (const command of ["git worktree list", "git worktree list --porcelain", "git worktree remove ../w", "git worktree prune", "git worktree"]) {
+      expect(shape(command), command).toEqual({ kind: "none" });
+    }
+  });
+
+  it("confinedShape refuses a `git branch` that deletes, renames or copies a remote-tracking branch; listing and local forms stay `none`", () => {
+    for (const command of [
+      "git branch -r -d origin/HEAD",
+      "git branch -d -r origin/HEAD",
+      "git branch -rd origin/HEAD",
+      "git branch -dr origin/HEAD",
+      "git branch -D -r origin/main",
+      "git branch --remotes --delete origin/HEAD",
+      "git branch --rem -d origin/HEAD",
+      "git branch -r --del origin/HEAD",
+      "git branch -a -d origin/HEAD",
+      "git branch -r -m origin/main x",
+      "git branch -r -C origin/main x",
+      "git branch --all --copy origin/main x",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "refuse", why: "remote_branch" });
+      expect(bash(command), command).toEqual(CONFINED);
+    }
+    for (const command of [
+      "git branch",
+      "git branch -r",
+      "git branch -a",
+      "git branch --remotes --list",
+      "git branch --show-current",
+      "git branch --list feature/x",
+      "git branch --contains abc123",
+      "git branch feature/x main",
+      "git branch -d feature/x",
+      "git branch -D feature/x",
+      "git branch -m old new",
+      "git branch -- -r",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "none" });
+      expect(bash(command), command).toEqual(ALLOWED);
+    }
+  });
+
+  it("the gate refuses a worktree destination inside the git dir: `..`, `-C`, case-folded, a symlink, absolute; lanes outside `.git` stay admitted", () => {
+    git(co, "branch", "forge");
+    git(co, "branch", "lane");
+    git(co, "worktree", "add", "-q", "-b", "sub", join(tmp, "wt"));
+    mkdirSync(join(co, "kernel"));
+    symlinkSync(join(co, ".git", "refs"), join(co, "refs-link"));
+    for (const command of [
+      "git worktree add .git/refs/remotes/origin forge",
+      "git -C . worktree add .git/x forge",
+      "git -C kernel worktree add ../.git/x forge",
+      "git worktree add kernel/../.git/x forge",
+      "git worktree add .GIT/refs/remotes/origin forge",
+      "git worktree add .git forge",
+      "git worktree add refs-link/remotes/origin forge",
+      `git worktree add ${join(co, ".git", "remotes")} forge`,
+      "git worktree add -b z .git/refs/replace main",
+      "git worktree move ../wt .git/moved",
+      "git worktree repair .git/refs",
+      // From a linked worktree: its git dir is `<common>/worktrees/sub`, and the common dir is the checkout's `.git`.
+      "git -C ../wt worktree add ../co/.git/x forge",
+    ]) {
+      expect(gate(command), command).toEqual(DENY);
+      expect(bash(command), command).toEqual(ALLOWED);
+    }
+    // The hook cwd a linked worktree: the same checks against its git dirs.
+    expect(gate(`git worktree add ${join(co, ".git", "y")} forge`, join(tmp, "wt"))).toEqual(DENY);
+    // Nothing was created inside `.git`.
+    expect(existsSync(join(co, ".git", "refs", "remotes", "origin"))).toBe(false);
+    // Loomwright's lane forms, outside `.git`, stay admitted.
+    for (const command of ["git worktree add ../lane-x lane", "git worktree add -b feature/x-dep ../co-x-dep main", "git worktree move ../wt ../wt2", "git worktree list"]) {
+      expect(gate(command), command).toMatchObject({ kind: "ok" });
+    }
+    // Fails closed: no repository at the hook cwd, no absolute hook cwd.
+    mkdirSync(join(tmp, "plain"));
+    expect(gate("git worktree add ../lane-y lane", join(tmp, "plain"))).toEqual(DENY);
+    expect(gate("git worktree add ../lane-y lane", null)).toEqual(DENY);
+  });
+
+  it("writeTargetInGitConfig: a file-tool write into the user's global git config is refused, resolved on disk", () => {
+    const env = {};
+    expect(writeTargetInGitConfig(join(home, ".gitconfig"), co, home, env)).toBe(true);
+    expect(writeTargetInGitConfig(join(home, ".GITCONFIG"), co, home, env)).toBe(true);
+    expect(writeTargetInGitConfig(join(home, ".config", "git", "config"), co, home, env)).toBe(true);
+    expect(writeTargetInGitConfig(join(tmp, "xdg", "git", "config"), co, home, { XDG_CONFIG_HOME: join(tmp, "xdg") })).toBe(true);
+    expect(writeTargetInGitConfig(join(tmp, "g.cfg"), co, home, { GIT_CONFIG_GLOBAL: join(tmp, "g.cfg") })).toBe(true);
+    // Through a link the session could have committed, and relative to the hook cwd.
+    symlinkSync(home, join(co, "h"));
+    expect(writeTargetInGitConfig("h/.gitconfig", co, home, env)).toBe(true);
+    expect(writeTargetInGitConfig("../home/.gitconfig", co, home, env)).toBe(true);
+    expect(writeTargetInGitConfig("x.txt", null, home, env)).toBe(true);
+    // Ordinary writes stay admitted.
+    expect(writeTargetInGitConfig(join(co, "a.txt"), co, home, env)).toBe(false);
+    expect(writeTargetInGitConfig(join(home, ".gitconfig-notes.md"), co, home, env)).toBe(false);
+    expect(writeTargetInGitConfig(".gitconfig", co, home, env)).toBe(false);
   });
 });
