@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { CHARTER_PERMISSION_MODES } from "../src/agents/charter-files.js";
 import { AVATAR_HUES, AVATAR_SHAPES } from "../src/agents/types.js";
+import { FIX_COMMENT_KINDS } from "../src/automate/owner-comment.js";
 import { MERGE_APPROVAL_CI_CLAIMS } from "../src/automate/runner.js";
 import { startFailureExit } from "../src/daemon-exit.js";
 import { InvalidContributionError, PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, defineTool, mergeContributions } from "../src/features/index.js";
@@ -132,8 +133,12 @@ const CLOSED_VALUE_SETS: Readonly<Record<string, readonly ClosedValueSet[]>> = {
   kernel_automate_state: [],
   kernel_automate_merge_check: [],
   kernel_merge_approval_request: [{ path: "ci", enum: MERGE_APPROVAL_CI_CLAIMS }],
-  // The owner-aware comment routing (phase 8 item 10): read-only, no closed input value.
-  kernel_pr_route: [],
+  // The owner-aware comment routing (phase 8 item 10): the triaged comment a fix names (item 26a), by its kind (the
+  // comment source's three kinds, `GitHubPrComment["kind"]`) and its positive id.
+  kernel_pr_route: [
+    { path: "comment.kind", enum: FIX_COMMENT_KINDS },
+    { path: "comment.id", positiveInteger: true },
+  ],
 };
 
 type Json = Record<string, unknown>;
@@ -224,9 +229,9 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     const listed = await listKernelTools(SHIPPED);
     const problems = listed.flatMap((t) => (CLOSED_VALUE_SETS[t.name] ?? []).map((set) => closedSetProblem(t.inputSchema, set)).filter((p) => p !== undefined).map((p) => `${t.name}: ${p}`));
     expect(problems).toEqual([]);
-    // The table is not vacuous: the seven tools with closed sets are each checked.
+    // The table is not vacuous: the eight tools with closed sets are each checked.
     expect(Object.entries(CLOSED_VALUE_SETS).filter(([, sets]) => sets.length > 0).map(([name]) => name).sort()).toEqual(
-      ["kernel_agent_create", "kernel_agent_update", "kernel_github_pr_diff", "kernel_merge_approval_request", "kernel_playbook_create", "kernel_playbook_update", "kernel_trigger_register"],
+      ["kernel_agent_create", "kernel_agent_update", "kernel_github_pr_diff", "kernel_merge_approval_request", "kernel_playbook_create", "kernel_playbook_update", "kernel_pr_route", "kernel_trigger_register"],
     );
   });
 
