@@ -146,6 +146,7 @@ class HookedClient implements GitHubClient {
   listPullComments = (repo: string, n: number): ReturnType<GitHubClient["listPullComments"]> => this.inner.listPullComments(repo, n);
   listIssues = (repo: string, filters: GitHubIssueFilters): ReturnType<GitHubClient["listIssues"]> => this.inner.listIssues(repo, filters);
   listOpenPullComments = (repo: string): ReturnType<GitHubClient["listOpenPullComments"]> => this.inner.listOpenPullComments(repo);
+  getPullComment = (...args: Parameters<GitHubClient["getPullComment"]>): ReturnType<GitHubClient["getPullComment"]> => this.inner.getPullComment(...args);
   replyToReviewComment = (repo: string, n: number, id: number, body: string): ReturnType<GitHubClient["replyToReviewComment"]> =>
     this.inner.replyToReviewComment(repo, n, id, body);
   createPullComment = (repo: string, n: number, body: string): ReturnType<GitHubClient["createPullComment"]> => this.inner.createPullComment(repo, n, body);

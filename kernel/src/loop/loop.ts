@@ -226,6 +226,7 @@ export class EventLoop {
       event,
       store,
       sessions: this.#sessions,
+      ...(this.#github === undefined ? {} : { github: this.#github }),
       runStep: (name, fn, opts) => runStep(store, prefix + name, fn, { now, ...opts }),
       runStepAsync: (name, fn, opts) => {
         const key = prefix + name;

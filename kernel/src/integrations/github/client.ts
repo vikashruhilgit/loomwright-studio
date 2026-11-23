@@ -35,9 +35,9 @@
 // `webhook_secret` are never read out of the response.
 //
 // What `unreachable` covers here: no usable answer from GitHub, so no request
-// was made (no token, a malformed token, a malformed repo or number) or none
-// came back that the client can use (network error, timeout, a body over the
-// bound, a body that is not the JSON shape GitHub documents). `GitHubFailure`
+// was made (no token, a malformed token, a malformed repo, number or comment
+// kind) or none came back that the client can use (network error, timeout, a
+// body over the bound, a body that is not the JSON shape GitHub documents). `GitHubFailure`
 // has no other variant for these, and none of them carries a rate limit.
 //
 // Permissions: `getTokenInfo` always reports `permissions: null`. How GitHub
@@ -521,6 +521,24 @@ function prCommentOf(kind: GitHubPrComment["kind"], pr: number, v: unknown): Git
     url: str(c["html_url"]),
     updated_at: str(at),
   };
+}
+
+/** The three comment kinds `getPullComment` reads; any other value sends nothing. */
+const PR_COMMENT_KINDS: readonly string[] = ["issue_comment", "review_comment", "review"];
+
+/**
+ * Whether a single comment GitHub answered belongs to pull request `pr` of repo
+ * path `r`, from GitHub's own answer: an issue comment's `issue_url` ends
+ * `/repos/<r>/issues/<pr>`, a review comment's `pull_request_url` ends
+ * `/repos/<r>/pulls/<pr>` (the repo compared without case: GitHub answers its
+ * own casing of the name). A review is read under `/pulls/<pr>/reviews/<id>`, so
+ * GitHub has already scoped it to `pr`.
+ */
+function isOnPull(kind: GitHubPrComment["kind"], r: string, pr: number, v: unknown): boolean {
+  const c = record(v);
+  if (kind === "review") return true;
+  const [field, want] = kind === "issue_comment" ? ["issue_url", `/repos/${r}/issues/${pr}`] : ["pull_request_url", `/repos/${r}/pulls/${pr}`];
+  return str(c[field]).toLowerCase().endsWith(want.toLowerCase());
 }
 
 /** The longest branch name the client puts in a path (GitHub's own limit is 255 bytes). */
@@ -1056,6 +1074,23 @@ export function createGitHubClient(deps: GitHubClientDeps = {}): GitHubClient & 
         }
       }
       return { ok: true, data: out, rateLimit };
+    },
+
+    async getPullComment(repo: string, pr: number, kind: GitHubPrComment["kind"], id: number): Promise<GitHubResponse<GitHubPrComment>> {
+      const r = repoPath(repo);
+      if (r === undefined || !isPullNumber(pr) || !isPullNumber(id) || !PR_COMMENT_KINDS.includes(kind)) return unreachable();
+      // Issue and review comments are read by id alone, so the answer's own link to its PR is checked; a review is read under the PR.
+      const path =
+        kind === "issue_comment"
+          ? `/repos/${r}/issues/comments/${id}`
+          : kind === "review_comment"
+            ? `/repos/${r}/pulls/comments/${id}`
+            : `/repos/${r}/pulls/${pr}/reviews/${id}`;
+      const res = await getJson(path, (body) => (isOnPull(kind, r, pr, body) ? prCommentOf(kind, pr, body) : undefined));
+      if (!res.ok) return res;
+      // On another PR, or a pending review: not on this PR, as GitHub answers a PR-scoped read of a comment it does not hold.
+      if (res.data === undefined) return { ok: false, error: "http_error", status: 404, rateLimit: res.rateLimit };
+      return { ok: true, data: res.data, rateLimit: res.rateLimit };
     },
 
     // ---- The repo-policy reads (phase 8 item 08): `GitHubRepoPolicyReads` ----

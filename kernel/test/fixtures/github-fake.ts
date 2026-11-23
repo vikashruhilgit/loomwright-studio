@@ -50,7 +50,10 @@ export interface FakeGitHubData {
   readonly comments?: Readonly<Record<string, readonly GitHubPullComment[]>>;
   /** Issues by `<owner>/<repo>`: `listIssues` answers them (every entry is an issue, never a pull request). */
   readonly issues?: Readonly<Record<string, readonly GitHubIssueSummary[]>>;
-  /** Comments and reviews on open pulls by `<owner>/<repo>`: `listOpenPullComments` answers them. */
+  /**
+   * Comments and reviews on open pulls by `<owner>/<repo>`: `listOpenPullComments` answers them, and `getPullComment`
+   * one by `pr`, `kind` and `id` (`http_error` 404 for one not listed). A test edits or deletes one with `setPrComments`.
+   */
   readonly prComments?: Readonly<Record<string, readonly GitHubPrComment[]>>;
   /** Repo info by `<owner>/<repo>`: `getRepoInfo` answers it (`http_error` 404 for a repo not listed). */
   readonly repoInfo?: Readonly<Record<string, GitHubRepoInfo>>;
@@ -83,11 +86,19 @@ export class FakeGitHubClient implements GitHubClient, GitHubRepoPolicyReads {
   /** The merge states, mutable mid-test (a head moving, an approval landing): seeded from `data.mergeStates`. */
   readonly #mergeStates: Map<string, GitHubPullMergeState>;
   readonly #protection: Map<string, GitHubBranchProtection | number>;
+  /** The PR comments, mutable mid-test (an edit or a deletion between two reads): seeded from `data.prComments`. */
+  readonly #prComments: Map<string, readonly GitHubPrComment[]>;
 
   constructor(data: FakeGitHubData = {}) {
     this.#data = data;
     this.#mergeStates = new Map(Object.entries(data.mergeStates ?? {}));
     this.#protection = new Map(Object.entries(data.protection ?? {}));
+    this.#prComments = new Map(Object.entries(data.prComments ?? {}));
+  }
+
+  /** Replaces `repo`'s PR comments from now on (a comment edited or deleted). */
+  setPrComments(repo: string, comments: readonly GitHubPrComment[]): void {
+    this.#prComments.set(repo, comments);
   }
 
   /** Replaces pull `number`'s merge state from now on (the head moves, an approval lands). */
@@ -160,7 +171,14 @@ export class FakeGitHubClient implements GitHubClient, GitHubRepoPolicyReads {
   }
 
   listOpenPullComments(repo: string): Promise<GitHubResponse<readonly GitHubPrComment[]>> {
-    return this.#answer("listOpenPullComments", [repo], () => this.#data.prComments?.[repo] ?? []);
+    return this.#answer("listOpenPullComments", [repo], () => this.#prComments.get(repo) ?? []);
+  }
+
+  /** One of `repo`'s PR comments, matched on `pr`, `kind` and `id` (as the real client checks membership); none is `http_error` 404. */
+  getPullComment(repo: string, pr: number, kind: GitHubPrComment["kind"], id: number): Promise<GitHubResponse<GitHubPrComment>> {
+    const comment = this.#prComments.get(repo)?.find((c) => c.pr === pr && c.kind === kind && c.id === id);
+    if (comment === undefined) return this.#httpError("getPullComment", [repo, pr, kind, id], 404);
+    return this.#answer("getPullComment", [repo, pr, kind, id], () => comment);
   }
 
   // ---- The repo-policy reads (`GitHubRepoPolicyReads`) ----
