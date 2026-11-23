@@ -15,8 +15,9 @@
 //     It clones the sandbox repo into a fresh dir under the OS temp dir, pushes a branch `probe-26a-<timestamp>`
 //     off `main` that adds `ping.js`, opens a PR, posts the owner's comment `fix: rename ping to pong` with `gh`,
 //     re-reads that comment fresh from GitHub (author, PR membership, body), puts the clone back on `main` (a crew
-//     member's workspace), and starts a real session through the kernel's `SessionManager` on the owner's
-//     subscription token from the Keychain, with `REVIEW_PR_RUN_POLICY` plus the repo's declared checks (as
+//     member's workspace), and starts a real session through the kernel's `SessionManager` on the auth
+//     provider the owner's kernel runs on (`STUDIO_AUTH_PROVIDER`, else the choice in `config/auth.json` (D42), else
+//     `api-key`), with `REVIEW_PR_RUN_POLICY` plus the repo's declared checks (as
 //     `automate/launch.ts` builds a `review_pr` run's policy), the Loomwright install the manager resolves, and the
 //     clone as cwd. The outcome is read from the clone (`git log`, `git show`, `git ls-remote`) and from the store's
 //     `tool_decision` events, never from the model's own report; each tool call is attributed to the main thread or
@@ -31,10 +32,11 @@
 // variables a launchd daemon has), never this process's, so no host-session variable or inherited token reaches it.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SUBSCRIPTION_TOKEN_ID, selectAuthProvider } from "../src/auth/index.js";
+import { API_KEY_PROVIDER_ID, selectAuthProvider } from "../src/auth/index.js";
+import { readAuthChoice } from "../src/auth/choice.js";
 import { declaredCheckWords, readDeclaredChecks } from "../src/automate/declared-checks.js";
 import { REVIEW_PR_RUN_POLICY, reviewPrRunPrompt } from "../src/automate/launch.js";
 import { wrapUntrusted } from "../src/brain/context.js";
@@ -188,7 +190,11 @@ describe.skipIf(!LIVE)("live: a review_pr session given the owner's comment (STU
     const uses: ToolUse[] = [];
     const meta: Record<string, unknown> = {};
     try {
-      const authProvider = await selectAuthProvider(SUBSCRIPTION_TOKEN_ID, { store });
+      // The provider the owner's kernel runs on (kernel.ts order, minus the flag): env, then the recorded choice.
+      const ownerDataDir = process.env.STUDIO_DATA_DIR ?? join(homedir(), ".loomwright-studio");
+      const providerId = process.env.STUDIO_AUTH_PROVIDER ?? readAuthChoice(ownerDataDir) ?? API_KEY_PROVIDER_ID;
+      Object.assign(record, { auth_provider: providerId });
+      const authProvider = await selectAuthProvider(providerId, { store });
       const manager = new SessionManager({
         store,
         authProvider,
