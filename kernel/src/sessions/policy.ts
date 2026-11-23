@@ -88,7 +88,9 @@ export type ToolDecisionReason =
    * worktrees, under `~/.claude/` or a `.git` directory, a recursive form or a move on the checkout or a
    * worktree root (or an ancestor of one), or a merge of anything but a local branch. Also a run session's Write,
    * Edit or NotebookEdit of a path under a `.git` segment: as text here (`writesGitDir`, review iteration 1), and
-   * resolved on disk through every symlink in the session gate (`writeTargetInGitDir`, review iteration 2).
+   * resolved on disk through every symlink in the session gate (`writeTargetInGitDir`, review iteration 2). 25d review
+   * iteration 3: a `git branch` deleting a remote-tracking branch, a `git worktree add|move|repair` destination inside
+   * the repository's git dir or common dir, and a file-tool write into the user's global git config (session gate).
    */
   | "checkout_confinement";
 
@@ -154,7 +156,9 @@ function startsWithPrefixWords(words: readonly string[], prefix: string): boolea
  *   literal operands (`confinedShape`). 25d adds `git fetch`, `git push` and
  *   `git ls-remote` (a closed option set, no ref destination a run's base is
  *   read from) and `--output` on `git log` / `show` / `diff` / `stash`
- *   (`file_output`). Where those paths lie is the session
+ *   (`file_output`); its review iteration 3 adds `git branch` deleting a
+ *   remote-tracking branch (`remote_branch`) and `git worktree add|move|repair`
+ *   destinations, which the session gate keeps out of the git dir. Where those paths lie is the session
  *   gate's question (`kernel/src/loomwright/run-state-checkout.ts`): this
  *   decision reads no file system.
  * - A run policy's declared checks (phase 8 item 25d, `declaredChecks`, which

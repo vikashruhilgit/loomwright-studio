@@ -12,12 +12,15 @@
 // The base commit is the stored repo policy's `default_branch` as `refs/remotes/origin/<branch>`, else the target of
 // `refs/remotes/origin/HEAD`; when neither resolves the run declares nothing (`base_unresolved`), never `HEAD` and
 // never the working tree. So a script or workflow the run adds on its own branch, committed or not, is never declared.
-// The routes a run session's own commands had to that ref are refused (`sessions/run-confinement.ts`): a fetch or
-// push that names a remote-tracking or replace ref destination and `git stash export` (`ref_destination`), any
-// fetch / push / ls-remote option outside a closed set, abbreviations of `--refmap` and `--upload-pack` included
-// (`option`), `--output=<file>` on `git log` / `show` / `diff` / `stash` (`file_output`), and a file tool's write
-// under `.git/`. `committedReads` reads the exact ref with replace objects off. What can still move it is listed in
-// `docs/architecture/automate.md` ("What can still move the base").
+// The ref lives in the run's own checkout, which the run session can write. The routes found to it from a session's
+// own commands are refused (`sessions/run-confinement.ts` and the session gate): a fetch or push that names a
+// remote-tracking or replace ref destination and `git stash export` (`ref_destination`), any fetch / push / ls-remote
+// option outside a closed set, abbreviations of `--refmap` and `--upload-pack` included (`option`), `--output=<file>`
+// on `git log` / `show` / `diff` / `stash` (`file_output`), a `git branch` deleting a remote-tracking branch
+// (`remote_branch`), a `git worktree add|move|repair` destination inside the git dir, and a file tool's write under
+// `.git/` or into the user's global git config. That closes known routes, not every route: `committedReads` reads the
+// exact ref with replace objects off, and what can still move it is listed in `docs/architecture/automate.md` ("What
+// can still move the base"). Re-reading the base at each launch is the brief's design; pinning it is the owner's call.
 //
 // This module starts no process and reads no file itself: its git reads are `committedReads`
 // (`loomwright/run-state-checkout.ts`, the kernel's one git caller for a run checkout), passed in.

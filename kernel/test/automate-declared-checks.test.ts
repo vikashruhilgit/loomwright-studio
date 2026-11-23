@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DECLARED_CHECK_SKIP_REASONS, declaredCheckWords, readDeclaredChecks, workflowRunLines } from "../src/automate/declared-checks.js";
 import type { DeclaredChecksRead } from "../src/automate/declared-checks.js";
 import { AUTOMATE_RUN_KEY, AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, REVIEW_PR_RUN_POLICY, handleAutomateRun } from "../src/automate/launch.js";
-import { committedReads } from "../src/loomwright/run-state-checkout.js";
+import { checkoutConfinement, committedReads } from "../src/loomwright/run-state-checkout.js";
 import { EventLoop, enqueueEvent, getWorkStep } from "../src/loop/index.js";
 import type { EventSessions } from "../src/loop/types.js";
 import { SessionManager, decideToolUse } from "../src/sessions/index.js";
@@ -310,6 +310,63 @@ describe("a run session cannot move the base it is read at (AC5, review iteratio
     expect(declaredCheckWords(fallback)).not.toContainEqual(["npm", "run", "pwn"]);
     r.git("symbolic-ref", "--delete", "refs/remotes/origin/HEAD");
     expect(readDeclaredChecks("trunk", committedReads(r.dir))).toMatchObject({ base_sha: null, reason: "base_unresolved" });
+  });
+
+  it("review iteration 3: the worktree-into-`.git` forge is refused at the policy and the gate; done out of band, the reader would follow it (the residual the owner decides)", () => {
+    const up = gitRepo(join(tmp, "up"));
+    const base = up.commit({ "package.json": JSON.stringify({ scripts: { test: "node ping.js" } }) });
+    // A fresh clone: `origin/main` lives in `packed-refs`, `.git/refs/remotes/origin/` holds only `HEAD`.
+    execFileSync("git", ["clone", "-q", up.dir, join(tmp, "clone")], { stdio: "ignore" });
+    const dir = join(tmp, "clone");
+    const git = (...args: string[]): string => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    git("config", "commit.gpgsign", "false");
+    const home = join(tmp, "home");
+    mkdirSync(home);
+    const policy = runPolicyWith(readDeclaredChecks("main", committedReads(dir)));
+    const gate = (command: string) => {
+      const view = runGateView(command);
+      if (view === undefined) throw new Error(command);
+      return checkoutConfinement(view, dir, () => dir, home);
+    };
+    const ALLOWED = { decision: "allow", reason: "bash_prefix_allowed" } as const;
+    expect(readDeclaredChecks("main", committedReads(dir)).base_sha).toBe(base);
+
+    // Steps 1 and 2 are ordinary work and stay admitted: the run branch edits package.json; another branch commits a
+    // file `main` holding that commit's id (the file itself is a Write the policy admits).
+    for (const command of ["git checkout -b run", "git add package.json", "git commit -m evil", "git checkout -b forge", "git add main", "git commit -m forge", "git checkout run"]) {
+      expect(bash(policy, command), command).toEqual(ALLOWED);
+      expect(gate(command), command).toMatchObject({ kind: "ok" });
+    }
+    git("checkout", "-q", "-b", "run");
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "node ping.js", pwn: "bash evil.sh" } }));
+    git("add", "package.json");
+    git("commit", "-q", "-m", "evil");
+    const evil = git("rev-parse", "HEAD").trim();
+    git("checkout", "-q", "-b", "forge");
+    writeFileSync(join(dir, "main"), `${evil}\n`);
+    git("add", "main");
+    git("commit", "-q", "-m", "forge");
+    git("checkout", "-q", "run");
+
+    // Step 3 is refused by the policy (`remote_branch`); step 4 is admitted by the prefix and refused by the gate.
+    expect(bash(policy, "git branch -r -d origin/HEAD")).toEqual(CONFINED);
+    expect(runGateView("git branch -r -d origin/HEAD")?.shape).toEqual({ kind: "refuse", why: "remote_branch" });
+    expect(bash(policy, "git worktree add .git/refs/remotes/origin forge")).toEqual(ALLOWED);
+    expect(gate("git worktree add .git/refs/remotes/origin forge")).toEqual({ kind: "deny", reason: "checkout_confinement" });
+    // So the next launch reads the real base.
+    expect(readDeclaredChecks("main", committedReads(dir)).base_sha).toBe(base);
+    expect(bash(runPolicyWith(readDeclaredChecks("main", committedReads(dir))), "npm run pwn")).toEqual(REFUSED);
+
+    // The residual, stated honestly: the base ref lives in a checkout the session can write, and the reader trusts what
+    // is there. Run out of band with the fixture's own git, the two refused steps forge the base, and the reader
+    // follows it. The gate closes the routes found; pinning the base or a kernel-only ref namespace is the owner's call.
+    git("branch", "-r", "-d", "origin/HEAD");
+    git("worktree", "add", "-q", ".git/refs/remotes/origin", "forge");
+    const forged = readDeclaredChecks("main", committedReads(dir));
+    expect(forged.base_sha).toBe(evil);
+    expect(declaredCheckWords(forged)).toContainEqual(["npm", "run", "pwn"]);
   });
 });
 

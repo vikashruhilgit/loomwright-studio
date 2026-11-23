@@ -27,7 +27,7 @@ import { AuthProviderError } from "../auth/types.js";
 import type { AuthProvider, BaseEnv, ChildEnv } from "../auth/types.js";
 import { isProtectedPath, protectedLocationsText, resolvedPath } from "../protected-paths.js";
 import { loomwrightAdapterStatus } from "../loomwright/active-install.js";
-import { checkoutConfinement, refTracksRunState, writeTargetInGitDir } from "../loomwright/run-state-checkout.js";
+import { checkoutConfinement, refTracksRunState, writeTargetInGitConfig, writeTargetInGitDir } from "../loomwright/run-state-checkout.js";
 import { refoldRunsRepoCode } from "../loomwright/release-refold-gate.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { hostSwitchNameProblem } from "../loomwright/contract.js";
@@ -2859,9 +2859,15 @@ export class SessionManager {
             if (created !== undefined && !pathEntryExists(created)) d = { decision: "allow", reason: "loomwright_run_file_created" };
           }
           // 25c review iteration 2: a run session's file-tool write never lands in a `.git` directory, resolved on disk
-          // (a committed symlink into `.git` passes the policy's text check).
+          // (a committed symlink into `.git` passes the policy's text check). 25d review iteration 3: nor in the user's
+          // global git config, which could redirect `git fetch origin` and so move the base the declared checks are read at.
           const written = writeToolPath(input.tool_name, input.tool_input);
-          if (d.decision === "allow" && (live.policy.loomwrightScripts ?? []).length > 0 && written !== undefined && writeTargetInGitDir(written, input.cwd)) {
+          if (
+            d.decision === "allow" &&
+            (live.policy.loomwrightScripts ?? []).length > 0 &&
+            written !== undefined &&
+            (writeTargetInGitDir(written, input.cwd) || writeTargetInGitConfig(written, input.cwd, this.#homeDir))
+          ) {
             d = { decision: "deny", reason: "checkout_confinement" };
           }
           // A checkout in a Loomwright run session: never onto a ref that tracks run state (review iteration 4).
