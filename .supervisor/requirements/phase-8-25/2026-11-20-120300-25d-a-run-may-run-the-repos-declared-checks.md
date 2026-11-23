@@ -55,3 +55,9 @@ docs/architecture/automate.md
 
 Job `.supervisor/jobs/done/2026-11-23-25d-run-may-run-repos-declared-checks.md` completed (reconciled from the job lifecycle, not self-reported).
 Acceptance criteria are NOT machine-verified here — review them before promoting this to `## Status: done`.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-23T09:46:54Z
+- **Brief:** .supervisor/jobs/done/2026-11-23-25d-run-may-run-repos-declared-checks.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/307
