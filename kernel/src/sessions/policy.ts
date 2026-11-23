@@ -40,7 +40,8 @@ export type ToolDecisionReason =
   /**
    * In a Loomwright run policy (phase 8 item 25d): a Bash command no prefix admits whose parsed words are exactly one
    * of the policy's `declaredChecks`, the checks the repo declares on its base branch (`automate/declared-checks.ts`,
-   * read by the kernel's launch). The run-state guard still applies to it.
+   * read by the kernel's launch). The run-state guard and the confinement shape check still apply to it, and a git
+   * global-option form is refused (`checkout_confinement`).
    */
   | "declared_check"
   /**
@@ -166,8 +167,16 @@ function startsWithPrefixWords(words: readonly string[], prefix: string): boolea
  *   `bash_prefix_not_allowed`, whose parsed words (never the `git -C` split
  *   words) are exactly one declaration's words (the same length, every word
  *   equal: an extra argument or a prefix does not match), is allowed
- *   `declared_check`, unless it names run state (`loomwright_run_state`). It
- *   never changes another allow or deny, and admits nothing outside a run
+ *   `declared_check`, unless it names run state (`loomwright_run_state`), or
+ *   is `git` with a global option before the subcommand (`git -c k=v fetch`,
+ *   `git --git-dir=… push`, `git -C <dir> …`), or breaks its confinement shape
+ *   as a prefix-allowed command would (`runShapeRefused`); both of those are
+ *   `checkout_confinement`. A declared check is never weaker than the prefix
+ *   path for a shape the kernel models. A shape the session gate checks
+ *   (`paths`, `merge`, `destinations`) is not refused here: the session gate
+ *   runs `runGateView` on every allowed run-session shell command whatever its
+ *   reason, so a declared `rm <path>` is confined there as a prefixed one is.
+ *   It never changes another allow or deny, and admits nothing outside a run
  *   policy. A `Monitor` watch whose `command` is a declared check is admitted
  *   the same way (the same command line).
  * - Any other tool is allowed only when its exact name is in `allowedTools`.
@@ -198,8 +207,12 @@ export function decideToolUse(policy: ToolPolicy, toolName: string, toolInput: u
     );
     if (matched === undefined) {
       // 25d: a run policy's declared check, exactly as declared (on the command's own words); nothing else changes.
+      // It is never weaker than the prefix path for a shape the kernel models: the run-state guard, then a git global
+      // option before the subcommand (which no run prefix admits, `git -C` included), then the confinement shape.
       if (runPolicy && isDeclaredCheck(parsed.words, policy.declaredChecks)) {
-        return bashTouchesLoomwrightRunState(parsed.words) ? { decision: "deny", reason: "loomwright_run_state" } : { decision: "allow", reason: "declared_check" };
+        if (bashTouchesLoomwrightRunState(parsed.words)) return { decision: "deny", reason: "loomwright_run_state" };
+        if (gitGlobalOptionForm(parsed.words) || runShapeRefused(parsed.words, policy.allowedBashPrefixes)) return { decision: "deny", reason: "checkout_confinement" };
+        return { decision: "allow", reason: "declared_check" };
       }
       return { decision: "deny", reason: "bash_prefix_not_allowed" };
     }
@@ -255,6 +268,16 @@ function runShapeRefused(words: readonly string[], prefixes: readonly string[]):
     if (own.kind === "words" && own.words.length !== words.length) return true;
   }
   return confinedShape(words).kind === "refuse";
+}
+
+/**
+ * Whether `words` are `git` followed by a global option (a word starting with `-`) before the subcommand:
+ * `git -c k=v fetch`, `git --git-dir=.git push`, `git --exec-path=…`, `git -C <dir> …`. No run prefix admits one
+ * (`confinedShape` reads the subcommand at `words[1]`, so it would not see the shape after the option), so a
+ * declared check of this form is refused (25d review iteration 4). Pure.
+ */
+function gitGlobalOptionForm(words: readonly string[]): boolean {
+  return words[0] === "git" && (words[1]?.startsWith("-") ?? false);
 }
 
 /**

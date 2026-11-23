@@ -574,6 +574,34 @@ describe("decideToolUse admits a declared check exactly, and nothing near it (AC
     expect(bash(AUTOMATE_RUN_POLICY, "cp x y")).toEqual(REFUSED);
   });
 
+  it("keeps the run confinement shape checks: a declared git global-option form is checkout_confinement (review iteration 4)", () => {
+    const lines = [
+      "git -c core.sshCommand=x fetch origin",
+      "git --git-dir=.git push --force origin x",
+      "git --exec-path=/tmp/x status",
+      "git -C sub gc",
+      "git -C sub status",
+      "npm test",
+      "cp x y",
+    ];
+    const policy: ToolPolicy = freezePolicy({ ...AUTOMATE_RUN_POLICY, declaredChecks: lines.map((l) => l.split(" ")) });
+    const CONFINED = { decision: "deny", reason: "checkout_confinement" };
+    // No run prefix admits a git global option before the subcommand, so these reach the declared match and are refused there.
+    expect(bash(policy, "git -c core.sshCommand=x fetch origin")).toEqual(CONFINED);
+    expect(bash(policy, "git --git-dir=.git push --force origin x")).toEqual(CONFINED);
+    expect(bash(policy, "git --exec-path=/tmp/x status")).toEqual(CONFINED);
+    expect(bash(policy, "git -C sub gc")).toEqual(CONFINED);
+    // A `git -C` form whose rest matches a prefix takes the prefix path as before (splitGitC), never the declared match.
+    expect(bash(policy, "git -C sub status")).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    // A Monitor watch is the same command line.
+    expect(decideToolUse(policy, "Monitor", { description: "watch", timeout_ms: 300000, command: "git -c core.sshCommand=x fetch origin" })).toEqual(CONFINED);
+    // A plain declared check and an unconfined program are unchanged.
+    expect(bash(policy, "npm test")).toEqual(ADMITTED);
+    expect(bash(policy, "cp x y")).toEqual(ADMITTED);
+    // Without the declarations the global-option forms were already refused, so nothing else moved.
+    expect(bash(AUTOMATE_RUN_POLICY, "git -c core.sshCommand=x fetch origin")).toEqual(REFUSED);
+  });
+
   it("a Monitor watch whose command is exactly a declared check is admitted the same way", () => {
     const policy: ToolPolicy = freezePolicy({ ...AUTOMATE_RUN_POLICY, declaredChecks: [["npm", "test"]] });
     const monitor = (command: string) => decideToolUse(policy, "Monitor", { description: "watch", timeout_ms: 300000, command });
