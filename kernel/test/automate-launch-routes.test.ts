@@ -348,6 +348,8 @@ describe("handleAutomateRun starts the review-pr and merge-parked sessions", () 
           allowedBashPrefixes: [...REVIEW_PR_RUN_POLICY.allowedBashPrefixes],
           loomwrightScripts: [...(REVIEW_PR_RUN_POLICY.loomwrightScripts ?? [])],
           never: ["gh_pr_close"],
+          // 25d: a review_pr run carries its repo's declared checks; this checkout has no base commit, so none.
+          declaredChecks: [],
         },
         playbook: pb,
         playbookVersion: 1, // the version the owner enabled, not the calling session's v2 (approval 62, 2026-11-18)

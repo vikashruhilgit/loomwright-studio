@@ -9,7 +9,8 @@
 // checkout (`gitIgnores`, 23t: the kernel writes Loomwright's config there only when no worker could commit it).
 // And it is the I/O half of a run session's checkout confinement (phase 8 item 25c, `checkoutConfinement`): the
 // session's worktree roots, each confined operand resolved on disk, and whether a merge names a local branch. The
-// shape half is pure (`sessions/run-confinement.ts`).
+// shape half is pure (`sessions/run-confinement.ts`). And it reads a run's declared checks from the base branch's
+// committed files (phase 8 item 25d, `committedReads`): the parsing half is `automate/declared-checks.ts`.
 
 import { execFileSync } from "node:child_process";
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
@@ -364,4 +365,114 @@ export function checkoutConfinement(view: RunGateView, hookCwd: unknown, checkou
     if (refTracksRunState(base, view.shape.branch)) return deny("loomwright_run_state");
   }
   return { kind: "ok", gitCwd: base };
+}
+
+// ---- 25d: a run's declared checks, read from the base branch's committed files ----
+
+/** A commit id as git prints it (SHA-1 or SHA-256). */
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** The largest committed file the declared-check reader takes (a bigger one reads `too_large`). */
+export const MAX_COMMITTED_FILE_BYTES = 1024 * 1024;
+
+/** One committed file at a commit: its text, or that the commit has none there, or why it can't be read. */
+export type CommittedFile =
+  | { readonly kind: "file"; readonly text: string }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unreadable"; readonly why: "not_a_regular_file" | "too_large" | "git_failed" };
+
+/** The base commit's reads the declared-check reader takes (`automate/declared-checks.ts`): git, never the working tree. */
+export interface CommittedReads {
+  /** The commit `ref` names (`<ref>^{commit}`), else `undefined`. */
+  readonly commitOf: (ref: string) => string | undefined;
+  /** The ref `refs/remotes/origin/HEAD` points at (`refs/remotes/origin/<branch>`), else `undefined`. */
+  readonly originHead: () => string | undefined;
+  /** The names of the regular files directly under `dir` at commit `sha`; `[]` when it has no such directory, `undefined` when git can't say. */
+  readonly listFiles: (sha: string, dir: string) => readonly string[] | undefined;
+  /** The file at `path` in commit `sha`. */
+  readonly readFile: (sha: string, path: string) => CommittedFile;
+}
+
+/** One `git ls-tree -z -l` entry: mode, type, object id, size and path. */
+interface TreeEntry {
+  readonly mode: string;
+  readonly type: string;
+  readonly id: string;
+  readonly size: number | undefined;
+  readonly path: string;
+}
+
+/** `git ls-tree -z -l --full-tree --end-of-options <sha> -- <path>` in `cwd`, parsed; `undefined` on any git error. */
+function lsTree(cwd: string, sha: string, path: string): readonly TreeEntry[] | undefined {
+  let out: string;
+  try {
+    out = lookupGit(cwd, ["ls-tree", "-z", "-l", "--full-tree", "--end-of-options", sha, "--", path]);
+  } catch {
+    return undefined;
+  }
+  const entries: TreeEntry[] = [];
+  for (const field of out.split("\0")) {
+    const tab = field.indexOf("\t");
+    if (tab === -1) continue;
+    const [mode, type, id, size] = field.slice(0, tab).split(/ +/);
+    if (mode === undefined || type === undefined || id === undefined) return undefined;
+    entries.push({ mode, type, id, size: size !== undefined && /^\d+$/.test(size) ? Number(size) : undefined, path: field.slice(tab + 1) });
+  }
+  return entries;
+}
+
+/** Whether a tree entry is a regular file (a blob of mode 100644 or 100755: never a symlink or a submodule). */
+function isRegularBlob(entry: TreeEntry): boolean {
+  return entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755");
+}
+
+/**
+ * The committed reads a run's declared checks are taken from (25d), in the checkout at absolute `cwd`: each a fixed
+ * argument shape through `lookupGit`, failing closed (`undefined`, `unreadable`) on any git error or timeout. Only
+ * committed objects are read (`rev-parse`, `symbolic-ref`, `ls-tree`, `cat-file` of a commit id), never the working
+ * tree or the index. The kernel never fetches: the refs are what the checkout last fetched.
+ */
+export function committedReads(cwd: string): CommittedReads {
+  const absolute = cwd.startsWith("/");
+  return {
+    commitOf(ref) {
+      if (!absolute) return undefined;
+      try {
+        const sha = lookupGit(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]).trim();
+        return COMMIT_ID.test(sha) ? sha : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    originHead() {
+      if (!absolute) return undefined;
+      try {
+        const ref = lookupGit(cwd, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).trim();
+        return ref.startsWith("refs/remotes/origin/") && !ref.includes("\n") ? ref : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    listFiles(sha, dir) {
+      if (!absolute || !COMMIT_ID.test(sha)) return undefined;
+      const entries = lsTree(cwd, sha, `${dir.replace(/\/+$/, "")}/`);
+      if (entries === undefined) return undefined;
+      const prefix = `${dir.replace(/\/+$/, "")}/`;
+      return entries.filter((e) => isRegularBlob(e) && e.path.startsWith(prefix) && !e.path.slice(prefix.length).includes("/")).map((e) => e.path.slice(prefix.length));
+    },
+    readFile(sha, path) {
+      if (!absolute || !COMMIT_ID.test(sha)) return { kind: "unreadable", why: "git_failed" };
+      const entries = lsTree(cwd, sha, path);
+      if (entries === undefined) return { kind: "unreadable", why: "git_failed" };
+      const entry = entries.find((e) => e.path === path);
+      if (entry === undefined) return { kind: "absent" };
+      if (!isRegularBlob(entry) || !COMMIT_ID.test(entry.id)) return { kind: "unreadable", why: "not_a_regular_file" };
+      if (entry.size === undefined || entry.size > MAX_COMMITTED_FILE_BYTES) return { kind: "unreadable", why: "too_large" };
+      try {
+        return { kind: "file", text: lookupGit(cwd, ["cat-file", "blob", "--end-of-options", entry.id]) };
+      } catch {
+        return { kind: "unreadable", why: "git_failed" };
+      }
+    },
+  };
 }

@@ -41,7 +41,7 @@ import type { MintedGithubToken } from "./github-session-auth.js";
 import { DRY_RUN_DENY_MESSAGE, classifyDryRunCall, dryRunUsage } from "./dry-run.js";
 import { GITHUB_CLI_DENY_REASON, draftDecision, draftDenyReason, draftPayloadOf, githubCliDecision } from "./draft-mode.js";
 import { latestOrphanReason } from "./orphans.js";
-import { ALWAYS_HELD_TOOLS, boundaryDecision, boundaryDenyReason, classifyToolCall, decideToolUse, freezePolicy, mayCreateRunFile, NEVER_CATEGORIES, runGateView, safeRunFileCreation, shellCommandOf, TICKET_RUN_SYSTEM_NOTE, writeToolPath } from "./policy.js";
+import { ALWAYS_HELD_TOOLS, boundaryDecision, boundaryDenyReason, classifyToolCall, decideToolUse, freezePolicy, mayCreateRunFile, NEVER_CATEGORIES, runGateView, runSystemPrompt, safeRunFileCreation, shellCommandOf, writeToolPath } from "./policy.js";
 import type { NeverCategory, ToolCallClass, ToolDecisionReason } from "./policy.js";
 import {
   KILL_GROUP_DEADLINE_MS,
@@ -575,6 +575,13 @@ function checkPolicy(policy: unknown): ToolPolicy {
   }
   if (p.loomwrightRunId !== undefined && (typeof p.loomwrightRunId !== "string" || !LOOMWRIGHT_RUN_ID.test(p.loomwrightRunId))) {
     throw new SessionError("invalid_params", "policy loomwrightRunId must be a Loomwright run id");
+  }
+  // 25d: kernel-only, set by the launch from the base branch's declarations: each a non-empty list of non-empty words.
+  if (p.declaredChecks !== undefined && (!Array.isArray(p.declaredChecks) || !p.declaredChecks.every((c: unknown) => isStringArray(c) && c.length > 0 && c.every((w) => w !== "")))) {
+    throw new SessionError("invalid_params", "policy declaredChecks must be an array of non-empty word lists");
+  }
+  if (p.declaredChecksBase !== undefined && (typeof p.declaredChecksBase !== "string" || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(p.declaredChecksBase))) {
+    throw new SessionError("invalid_params", "policy declaredChecksBase must be a commit id");
   }
   return freezePolicy(p as ToolPolicy);
 }
@@ -1743,8 +1750,9 @@ export class SessionManager {
       ...(mcpServers === undefined ? {} : { mcpServers }),
       abortController: attempt.abortController,
       spawnClaudeCodeProcess: (o: SpawnOptions) => this.#spawnFor(live, attempt, o),
-      // The ticket run is told how to create its first run file (item 23e); no other session gets a system prompt.
-      ...(mayCreateRunFile(live.policy) ? { systemPrompt: TICKET_RUN_SYSTEM_NOTE } : {}),
+      // The ticket run is told how to create its first run file (item 23e), and a run with declared checks which ones it
+      // may run (25d, `runSystemPrompt`); no other session gets a system prompt.
+      ...(runSystemPrompt(live.policy) === undefined ? {} : { systemPrompt: runSystemPrompt(live.policy) }),
       ...config.sessionOptions,
     };
     attempt.query = this.#query({ prompt: attempt.input, options });

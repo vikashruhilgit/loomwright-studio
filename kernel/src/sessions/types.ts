@@ -148,6 +148,20 @@ export interface ToolPolicy {
    */
   readonly loomwrightRunId?: string;
   /**
+   * The checks a run session may run as declared (phase 8 item 25d): each one command line's parsed words, read at
+   * launch from the repo's base branch (`automate/declared-checks.ts`: workflow `run:` lines, `npm test`,
+   * `npm run <script>`). In a run policy (`loomwrightScripts` set) a Bash command no prefix admits whose words are
+   * exactly one of these is allowed `declared_check` (`decideToolUse`). Set only by the kernel's launch
+   * (`automate/launch.ts`) for a `backlog`, `resume` or `review_pr` run, never by a charter or settings file. Present
+   * and empty: the repo declares nothing the kernel admits, and the run's system prompt says so (`runSystemPrompt`).
+   */
+  readonly declaredChecks?: readonly (readonly string[])[];
+  /**
+   * The base commit `declaredChecks` was read at (a full commit id), named in the run's system prompt; absent when no
+   * base resolved. Set only by the kernel's launch with `declaredChecks`, never by a charter or settings file.
+   */
+  readonly declaredChecksBase?: string;
+  /**
    * The exact absolute paths `bash <path>` may run (`matchLoomwrightScript`,
    * `loomwright-scripts.ts`): `loomwrightScripts` under the install the
    * session loads, each a regular file whose realpath is that install's

@@ -22,7 +22,7 @@
 // The unit half drives `handleAutomateRun` through the real `EventLoop` with a recording
 // `EventSessions`; the kernel half is `startKernel` over the fake spawner/query. Never the real SDK, a
 // model, a network or a real Loomwright.
-import { TICKET_RUN_SYSTEM_NOTE } from "../src/sessions/policy.js";
+import { NO_DECLARED_CHECKS_NOTE, runSystemPrompt, TICKET_RUN_SYSTEM_NOTE } from "../src/sessions/policy.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -318,6 +318,8 @@ describe("handleAutomateRun starts one run session (AC3)", () => {
             loomwrightScripts: [...(AUTOMATE_RUN_POLICY.loomwrightScripts ?? [])],
             loomwrightDriverProfile: "automate_run",
             never: ["git_push", "gh_pr_close"],
+            // 25d: the repo's declared checks; this checkout has no base commit, so none.
+            declaredChecks: [],
           },
           playbook: 5,
           playbookVersion: 2,
@@ -811,8 +813,10 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     expect(sessionRow(r, l.runId)?.cwd).toContain("ws-mason");
     expect(l.run.options.cwd).toBe(r.workspaces["mason"]);
     expect(l.run.options.model).toBe(PLAYBOOK_MODEL);
-    // Item 23e: the ticket run is told how to create its first run file; the crew session gets no system prompt.
-    expect(l.run.options.systemPrompt).toBe(TICKET_RUN_SYSTEM_NOTE);
+    // Item 23e: the ticket run is told how to create its first run file; the crew session gets no system prompt. 25d: its
+    // checkout has no base commit, so its declared checks are none and the prompt says so after the note.
+    expect(l.run.options.systemPrompt).toBe(runSystemPrompt({ ...AUTOMATE_RUN_POLICY, declaredChecks: [] }));
+    expect(l.run.options.systemPrompt).toBe(`${TICKET_RUN_SYSTEM_NOTE}\n\n${NO_DECLARED_CHECKS_NOTE}`);
     expect(l.caller.options.systemPrompt).toBeUndefined();
     await vi.waitFor(() => expect(r.prompts.get(l.run.options)?.length ?? 0).toBeGreaterThan(0), WAIT);
     expect((r.prompts.get(l.run.options) as string[])[0]).toBe(`/loomwright:automate --backlog ${join(r.workspaces["mason"] as string, ".supervisor", "requirements", "studio", "_BACKLOG.md")} --inline-phases`);
