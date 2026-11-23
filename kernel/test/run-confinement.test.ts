@@ -112,7 +112,7 @@ describe("confinedShape: the closed option sets and the refused operand forms", 
     }
   });
 
-  it("25d: a fetch refspec naming a destination, `--refmap`, or a push destination that could name a remote-tracking or replace ref is `ref_destination`", () => {
+  it("25d: a fetch refspec naming a destination, or a push destination that could name a remote-tracking or replace ref, is `ref_destination`", () => {
     for (const command of [
       "git fetch . +HEAD:refs/remotes/origin/main",
       "git fetch . HEAD:refs/remotes/origin/main",
@@ -121,8 +121,6 @@ describe("confinedShape: the closed option sets and the refused operand forms", 
       "git fetch origin +main",
       "git fetch origin main:main",
       "git fetch -q . -- HEAD:refs/replace/abc",
-      "git fetch '--refmap=+refs/heads/*:refs/remotes/origin/*' . run",
-      "git fetch --refmap '+refs/heads/*:refs/remotes/origin/*' . run",
       "git push . HEAD:refs/remotes/origin/main",
       "git push . +run:refs/remotes/origin/main",
       "git push ../worktree HEAD:origin/main",
@@ -131,10 +129,60 @@ describe("confinedShape: the closed option sets and the refused operand forms", 
       "git push . run:refs/replace/0123456789abcdef0123456789abcdef01234567",
       "git push . HEAD:refs/Remotes/origin/main",
       "git push . refs/remotes/origin/main",
-      "git push --prune . '+refs/heads/*:refs/remotes/origin/*'",
-      "git push -o x origin main",
+      "git push -q . '+refs/heads/*:refs/remotes/origin/*'",
+      "git stash export --to-ref refs/remotes/origin/main",
+      "git stash export --print",
     ]) {
       expect(shape(command), command).toEqual({ kind: "refuse", why: "ref_destination" });
+    }
+    // An option outside fetch's, push's or ls-remote's closed set is `option` (review iteration 2): git takes any
+    // unambiguous abbreviation of a long option and a value as the next word, so `--refm=` is `--refmap=` and
+    // `--upload-pa=` is `--upload-pack=` (each reproduced with git 2.55.0).
+    for (const command of [
+      "git fetch '--refmap=+refs/heads/*:refs/remotes/origin/*' . run",
+      "git fetch --refmap '+refs/heads/*:refs/remotes/origin/*' . run",
+      "git fetch --refm=+refs/heads/run:refs/remotes/origin/main . run",
+      "git fetch --refma=+refs/heads/run:refs/remotes/origin/main . run",
+      "git fetch \"--upload-pack=sh -c 'touch PWNED' --\" .",
+      "git fetch \"--upload-pa=sh -c 'touch PWNED' --\" .",
+      "git fetch --upload-pack 'sh -c x' .",
+      "git fetch --multiple . +HEAD:refs/remotes/origin/main",
+      "git fetch --stdin .",
+      "git fetch -j 2 origin",
+      "git fetch -qf origin",
+      "git fetch --depth 1 origin",
+      "git ls-remote \"--upload-pack=sh -c 'touch PWNED' --\" .",
+      "git ls-remote \"--upload-pa=sh -c 'touch PWNED' --\" .",
+      "git ls-remote -u 'sh -c x' .",
+      "git ls-remote -o x origin",
+      "git push \"--receive-pack=sh -c 'touch PWNED' --\" . HEAD:refs/heads/x",
+      "git push \"--receive-pa=sh -c x\" . HEAD:refs/heads/x",
+      "git push \"--exec=sh -c x\" . HEAD:refs/heads/x",
+      "git push \"--exe=sh -c x\" . HEAD:refs/heads/x",
+      "git push --repo=. HEAD:refs/remotes/origin/main",
+      "git push --mirror .",
+      "git push --force origin main",
+      "git push -f origin main",
+      "git push -o x origin main",
+      "git push --prune . '+refs/heads/*:refs/remotes/origin/*'",
+      "git push - origin main",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "refuse", why: "option" });
+    }
+    // `--output` on the log / diff family writes the output to any path, `.git/` included (review iteration 2).
+    for (const command of [
+      "git log -1 --format=%H --output=.git/refs/remotes/origin/main HEAD",
+      "git log -1 --output .git/refs/remotes/origin/main HEAD",
+      "git show --output=.git/config HEAD",
+      "git diff --output=.git/config",
+      "git diff --stat --output x",
+      "git stash show -p --output=.git/config",
+      "git stash list --output=.git/config",
+    ]) {
+      expect(shape(command), command).toEqual({ kind: "refuse", why: "file_output" });
+    }
+    for (const command of ["git log --oneline -5", "git diff --stat", "git show HEAD", "git diff --output-indicator-new=+ HEAD", "git stash", "git stash list", "git status"]) {
+      expect(shape(command), command).toEqual({ kind: "none" });
     }
     // Loomwright's own forms (the conformance fixture, 18.1.2) stay `none`.
     for (const command of [
@@ -151,6 +199,12 @@ describe("confinedShape: the closed option sets and the refused operand forms", 
       "git push origin HEAD",
       "git push origin --delete eval/a/arm-2",
       "git push origin v1.0:refs/tags/v1.0",
+      "git push -qu origin feature/x-1",
+      "git fetch -qp origin",
+      "git fetch --prune --tags origin",
+      "git ls-remote --exit-code --heads origin main",
+      "git ls-remote --heads origin",
+      "git ls-remote",
     ]) {
       expect(shape(command), command).toEqual({ kind: "none" });
     }

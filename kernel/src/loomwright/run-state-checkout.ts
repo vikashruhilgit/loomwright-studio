@@ -439,8 +439,9 @@ function isRegularBlob(entry: TreeEntry): boolean {
  * argument shape through `lookupGit`, failing closed (`undefined`, `unreadable`) on any git error or timeout. Only
  * committed objects are read (`show-ref --verify`, `rev-parse`, `symbolic-ref`, `ls-tree`, `cat-file` of a commit id,
  * each with `--no-replace-objects`), never the working tree or the index. The kernel never fetches: the refs are what
- * the checkout last fetched, and a run session may not write them itself (`ref_destination`,
- * `sessions/run-confinement.ts`).
+ * the checkout last fetched; the ways a run session's own commands could write them are refused
+ * (`ref_destination`, `option`, `file_output`, `sessions/run-confinement.ts`; the routes left open are listed in
+ * `docs/architecture/automate.md`).
  */
 export function committedReads(cwd: string): CommittedReads {
   const absolute = cwd.startsWith("/");

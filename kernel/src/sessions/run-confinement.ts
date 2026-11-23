@@ -44,12 +44,18 @@ export type ShapeRefusal =
   /** A `git merge` that is not `git merge <name> [--no-ff] [-m <msg>]`. */
   | "merge_shape"
   /**
-   * A `git fetch` or `git push` that could write a ref the kernel reads a run's base from (25d, `refShape`): a fetch
-   * refspec naming a destination (`<src>:<dst>`, a leading `+`) or `--refmap`; a push destination that could name a
-   * remote-tracking or replace ref (`refs/…` outside `refs/heads/` and `refs/tags/`, or `origin…`, `remotes/…`,
-   * `replace/…`, which git's push matching expands under `refs/`).
+   * A command that could write a ref the kernel reads a run's base from (25d, `refShape`): a `git fetch` refspec
+   * naming a destination (`<src>:<dst>`, a leading `+`); a `git push` destination that could name a remote-tracking or
+   * replace ref (`refs/…` outside `refs/heads/` and `refs/tags/`, or `origin…`, `remotes/…`, `replace/…`, which git's
+   * push matching expands under `refs/`); `git stash export` (its `--to-ref` writes any ref). An option outside
+   * fetch's, push's or ls-remote's closed set (`--refmap`, `--upload-pack`, any abbreviation of either) is `option`.
    */
-  | "ref_destination";
+  | "ref_destination"
+  /**
+   * `--output` or `--output=<file>` on `git log`, `git show`, `git diff` or `git stash` (`stash show`, `stash list`):
+   * it writes the command's output to any path, `.git/` included (25d review iteration 2).
+   */
+  | "file_output";
 
 /**
  * A confined command's shape (`confinedShape`):
@@ -188,22 +194,44 @@ function pushDestinationRefused(dst: string): boolean {
 }
 
 /**
- * `git fetch` and `git push` (25d): the kernel reads a run's declared checks at `refs/remotes/origin/<default>` (or
- * the target of `refs/remotes/origin/HEAD`) and reads committed objects, which a replace ref (`refs/replace/<sha>`)
- * can stand in for, so a run session may not write those refs into its own repository. `args` are the words after
- * the subcommand; the first operand (a word not starting with `-`, or any word after `--`) is the repository and every
- * later operand a refspec.
- * - fetch: `--refmap` (any form) is refused, and so is a refspec with a leading `+` or a `:` (an explicit
- *   destination: `git fetch . +HEAD:refs/remotes/origin/main` writes the run's commit there, and git expands an
- *   unqualified one). `git fetch`, `git fetch origin`, `git fetch origin <branch>` stay `none`: what they write comes
- *   from the configured remote, which a run session cannot change (no file tool writes under `.git/`).
- * - push: a refspec's destination (after its last `:`, else the refspec itself, a leading `+` dropped) is refused when
- *   `pushDestinationRefused`. Pushing a branch (`git push -u origin <branch>`, `git push origin HEAD:<branch>`,
- *   `HEAD:refs/heads/<branch>`) stays `none`.
+ * The closed option sets of `git fetch`, `git push` and `git ls-remote` in a run policy (25d review iteration 2). git's
+ * option parser takes any unambiguous abbreviation of a long option (`--refm=` is `--refmap=`, `--upload-pa=` is
+ * `--upload-pack=`) and a value as the next word (`--upload-pack <cmd>`), so naming the dangerous options cannot
+ * close them; only these exact words are admitted, and every other word starting with `-` is refused (`option`). No
+ * listed option takes a value, so the operands are read right. Each set holds the options the forms in the Loomwright
+ * 18.1.2 install use (`git fetch -q origin`, `git fetch --quiet origin`, `git push -u origin <branch>`,
+ * `git push -q origin main`, `git push origin --delete <branch>`, `git ls-remote --exit-code --heads origin`; the
+ * conformance test decides the extracted ones) plus flags that only change what is printed or limit what is listed. Left out on purpose: `--upload-pack`,
+ * `--receive-pack`, `--exec` (each runs a shell command over a local transport), `--refmap`, `--repo`, `--mirror`,
+ * `--all`, `--multiple`, `--stdin` (each changes which refs are written or which words are refspecs), `-f`/`--force*`,
+ * `--recurse-submodules`, and every option that takes a value (`-o`, `--depth`, `--server-option`).
+ */
+const REF_OPTION_SETS: Readonly<Record<"fetch" | "push" | "ls-remote", { readonly letters: string; readonly long: readonly string[] }>> = Object.freeze({
+  fetch: { letters: "qvptn", long: ["--quiet", "--verbose", "--prune", "--tags", "--no-tags", "--dry-run", "--porcelain", "--progress", "--no-progress"] },
+  push: { letters: "qvund", long: ["--quiet", "--verbose", "--set-upstream", "--dry-run", "--porcelain", "--progress", "--no-progress", "--delete"] },
+  "ls-remote": { letters: "qtb", long: ["--quiet", "--tags", "--branches", "--heads", "--refs", "--exit-code", "--get-url", "--symref"] },
+});
+
+/**
+ * `git fetch`, `git push` and `git ls-remote` (25d): the kernel reads a run's declared checks at
+ * `refs/remotes/origin/<default>` (or the target of `refs/remotes/origin/HEAD`) and reads committed objects, which a
+ * replace ref (`refs/replace/<sha>`) can stand in for, so a run session may not write those refs into its own
+ * repository, and may not name a program for git to run. `args` are the words after the subcommand.
+ * - options: each word starting with `-` before `--` must be in `REF_OPTION_SETS` (a cluster of listed letters is one
+ *   word, `-qv`), else `option`. So the first operand (a word not starting with `-`, or any word after `--`) is the
+ *   repository and every later operand a refspec (fetch, push) or a pattern (ls-remote, which writes no ref).
+ * - fetch: a refspec with a leading `+` or a `:` (an explicit destination: `git fetch . +HEAD:refs/remotes/origin/main`
+ *   writes the run's commit there, and git expands an unqualified one) is `ref_destination`. `git fetch`,
+ *   `git fetch origin`, `git fetch origin <branch>` stay `none`: what they write comes from the configured remote,
+ *   which a run session cannot change (no file tool writes under `.git/`, and `--output` is `file_output`).
+ * - push: a refspec's destination (after its last `:`, else the refspec itself, a leading `+` dropped) is
+ *   `ref_destination` when `pushDestinationRefused`. Pushing a branch (`git push -u origin <branch>`,
+ *   `git push origin HEAD:<branch>`, `HEAD:refs/heads/<branch>`) stays `none`.
  * Pure.
  */
-function refShape(sub: "fetch" | "push", args: readonly string[]): ConfinedShape {
+function refShape(sub: "fetch" | "push" | "ls-remote", args: readonly string[]): ConfinedShape {
   const REFUSE = { kind: "refuse", why: "ref_destination" } as const;
+  const set = REF_OPTION_SETS[sub];
   let options = true;
   let operand = 0;
   for (const w of args) {
@@ -212,9 +240,11 @@ function refShape(sub: "fetch" | "push", args: readonly string[]): ConfinedShape
       continue;
     }
     if (options && w.startsWith("-")) {
-      if (sub === "fetch" && w.startsWith("--refmap")) return REFUSE;
+      const known = w.startsWith("--") ? set.long.includes(w) : w.length > 1 && [...w.slice(1)].every((c) => set.letters.includes(c));
+      if (!known) return { kind: "refuse", why: "option" };
       continue;
     }
+    if (sub === "ls-remote") continue;
     operand += 1;
     if (operand === 1) continue;
     if (sub === "fetch" && (w.startsWith("+") || w.includes(":"))) return REFUSE;
@@ -228,19 +258,47 @@ function refShape(sub: "fetch" | "push", args: readonly string[]): ConfinedShape
 }
 
 /**
+ * The admitted read subcommands that take git's diff and log options, among them `--output=<file>` (25d review
+ * iteration 2): `git log`, `git show`, `git diff`, and `git stash` (`stash show` and `stash list` take them too).
+ * These take hundreds of formatting options, so they are not given a closed set: the one option that writes a file
+ * is refused instead (`outputShape`). Every other option the run prefixes admit was checked against
+ * `git <sub> -h` (git 2.55.0) for one that writes a file, writes a ref or runs a program: `stash export --to-ref`
+ * writes any ref (`ref_destination`); the rest read (`-F`, `--pathspec-from-file`) or run only what git config or
+ * the environment names (an editor, a hook, a diff driver), which a run session cannot write inside the checkout.
+ */
+const OUTPUT_SUBCOMMANDS: readonly string[] = ["log", "show", "diff", "stash"];
+
+/**
+ * `--output` on an `OUTPUT_SUBCOMMANDS` command: the word `--output` (git takes its value as the next word) or
+ * `--output=<file>`, anywhere (a `--` before it fails closed too). Matching the full name is enough: these options
+ * are parsed with abbreviations off, so `--outp=`, `--outpu=` and `--out=` are `unrecognized argument` (git 2.55.0,
+ * `git log`, `git show`, `git diff`, reproduced 2026-11-23). `--output-indicator-new=` and its siblings only change
+ * a diff's prefix characters and stay admitted. `git stash export` is `ref_destination`. Pure.
+ */
+function outputShape(sub: string, args: readonly string[]): ConfinedShape {
+  if (args.some((w) => w === "--output" || w.startsWith("--output="))) return { kind: "refuse", why: "file_output" };
+  if (sub === "stash" && args.includes("export")) return { kind: "refuse", why: "ref_destination" };
+  return { kind: "none" };
+}
+
+/**
  * The shape of a run session's command `words` (already parsed by `parseBashCommand`, and for `git -C` already
- * stripped of `-C <dir>`): `rm`, `mv`, `chmod` (the program word exactly), `git rm`, `git mv` and `git merge`, and
- * `git fetch` / `git push` (refused or `none`, `refShape`). Every other command is `none`. Pure.
+ * stripped of `-C <dir>`): `rm`, `mv`, `chmod` (the program word exactly), `git rm`, `git mv` and `git merge`,
+ * `git fetch` / `git push` / `git ls-remote` (a closed option set, `refShape`), and `git log` / `git show` /
+ * `git diff` / `git stash` (`outputShape`), each refused or `none`. Every other command is `none`. A git global
+ * option before the subcommand (`git -c k=v status`) matches no run prefix, and `git -C <dir>` with another one is
+ * `global_option` (`splitGitC`). Pure.
  */
 export function confinedShape(words: readonly string[]): ConfinedShape {
   const [program, sub] = words;
   if (program === "rm" || program === "mv") return pathShape(words.slice(1), OPTION_SETS[program], false, false);
   if (program === "chmod") return pathShape(words.slice(1), OPTION_SETS.chmod, true, false);
-  if (program !== "git") return { kind: "none" };
+  if (program !== "git" || sub === undefined) return { kind: "none" };
   if (sub === "rm") return pathShape(words.slice(2), OPTION_SETS["git rm"], false, true);
   if (sub === "mv") return pathShape(words.slice(2), OPTION_SETS["git mv"], false, true);
   if (sub === "merge") return mergeShape(words.slice(2));
-  if (sub === "fetch" || sub === "push") return refShape(sub, words.slice(2));
+  if (sub === "fetch" || sub === "push" || sub === "ls-remote") return refShape(sub, words.slice(2));
+  if (OUTPUT_SUBCOMMANDS.includes(sub)) return outputShape(sub, words.slice(2));
   return { kind: "none" };
 }
 

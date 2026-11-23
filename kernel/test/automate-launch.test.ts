@@ -1145,7 +1145,9 @@ describe.skipIf(!notifierGuardInstalled())("the kernel starts the run (AC3, AC4,
     // against the hook's cwd): a `git -C <dir>` climb into ~/.claude from <dir> is still the ~/.claude target.
     mkdirSync(join(ws, "a", "b"), { recursive: true });
     const climb = relative(join(ws, "a", "b"), join(tmp, "home", ".claude", "notes.txt"));
-    const railed = await run("Bash", { command: `git -C a/b diff --output=${climb}` });
+    // 25d review iteration 2: `--output` itself is refused before the rail (`file_output`), so a plain read names it.
+    expect(await run("Bash", { command: `git -C a/b diff --output=${climb}` })).toMatchObject(CONFINE);
+    const railed = await run("Bash", { command: `git -C a/b ls-files ${climb}` });
     expect(railed.permissionDecision).toBe("deny");
     expect(railed.permissionDecisionReason).toMatch(/^approval_required: held as approval \d+/);
     expect(r.store.prepare("SELECT action FROM approvals").pluck().all()).toEqual(["Bash naming ~/.claude/"]);

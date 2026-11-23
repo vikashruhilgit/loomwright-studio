@@ -12,8 +12,12 @@
 // The base commit is the stored repo policy's `default_branch` as `refs/remotes/origin/<branch>`, else the target of
 // `refs/remotes/origin/HEAD`; when neither resolves the run declares nothing (`base_unresolved`), never `HEAD` and
 // never the working tree. So a script or workflow the run adds on its own branch, committed or not, is never declared.
-// The run cannot move that ref itself: its policy refuses a fetch or push that writes a remote-tracking or replace ref
-// (`ref_destination`, `sessions/run-confinement.ts`), and `committedReads` reads the exact ref with replace objects off.
+// The routes a run session's own commands had to that ref are refused (`sessions/run-confinement.ts`): a fetch or
+// push that names a remote-tracking or replace ref destination and `git stash export` (`ref_destination`), any
+// fetch / push / ls-remote option outside a closed set, abbreviations of `--refmap` and `--upload-pack` included
+// (`option`), `--output=<file>` on `git log` / `show` / `diff` / `stash` (`file_output`), and a file tool's write
+// under `.git/`. `committedReads` reads the exact ref with replace objects off. What can still move it is listed in
+// `docs/architecture/automate.md` ("What can still move the base").
 //
 // This module starts no process and reads no file itself: its git reads are `committedReads`
 // (`loomwright/run-state-checkout.ts`, the kernel's one git caller for a run checkout), passed in.

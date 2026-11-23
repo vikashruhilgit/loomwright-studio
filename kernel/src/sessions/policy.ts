@@ -151,7 +151,10 @@ function startsWithPrefixWords(words: readonly string[], prefix: string): boolea
  *   option is `checkout_confinement`); a prefix in `EXACT_RUN_PREFIXES`
  *   (`git remote -v`) admits only the whole command; and `rm`, `mv`, `chmod`,
  *   `git rm`, `git mv` and `git merge` must keep their closed option sets and
- *   literal operands (`confinedShape`). Where those paths lie is the session
+ *   literal operands (`confinedShape`). 25d adds `git fetch`, `git push` and
+ *   `git ls-remote` (a closed option set, no ref destination a run's base is
+ *   read from) and `--output` on `git log` / `show` / `diff` / `stash`
+ *   (`file_output`). Where those paths lie is the session
  *   gate's question (`kernel/src/loomwright/run-state-checkout.ts`): this
  *   decision reads no file system.
  * - A run policy's declared checks (phase 8 item 25d, `declaredChecks`, which

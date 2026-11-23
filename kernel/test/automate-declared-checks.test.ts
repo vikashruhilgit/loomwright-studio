@@ -215,6 +215,69 @@ describe("a run session cannot move the base it is read at (AC5, review iteratio
     }
   });
 
+  it("review iteration 2: an abbreviated or unlisted fetch / push / ls-remote option, `--output` on the log / diff family, and a git global `-c` are refused in every run policy", () => {
+    const policies = [AUTOMATE_RUN_POLICY, REVIEW_PR_RUN_POLICY, MERGE_PARKED_RUN_POLICY, runPolicyWith({ base_ref: null, base_sha: null, reason: "base_unresolved", admitted: [], skipped: [] })];
+    for (const policy of policies) {
+      for (const [command, why] of [
+        ["git fetch --refm=+refs/heads/run:refs/remotes/origin/main . run", "option"],
+        ["git fetch --refma=+refs/heads/run:refs/remotes/origin/main . run", "option"],
+        ["git fetch \"--upload-pack=sh -c 'touch PWNED' --\" .", "option"],
+        ["git fetch \"--upload-pa=sh -c 'touch PWNED' --\" .", "option"],
+        ["git ls-remote \"--upload-pack=sh -c 'touch PWNED' --\" .", "option"],
+        ["git ls-remote \"--upload-pa=sh -c 'touch PWNED' --\" .", "option"],
+        ["git push \"--receive-pack=sh -c 'touch PWNED' --\" . HEAD:refs/heads/x", "option"],
+        ["git -C . fetch --refm=+refs/heads/run:refs/remotes/origin/main . run", "option"],
+        ["git log -1 --format=%H --output=.git/refs/remotes/origin/main HEAD", "file_output"],
+        ["git -C . log -1 --format=%H --output=.git/refs/remotes/origin/main HEAD", "file_output"],
+        ["git diff --output=.git/config", "file_output"],
+        ["git show --output=.git/config HEAD", "file_output"],
+        ["git stash export --to-ref refs/remotes/origin/main", "ref_destination"],
+      ] as const) {
+        expect(bash(policy, command), command).toEqual(CONFINED);
+        expect(runGateView(command)?.shape, command).toEqual({ kind: "refuse", why });
+      }
+      // A git global option before the subcommand matches no run prefix; with `-C` it is `global_option`.
+      expect(bash(policy, "git -c core.fsmonitor=x status")).toEqual(REFUSED);
+      expect(bash(policy, "git -c 'remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*' fetch")).toEqual(REFUSED);
+      expect(bash(policy, "git -C . -c core.fsmonitor=x status")).toEqual(CONFINED);
+      // The ordinary forms, Loomwright's own among them, stay allowed.
+      for (const command of [
+        "git fetch",
+        "git fetch origin",
+        "git fetch origin main",
+        "git fetch -q origin",
+        "git log --oneline -5",
+        "git diff --stat",
+        "git show HEAD",
+        "git diff --name-only origin/main...HEAD",
+        "git ls-remote --exit-code --heads origin main",
+        "git push -u origin feature/x",
+        "git push origin HEAD:feature/x",
+      ]) {
+        expect(bash(policy, command), command).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+        expect(runGateView(command)?.shape, command).toEqual({ kind: "none" });
+      }
+    }
+  });
+
+  it("review iteration 2: the refused `git log --output` route would move the base; the policy refuses it, so readDeclaredChecks keeps the real base", () => {
+    const r = gitRepo(join(tmp, "repo"));
+    const base = r.commit({ "package.json": JSON.stringify({ scripts: { test: "node ping.js" } }) });
+    r.remote("main", base);
+    r.git("checkout", "-q", "-b", "run/item-1");
+    r.commit({ "package.json": JSON.stringify({ scripts: { test: "node ping.js" } }), "evil.sh": "touch PWNED\n", ".github/workflows/x.yml": "jobs:\n  x:\n    steps:\n      - run: bash evil.sh\n" });
+    const command = "git log -1 --format=%H --output=.git/refs/remotes/origin/main run/item-1";
+    const read = readDeclaredChecks("main", committedReads(r.dir));
+    expect(read.base_sha).toBe(base);
+    expect(bash(runPolicyWith(read), command)).toEqual(CONFINED);
+    expect(bash(runPolicyWith(read), "bash evil.sh")).toEqual(REFUSED);
+
+    // The pin is load-bearing: run anyway with the fixture's own git (as the refused session command would, from the
+    // checkout root), it writes a valid loose ref, and the next read admits the run branch's `bash evil.sh`.
+    execFileSync("git", ["log", "-1", "--format=%H", "--output=.git/refs/remotes/origin/main", "run/item-1"], { cwd: r.dir, stdio: "ignore" });
+    expect(declaredCheckWords(readDeclaredChecks("main", committedReads(r.dir)))).toContainEqual(["bash", "evil.sh"]);
+  });
+
   it("the next launch reads the real base: a forged ref the session could write is never read", () => {
     const r = gitRepo(join(tmp, "repo"));
     const base = r.commit({ "package.json": JSON.stringify({ scripts: { test: "node ping.js" } }) });
