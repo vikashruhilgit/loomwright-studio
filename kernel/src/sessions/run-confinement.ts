@@ -42,7 +42,29 @@ export type ShapeRefusal =
   /** `git -C` with any other global option before the subcommand (`-c`, `--git-dir`, `--work-tree`, `--exec-path`, a second `-C`). */
   | "global_option"
   /** A `git merge` that is not `git merge <name> [--no-ff] [-m <msg>]`. */
-  | "merge_shape";
+  | "merge_shape"
+  /**
+   * A command that could write a ref the kernel reads a run's base from (25d, `refShape`): a `git fetch` refspec
+   * naming a destination (`<src>:<dst>`, a leading `+`); a `git push` destination that could name a remote-tracking or
+   * replace ref (`refs/…` outside `refs/heads/` and `refs/tags/`, or `origin…`, `remotes/…`, `replace/…`, which git's
+   * push matching expands under `refs/`); `git stash export` (its `--to-ref` writes any ref). An option outside
+   * fetch's, push's or ls-remote's closed set (`--refmap`, `--upload-pack`, any abbreviation of either) is `option`.
+   */
+  | "ref_destination"
+  /**
+   * `--output` or `--output=<file>` on `git log`, `git show`, `git diff` or `git stash` (`stash show`, `stash list`):
+   * it writes the command's output to any path, `.git/` included (25d review iteration 2).
+   */
+  | "file_output"
+  /**
+   * A `git branch` that deletes, renames or copies a remote-tracking branch (25d review iteration 3): a remote form
+   * (`-r`, `--remotes`, `-a`, `--all`, any abbreviation, or a letter cluster holding `r` or `a`) together with a
+   * delete, move or copy form (`-d`, `-D`, `-m`, `-M`, `-c`, `-C`, `--delete`, `--move`, `--copy`, any abbreviation,
+   * or a cluster holding one). `git branch -r -d origin/HEAD` empties `.git/refs/remotes/origin/` in a fresh clone,
+   * one step of the reproduced route that forged `refs/remotes/origin/main`; no Loomwright step deletes a
+   * remote-tracking branch. Listing (`git branch -r`) and every local-branch form stay admitted.
+   */
+  | "remote_branch";
 
 /**
  * A confined command's shape (`confinedShape`):
@@ -52,12 +74,17 @@ export type ShapeRefusal =
  *   `recursive` when an option walks a tree (`-r`, `-R`); `moved` is how many leading operands a move takes away
  *   (`mv`, `git mv`: every operand but the last, the destination; 0 for every other program).
  * - `merge`: `branch` must be a local branch (`refs/heads/<branch>`), asked of git by the session gate.
+ * - `destinations`: every word of `operands` is a path git creates or writes (25d review iteration 3:
+ *   `git worktree add`'s path, `git worktree move`'s new path, `git worktree repair`'s paths). It may lie outside
+ *   the checkout (Loomwright's lanes are `../<repo>-<sub>`), but the session gate refuses one that resolves, through
+ *   every symlink, under a `.git` segment or inside the repository's git dir or common dir (`git_dir`).
  */
 export type ConfinedShape =
   | { readonly kind: "none" }
   | { readonly kind: "refuse"; readonly why: ShapeRefusal }
   | { readonly kind: "paths"; readonly operands: readonly string[]; readonly recursive: boolean; readonly moved: number }
-  | { readonly kind: "merge"; readonly branch: string };
+  | { readonly kind: "merge"; readonly branch: string }
+  | { readonly kind: "destinations"; readonly operands: readonly string[] };
 
 /** One program's closed option set: the short letters it takes (alone or clustered), the long options, and the letters that walk a tree. */
 interface OptionSet {
@@ -167,18 +194,223 @@ function mergeShape(args: readonly string[]): ConfinedShape {
 }
 
 /**
+ * Whether a `git push` destination could name a ref outside the checkout's branches and tags (25d). A qualified one
+ * (`refs/…`) is admitted only under `refs/heads/` or `refs/tags/`. An unqualified one is matched by git against the
+ * target's existing refs through `refs/%s`, `refs/remotes/%s` and `refs/remotes/%s/HEAD`, so a first segment of
+ * `origin`, `remotes` or `replace` is refused (`HEAD:origin/main` pushed to `.` or to a worktree path moves
+ * `refs/remotes/origin/main`). Case-folded: on a case-insensitive file system `refs/REMOTES/…` is the same loose ref.
+ */
+function pushDestinationRefused(dst: string): boolean {
+  const d = dst.toLowerCase();
+  if (d.startsWith("refs/")) return !(d.startsWith("refs/heads/") || d.startsWith("refs/tags/"));
+  const first = d.split("/")[0];
+  return first === "origin" || first === "remotes" || first === "replace";
+}
+
+/**
+ * The closed option sets of `git fetch`, `git push` and `git ls-remote` in a run policy (25d review iteration 2). git's
+ * option parser takes any unambiguous abbreviation of a long option (`--refm=` is `--refmap=`, `--upload-pa=` is
+ * `--upload-pack=`) and a value as the next word (`--upload-pack <cmd>`), so naming the dangerous options cannot
+ * close them; only these exact words are admitted, and every other word starting with `-` is refused (`option`). No
+ * listed option takes a value, so the operands are read right. Each set holds the options the forms in the Loomwright
+ * 18.1.2 install use (`git fetch -q origin`, `git fetch --quiet origin`, `git push -u origin <branch>`,
+ * `git push -q origin main`, `git push origin --delete <branch>`, `git ls-remote --exit-code --heads origin`; the
+ * conformance test decides the extracted ones) plus flags that only change what is printed or limit what is listed. Left out on purpose: `--upload-pack`,
+ * `--receive-pack`, `--exec` (each runs a shell command over a local transport), `--refmap`, `--repo`, `--mirror`,
+ * `--all`, `--multiple`, `--stdin` (each changes which refs are written or which words are refspecs), `-f`/`--force*`,
+ * `--recurse-submodules`, and every option that takes a value (`-o`, `--depth`, `--server-option`).
+ */
+const REF_OPTION_SETS: Readonly<Record<"fetch" | "push" | "ls-remote", { readonly letters: string; readonly long: readonly string[] }>> = Object.freeze({
+  fetch: { letters: "qvptn", long: ["--quiet", "--verbose", "--prune", "--tags", "--no-tags", "--dry-run", "--porcelain", "--progress", "--no-progress"] },
+  push: { letters: "qvund", long: ["--quiet", "--verbose", "--set-upstream", "--dry-run", "--porcelain", "--progress", "--no-progress", "--delete"] },
+  "ls-remote": { letters: "qtb", long: ["--quiet", "--tags", "--branches", "--heads", "--refs", "--exit-code", "--get-url", "--symref"] },
+});
+
+/**
+ * `git fetch`, `git push` and `git ls-remote` (25d): the kernel reads a run's declared checks at
+ * `refs/remotes/origin/<default>` (or the target of `refs/remotes/origin/HEAD`) and reads committed objects, which a
+ * replace ref (`refs/replace/<sha>`) can stand in for, so a run session may not write those refs into its own
+ * repository, and may not name a program for git to run. `args` are the words after the subcommand.
+ * - options: each word starting with `-` before `--` must be in `REF_OPTION_SETS` (a cluster of listed letters is one
+ *   word, `-qv`), else `option`. So the first operand (a word not starting with `-`, or any word after `--`) is the
+ *   repository and every later operand a refspec (fetch, push) or a pattern (ls-remote, which writes no ref).
+ * - fetch: a refspec with a leading `+` or a `:` (an explicit destination: `git fetch . +HEAD:refs/remotes/origin/main`
+ *   writes the run's commit there, and git expands an unqualified one) is `ref_destination`. `git fetch`,
+ *   `git fetch origin`, `git fetch origin <branch>` stay `none`: what they write comes from the configured remote,
+ *   which a run session cannot change (no file tool writes under `.git/`, and `--output` is `file_output`).
+ * - push: a refspec's destination (after its last `:`, else the refspec itself, a leading `+` dropped) is
+ *   `ref_destination` when `pushDestinationRefused`. Pushing a branch (`git push -u origin <branch>`,
+ *   `git push origin HEAD:<branch>`, `HEAD:refs/heads/<branch>`) stays `none`.
+ * Pure.
+ */
+function refShape(sub: "fetch" | "push" | "ls-remote", args: readonly string[]): ConfinedShape {
+  const REFUSE = { kind: "refuse", why: "ref_destination" } as const;
+  const set = REF_OPTION_SETS[sub];
+  let options = true;
+  let operand = 0;
+  for (const w of args) {
+    if (options && w === "--") {
+      options = false;
+      continue;
+    }
+    if (options && w.startsWith("-")) {
+      const known = w.startsWith("--") ? set.long.includes(w) : w.length > 1 && [...w.slice(1)].every((c) => set.letters.includes(c));
+      if (!known) return { kind: "refuse", why: "option" };
+      continue;
+    }
+    if (sub === "ls-remote") continue;
+    operand += 1;
+    if (operand === 1) continue;
+    if (sub === "fetch" && (w.startsWith("+") || w.includes(":"))) return REFUSE;
+    if (sub === "push") {
+      const spec = w.startsWith("+") ? w.slice(1) : w;
+      const colon = spec.lastIndexOf(":");
+      if (pushDestinationRefused(colon === -1 ? spec : spec.slice(colon + 1))) return REFUSE;
+    }
+  }
+  return { kind: "none" };
+}
+
+/**
+ * The admitted read subcommands that take git's diff and log options, among them `--output=<file>` (25d review
+ * iteration 2): `git log`, `git show`, `git diff`, and `git stash` (`stash show` and `stash list` take them too).
+ * These take hundreds of formatting options, so they are not given a closed set: the one option that writes a file
+ * is refused instead (`outputShape`). Every other option the run prefixes admit was checked against
+ * `git <sub> -h` (git 2.55.0) for one that writes a file, writes a ref or runs a program: `stash export --to-ref`
+ * writes any ref (`ref_destination`); the rest read (`-F`, `--pathspec-from-file`) or run only what git config or
+ * the environment names (an editor, a hook, a diff driver), which a run session cannot write inside the checkout.
+ */
+const OUTPUT_SUBCOMMANDS: readonly string[] = ["log", "show", "diff", "stash"];
+
+/**
+ * `--output` on an `OUTPUT_SUBCOMMANDS` command: the word `--output` (git takes its value as the next word) or
+ * `--output=<file>`, anywhere (a `--` before it fails closed too). Matching the full name is enough: these options
+ * are parsed with abbreviations off, so `--outp=`, `--outpu=` and `--out=` are `unrecognized argument` (git 2.55.0,
+ * `git log`, `git show`, `git diff`, reproduced 2026-11-23). `--output-indicator-new=` and its siblings only change
+ * a diff's prefix characters and stay admitted. `git stash export` is `ref_destination`. Pure.
+ */
+function outputShape(sub: string, args: readonly string[]): ConfinedShape {
+  if (args.some((w) => w === "--output" || w.startsWith("--output="))) return { kind: "refuse", why: "file_output" };
+  if (sub === "stash" && args.includes("export")) return { kind: "refuse", why: "ref_destination" };
+  return { kind: "none" };
+}
+
+/**
+ * The `git worktree` subcommands that create or write a path the session names, with their closed option sets
+ * (`git worktree <sub> -h`, git 2.55.0): `value` options take the next word (or `--reason=<x>`), `letters` may be
+ * clustered, and `path` says which operands are destinations. Every other option word, an abbreviated long option
+ * among them (git would take `--rea x` as `--reason x`), is `option`. `list`, `lock`, `unlock`, `prune` and `remove`
+ * name no new path and stay `none`.
+ */
+const WORKTREE_SHAPES: Readonly<Record<"add" | "move" | "repair", { readonly letters: string; readonly value: readonly string[]; readonly long: readonly string[]; readonly min: number; readonly max: number; readonly path: "first" | "second" | "all" }>> =
+  Object.freeze({
+    add: {
+      letters: "fdq",
+      value: ["-b", "-B", "--reason"],
+      long: [
+        "--force", "--no-force", "--detach", "--no-detach", "--checkout", "--no-checkout", "--lock", "--no-lock", "--no-reason", "--quiet", "--no-quiet",
+        "--track", "--no-track", "--guess-remote", "--no-guess-remote", "--orphan", "--no-orphan", "--relative-paths", "--no-relative-paths",
+      ],
+      min: 1,
+      max: 2,
+      path: "first",
+    },
+    move: { letters: "f", value: [], long: ["--force", "--no-force", "--relative-paths", "--no-relative-paths"], min: 2, max: 2, path: "second" },
+    repair: { letters: "", value: [], long: ["--relative-paths", "--no-relative-paths"], min: 0, max: Number.POSITIVE_INFINITY, path: "all" },
+  });
+
+/**
+ * `git worktree <sub> …` (25d review iteration 3): `add`, `move` and `repair` are `destinations` naming the paths git
+ * creates or writes, read past a closed option set (`WORKTREE_SHAPES`); an operand that is not a literal word is
+ * `pattern` (a `..` is admitted: Loomwright adds `../<repo>-<sub>`, and the gate resolves it physically), a wrong
+ * operand count is `operands`, an option word before the subcommand is `option`. `git worktree add .git/refs/remotes/origin
+ * <branch>` checked a branch holding a file `main` out as the loose ref `refs/remotes/origin/main` (reproduced, git
+ * 2.55.0). `args` are the words after `worktree`. Pure.
+ */
+function worktreeShape(args: readonly string[]): ConfinedShape {
+  const sub = args[0];
+  if (sub === undefined) return { kind: "none" };
+  if (sub.startsWith("-")) return { kind: "refuse", why: "option" };
+  if (sub !== "add" && sub !== "move" && sub !== "repair") return { kind: "none" };
+  const set = WORKTREE_SHAPES[sub];
+  const operands: string[] = [];
+  let options = true;
+  for (let i = 1; i < args.length; i += 1) {
+    const w = args[i] as string;
+    if (options && w === "--") {
+      options = false;
+      continue;
+    }
+    if (options && w.startsWith("-") && w !== "-") {
+      if (set.value.includes(w)) {
+        if (args[i + 1] === undefined) return { kind: "refuse", why: "operands" };
+        i += 1;
+        continue;
+      }
+      if (set.value.some((o) => o.startsWith("--") && w.startsWith(`${o}=`))) continue;
+      const known = w.startsWith("--") ? set.long.includes(w) : w.length > 1 && [...w.slice(1)].every((c) => set.letters.includes(c));
+      if (!known) return { kind: "refuse", why: "option" };
+      continue;
+    }
+    if (!isLiteralWord(w)) return { kind: "refuse", why: "pattern" };
+    operands.push(w);
+  }
+  if (operands.length < set.min || operands.length > set.max) return { kind: "refuse", why: "operands" };
+  const paths = set.path === "all" ? operands : set.path === "first" ? operands.slice(0, 1) : operands.slice(1, 2);
+  return { kind: "destinations", operands: paths };
+}
+
+/** Whether a `git branch` long option word (`--name` or `--name=<v>`) is `full` or an abbreviation of it git would take. */
+function abbreviates(word: string, full: string): boolean {
+  const name = word.split("=")[0] as string;
+  return name.length > 2 && full.startsWith(name);
+}
+
+/**
+ * `git branch …` (25d review iteration 3): `remote_branch` when a remote form and a delete / move / copy form are both
+ * among its words before `--` (see `ShapeRefusal`), read over-inclusively: every word starting with `-` counts, the
+ * value of `-u` or `--contains` included, so a value cannot hide an option from this check (a false refusal fails
+ * closed). Else `none`. `args` are the words after `branch`. Pure.
+ */
+function branchShape(args: readonly string[]): ConfinedShape {
+  let remote = false;
+  let mutate = false;
+  for (const w of args) {
+    if (w === "--") break;
+    if (!w.startsWith("-") || w === "-") continue;
+    if (w.startsWith("--")) {
+      if (abbreviates(w, "--remotes") || abbreviates(w, "--all")) remote = true;
+      if (abbreviates(w, "--delete") || abbreviates(w, "--move") || abbreviates(w, "--copy")) mutate = true;
+      continue;
+    }
+    const letters = w.slice(1);
+    if (/[ra]/.test(letters)) remote = true;
+    if (/[dDmMcC]/.test(letters)) mutate = true;
+  }
+  return remote && mutate ? { kind: "refuse", why: "remote_branch" } : { kind: "none" };
+}
+
+/**
  * The shape of a run session's command `words` (already parsed by `parseBashCommand`, and for `git -C` already
- * stripped of `-C <dir>`): `rm`, `mv`, `chmod` (the program word exactly), `git rm`, `git mv` and `git merge`.
- * Every other command is `none`. Pure.
+ * stripped of `-C <dir>`): `rm`, `mv`, `chmod` (the program word exactly), `git rm`, `git mv` and `git merge`,
+ * `git fetch` / `git push` / `git ls-remote` (a closed option set, `refShape`), `git log` / `git show` /
+ * `git diff` / `git stash` (`outputShape`), `git worktree add|move|repair` (`destinations`, `worktreeShape`) and
+ * `git branch` (`branchShape`), each refused, `none` or a shape the session gate checks. Every other command is
+ * `none`. A git global option before the subcommand (`git -c k=v status`) matches no run prefix, and `git -C <dir>`
+ * with another one is `global_option` (`splitGitC`). Pure.
  */
 export function confinedShape(words: readonly string[]): ConfinedShape {
   const [program, sub] = words;
   if (program === "rm" || program === "mv") return pathShape(words.slice(1), OPTION_SETS[program], false, false);
   if (program === "chmod") return pathShape(words.slice(1), OPTION_SETS.chmod, true, false);
-  if (program !== "git") return { kind: "none" };
+  if (program !== "git" || sub === undefined) return { kind: "none" };
   if (sub === "rm") return pathShape(words.slice(2), OPTION_SETS["git rm"], false, true);
   if (sub === "mv") return pathShape(words.slice(2), OPTION_SETS["git mv"], false, true);
   if (sub === "merge") return mergeShape(words.slice(2));
+  if (sub === "fetch" || sub === "push" || sub === "ls-remote") return refShape(sub, words.slice(2));
+  if (OUTPUT_SUBCOMMANDS.includes(sub)) return outputShape(sub, words.slice(2));
+  if (sub === "worktree") return worktreeShape(words.slice(2));
+  if (sub === "branch") return branchShape(words.slice(2));
   return { kind: "none" };
 }
 

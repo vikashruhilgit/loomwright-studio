@@ -173,7 +173,8 @@ describe("AC7: the kernel-started triage fix is given the PR, never the comment"
     expect(start.prompt).toBe(reviewPrRunPrompt(REPO, PR));
     expect(start.prompt).not.toMatch(/--[a-z]/);
     const { never: _never, ...policy } = start.policy as typeof start.policy & { never?: unknown };
-    expect(policy).toEqual({ ...REVIEW_PR_RUN_POLICY });
+    // 25d: the fix run carries its repo's declared checks; this checkout has no base commit, so none.
+    expect(policy).toEqual({ ...REVIEW_PR_RUN_POLICY, declaredChecks: [] });
     expect(start.cwd).toBe(env.checkout);
     // Every place the comment's text could reach the session: none.
     for (const piece of COMMENT_PIECES) {

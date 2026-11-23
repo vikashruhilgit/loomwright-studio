@@ -1,7 +1,8 @@
 // Phase 8 item 25a: every command, script call, Claude tool and slash command the installed Loomwright tells a
 // kernel run session to use is either admitted by that kind's real run policy or recorded, with its reason, in
 // `RUN_EXCLUSIONS` (`src/automate/run-exclusions.ts`). Anything else fails, naming the command, the kind, the deny
-// reason and the source `file:line`.
+// reason and the source `file:line`. A row that matches no denied entry fails (the unused-row check), and so does a
+// `filed` row whose match covers an entry the kind's policy admits (the stale-exclusion check, 25d).
 //
 // Three modes, one extraction path (`test/fixtures/loomwright-instructions/extract.ts`):
 //   - default (CI, plain `npm test`): the committed fixture `test/fixtures/loomwright-<version>-instructions.json`,
@@ -281,12 +282,17 @@ function calledScript(entry: RawEntry, scripts: ReadonlySet<string>): string | u
   return undefined;
 }
 
-function rowMatches(row: RunExclusion, entry: RawEntry, kind: RunSessionKind, reason: string, scripts: ReadonlySet<string>): boolean {
+/**
+ * Whether `row` matches `entry` for `kind`, denied `reason`. With `reason` undefined (an admitted entry, which has no
+ * deny reason) the row's `deny` is not read: every other field must hold, so it answers whether the row's match
+ * covers the entry's shape (the stale-exclusion check).
+ */
+function rowMatches(row: RunExclusion, entry: RawEntry, kind: RunSessionKind, reason: string | undefined, scripts: ReadonlySet<string>): boolean {
   const m = row.match;
   if (!row.kinds.includes(kind) || m.type !== entry.type) return false;
   if (m.scripts !== undefined && !m.scripts.includes(calledScript(entry, scripts) ?? "")) return false;
   if (m.tools !== undefined && !m.tools.includes(entry.text)) return false;
-  if (m.deny !== undefined && !(m.deny as readonly string[]).includes(reason)) return false;
+  if (reason !== undefined && m.deny !== undefined && !(m.deny as readonly string[]).includes(reason)) return false;
   if (m.files !== undefined && !m.files.includes(entry.file)) return false;
   if (m.text !== undefined && !new RegExp(m.text).test(entry.text)) return false;
   return true;
@@ -449,11 +455,13 @@ function literalCommand(part: string, scripts: ReadonlySet<string>): string | un
  */
 /**
  * Options for `conformanceFailures`: `policies` replaces a kind's run policy (a test de-admitting one script, prefix
- * or tool); `allowed.n` counts the admitted decisions, entries and parts alike.
+ * or tool); `allowed.n` counts the admitted decisions, entries and parts alike; `onAllowed` is called with each
+ * admitted entry or part (`label` names the composed entry a part came from, as a failure line does).
  */
 interface ConformanceOptions {
   readonly policies?: Partial<Record<RunSessionKind, ToolPolicy>>;
   readonly allowed?: { n: number };
+  readonly onAllowed?: (entry: RawEntry, kind: RunSessionKind, label: string) => void;
 }
 
 function conformanceFailures(
@@ -480,6 +488,7 @@ function conformanceFailures(
       const d = decide(e, policy, root, scripts);
       if (d.decision === "allow") {
         if (opts.allowed !== undefined) opts.allowed.n += 1;
+        opts.onAllowed?.(e, kind, "");
         continue;
       }
       check(e, kind, d.reason, "");
@@ -491,12 +500,39 @@ function conformanceFailures(
         seen.add(text);
         const p: RawEntry = { ...e, type: calledScript({ ...e, text }, scripts) === undefined ? "command" : "script", text };
         const pd = decide(p, policy, root, scripts);
+        const label = `part of \`${e.text.replace(/\n/g, "\\n")}\`: `;
         if (pd.decision === "allow" && opts.allowed !== undefined) opts.allowed.n += 1;
-        if (pd.decision === "deny") check(p, kind, pd.reason, `part of \`${e.text.replace(/\n/g, "\\n")}\`: `);
+        if (pd.decision === "allow") opts.onAllowed?.(p, kind, label);
+        if (pd.decision === "deny") check(p, kind, pd.reason, label);
       }
     }
   }
   return failures;
+}
+
+/**
+ * The stale-exclusion check (phase 8 item 25d): one failure per `filed` row (a known gap a named story closes) whose
+ * match covers an entry, or a composed entry's part, that the kind's run policy now ADMITS. That story closed the gap
+ * for the shape, so the row is stale: remove it, or narrow it to the shapes still denied. The row's `deny` is not read
+ * (an admitted entry has no deny reason; `rowMatches` with no reason); every other field must hold. A row with no
+ * `filed` (a deliberate denial, or a text that is not an instruction) is never flagged. The unused-row check beside it
+ * catches a row that matches no denied entry; this one catches a row that still matches a denied entry but also covers
+ * an admitted one. The policies are the static run policies (`POLICIES`): a run's `declaredChecks` are read per repo
+ * at launch, so no repo's declarations are assumed here.
+ */
+function staleExclusions(entries: readonly Entry[], root: string, scripts: ReadonlySet<string>, rows: readonly RunExclusion[], opts: Pick<ConformanceOptions, "policies"> = {}): string[] {
+  const filed = rows.filter((r) => r.filed !== undefined);
+  const stale = new Set<string>();
+  conformanceFailures(entries, root, scripts, rows, undefined, {
+    ...opts,
+    onAllowed: (e, kind, label) => {
+      for (const r of filed) {
+        if (!rowMatches(r, e, kind, undefined, scripts)) continue;
+        stale.add(`${r.id} (filed: ${r.filed}): ${kind}: ${label}\`${e.text.replace(/\n/g, "\\n")}\` (${e.type}) is admitted at ${e.file}:${e.line} (stale exclusion: remove or narrow the row)`);
+      }
+    },
+  });
+  return [...stale];
 }
 
 /** Whether a fact-class row's fact holds for its script (directly, or through `fact_via`, which the script must name). */
@@ -575,6 +611,11 @@ describe(`Loomwright instruction conformance (${UPDATE ? "fixture update" : LIVE
       if (!used.has(r.id)) bad.push(`${r.id}: matches no denied entry in Loomwright ${src.version} (stale: remove it)`);
     }
     expect(bad).toEqual([]);
+  });
+
+  it("stale-exclusion: no `filed` row covers an entry its kind's run policy admits (25d)", () => {
+    const stale = staleExclusions(src.entries, root, new Set(src.scripts), RUN_EXCLUSIONS);
+    expect(stale, `${stale.length} filed row(s) whose gap is closed for an admitted entry:\n${stale.join("\n")}`).toEqual([]);
   });
 
   it("each exclusion's stated script fact holds in the script text, and each reason_fact_false row's fact is still false", () => {
@@ -712,6 +753,56 @@ describe("a row matches only the shapes its reason describes (review iteration 2
       at("skills/workflow-management/SKILL.md", "npm run lint"),
     ];
     expect(conformanceFailures(real, root, scripts, RUN_EXCLUSIONS)).toEqual([]);
+  });
+});
+
+describe("stale-exclusion: a `filed` row whose gap its story closed fails the check (25d)", () => {
+  const scripts = new Set<string>();
+  const SYN = "skills/synthetic/SKILL.md";
+  const at = (text: string): Entry => ({ file: SYN, line: 11, type: "command", source: "fence", text, kinds: ["backlog"] });
+  const row = (filed: RunExclusion["filed"], text: string): RunExclusion => ({
+    id: "synthetic-closed-gap",
+    match: { type: "command", deny: ["bash_prefix_not_allowed"], text, files: [SYN] },
+    kinds: ["backlog"],
+    reason_class: "program or subcommand not admitted",
+    reason: "a synthetic row for the stale-exclusion check.",
+    consequence: "consequence if denied: none.",
+    ...(filed === undefined ? {} : { filed }),
+  });
+
+  it("a filed row whose match covers an admitted entry is flagged, whatever its `deny` says", () => {
+    expect(decideToolUse(POLICIES.backlog, "Bash", { command: "git status" })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(staleExclusions([at("git status")], root, scripts, [row("25c", "^git status$")])).toEqual([
+      "synthetic-closed-gap (filed: 25c): backlog: `git status` (command) is admitted at skills/synthetic/SKILL.md:11 (stale exclusion: remove or narrow the row)",
+    ]);
+  });
+
+  it("an admitted part of a composed command is flagged too", () => {
+    expect(staleExclusions([at("git status && zzchain")], root, scripts, [row("25b", "^git status$")])).toEqual([
+      "synthetic-closed-gap (filed: 25b): backlog: part of `git status && zzchain`: `git status` (command) is admitted at skills/synthetic/SKILL.md:11 (stale exclusion: remove or narrow the row)",
+    ]);
+  });
+
+  it("a deliberate row (no `filed`), a filed row covering only denied entries, and another kind are not flagged", () => {
+    expect(staleExclusions([at("git status")], root, scripts, [row(undefined, "^git status$")])).toEqual([]);
+    expect(staleExclusions([at("zzprog --x"), at("git status")], root, scripts, [row("25c", "^zzprog")])).toEqual([]);
+    expect(staleExclusions([{ ...at("git status"), kinds: ["review_pr"] }], root, scripts, [row("25c", "^git status$")])).toEqual([]);
+  });
+
+  it("re-adding a row 25d removed (25a's `quoted-metacharacters`, filed 25b) fails the check on the real entries", () => {
+    const closed: RunExclusion = {
+      id: "quoted-metacharacters",
+      match: { type: "command", deny: ["bash_shell_metacharacter"], text: "^(git commit -m \"feat\\(auth\\)|jq 'has\\()", files: ["commands/automate.md", "skills/commit/SKILL.md"] },
+      kinds: ["backlog", "resume", "merge_parked", "merge_parked_trusted"],
+      reason_class: "quoted text the rail reads as shell",
+      reason: "25a's row as it was.",
+      consequence: "consequence if denied: none.",
+      filed: "25b",
+    };
+    expect(RUN_EXCLUSIONS.some((r) => r.id === closed.id)).toBe(false);
+    const stale = staleExclusions(src.entries, root, new Set(src.scripts), [...RUN_EXCLUSIONS, closed]);
+    expect(stale.length).toBeGreaterThan(0);
+    expect(stale.every((s) => s.startsWith("quoted-metacharacters (filed: 25b): ") && s.includes("`jq 'has(\"auto_gates\") and .auto_gates != true'` (command) is admitted at commands/automate.md:"))).toBe(true);
   });
 });
 

@@ -81,27 +81,37 @@
 // lags the start), and stores why. It is idempotent: ONE work step, so a
 // redelivery returns the stored result and starts no second session.
 //
+// Declared checks (phase 8 item 25d): a `backlog`, `resume` or `review_pr` run's policy carries the checks the repo
+// declares on its base branch (`declaredChecks`, `./declared-checks.ts`), read at each launch or continuation from the
+// base commit current then through the checkout's committed reads (`committedReads`,
+// `loomwright/run-state-checkout.ts`), never the working tree. The session gate admits exactly those command lines
+// (`declared_check`); the merge kinds get none. Each start appends one `run_declared_checks` event for the run session.
+//
 // This module starts no process, calls no GitHub endpoint and merges nothing:
-// the only effect is one start call on the session manager the loop passes in. The `studio` CLI loads it
+// the only effect is one start call on the session manager the loop passes in, then the run's
+// `run_declared_checks` event, which cannot fail the step. The `studio` CLI loads it
 // through the brain's handler, so it imports only types, the status helpers and
 // `SessionError` in `sessions/types.ts`, the loop's `internal.ts` leaf, node
 // `path`, the agent readers, the repo-policy module (`isRepoName`,
-// `loomwrightMergeFlags`) and this feature's files: never the Agent SDK, the
-// session manager or `kernel.ts`.
+// `loomwrightMergeFlags`, `getRepoPolicy`), the Loomwright checkout readers and this feature's files: never the Agent
+// SDK, the session manager or `kernel.ts`.
 import { resolve, sep } from "node:path";
 import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
-import { isRepoName, loomwrightMergeFlags, TRUST_UNPROTECTED_FLAG } from "../integrations/github/repo-policy.js";
+import { getRepoPolicy, isRepoName, loomwrightMergeFlags, TRUST_UNPROTECTED_FLAG } from "../integrations/github/repo-policy.js";
 import { handRequiredChecks } from "../loomwright/required-checks.js";
 import { versionModelOf } from "../playbooks/runs.js";
 import type { Store } from "../store/index.js";
-import { isPositiveId, messageOf } from "../loop/internal.js";
+import { appendEvent, isPositiveId, messageOf } from "../loop/internal.js";
 import type { EventContext, EventSessions } from "../loop/types.js";
 import { resolvedPath } from "../protected-paths.js";
 import { SessionError, TERMINAL_STATUSES, isContinuableStatus, isTerminalStatus } from "../sessions/types.js";
 import type { SessionHandle, ToolPolicy } from "../sessions/types.js";
 import { isRunId, pausedRuns, readRunState, resumeWouldDoubleDrain, summarizeRuns } from "./run-state.js";
 import { deadLockOf, releaseKernelLock } from "../loomwright/run-lock.js";
+import { committedReads } from "../loomwright/run-state-checkout.js";
+import { declaredCheckWords, readDeclaredChecks } from "./declared-checks.js";
+import type { DeclaredChecksRead } from "./declared-checks.js";
 import { automateInvocation } from "./tickets-to-items.js";
 
 // The payload key that marks a `message` event as a kernel-started Loomwright run (any kind); it lives in the
@@ -683,10 +693,19 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   // (23u: the kernel's own list follows the detection, so it is never left stale).
   handRequiredChecks(store, run.repo, checkout);
 
-  // The session is the step's last effect, so an admission refusal leaves nothing to repeat. The manager's
+  // 25d: the checks the repo declares on its base branch, read now from the base commit (a continuation re-reads them),
+  // for the kinds whose sessions run project work; a merge run gets none, so its policy and prompt are as before.
+  const declared = DECLARED_CHECK_KINDS.includes(run.kind) ? readDeclaredChecks(defaultBranchOf(store, run.repo), committedReads(checkout)) : undefined;
+
+  // The session is the step's last effectful call, so an admission refusal leaves nothing to repeat; the
+  // `run_declared_checks` event follows it and cannot fail the step (`recordDeclaredChecks`). The manager's
   // Loomwright refusal (no install, or no readable `scripts/`) wrote no row, so it is stored, never retried as is.
   let handle: SessionHandle;
-  const policy = { ...runPolicy, ...(settings.never !== undefined ? { never: settings.never } : {}) };
+  const policy = {
+    ...runPolicy,
+    ...(settings.never !== undefined ? { never: settings.never } : {}),
+    ...(declared === undefined ? {} : { declaredChecks: declaredCheckWords(declared), ...(declared.base_sha === null ? {} : { declaredChecksBase: declared.base_sha }) }),
+  };
   // An enabled playbook's run runs under the version the owner enabled, not the one the run was first prepared under: a
   // resume or continuation carried the source session's version forward, so after the owner re-enabled playbook 18 at
   // v3 its run sessions were still v2, and "always" on their held calls was refused as not the current version (live:
@@ -719,7 +738,51 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
     if (continuation !== undefined && err instanceof SessionError && err.code === "not_resumable") return skip(`continue_session_refused: ${err.message}`);
     throw err;
   }
+  if (declared !== undefined) recordDeclaredChecks(store, handle.id, caller.task_id ?? null, run, checkout, declared);
   return releasedLockOf === undefined ? { session_id: handle.id } : { session_id: handle.id, released_lock_of: releasedLockOf };
+}
+
+/** The run kinds whose policy carries the repo's declared checks (25d): never a merge. */
+const DECLARED_CHECK_KINDS: readonly AutomateRunKind[] = Object.freeze(["backlog", "resume", "review_pr"]);
+
+/** The stored repo policy's detected default branch (`getRepoPolicy`), or `null` when none is recorded. */
+function defaultBranchOf(store: Store, repo: string): string | null {
+  const branch = getRepoPolicy(store, repo).detected?.["default_branch"];
+  return typeof branch === "string" && branch !== "" ? branch : null;
+}
+
+/** The most admitted checks and skipped lines one `run_declared_checks` event lists (the counts are always whole). */
+const MAX_EVENT_DECLARATIONS = 100;
+
+/**
+ * Appends the run session's ONE `run_declared_checks` event (25d): the repo, the checkout, the base ref and commit
+ * (or `null` and the reason), the admitted checks (command text and source) and the skipped lines (text, source and
+ * reason). It never throws: the session has started, so a failed append is swallowed and the step still stores the
+ * session's id.
+ */
+function recordDeclaredChecks(store: Store, sessionId: number, taskId: number | null, run: Run, checkout: string, read: DeclaredChecksRead): void {
+  try {
+    appendEvent(
+      store,
+      "run_declared_checks",
+      { sessionId, taskId },
+      {
+        repo: run.repo,
+        checkout,
+        kind: run.kind,
+        base_ref: read.base_ref,
+        base_sha: read.base_sha,
+        ...(read.reason === undefined ? {} : { reason: read.reason }),
+        admitted: read.admitted.slice(0, MAX_EVENT_DECLARATIONS).map((c) => ({ command: c.command, source: c.source })),
+        admitted_count: read.admitted.length,
+        skipped: read.skipped.slice(0, MAX_EVENT_DECLARATIONS).map((s) => ({ text: s.text, source: s.source, reason: s.reason })),
+        skipped_count: read.skipped.length,
+      },
+      new Date().toISOString(),
+    );
+  } catch {
+    // The session runs either way; the audit row is what is lost (fail open on the record, never on the grant).
+  }
 }
 
 /**
