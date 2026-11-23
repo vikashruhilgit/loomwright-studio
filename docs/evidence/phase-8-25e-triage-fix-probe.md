@@ -43,6 +43,8 @@ The comment is lost, so the triage fix as D45 words it cannot do what the walk's
 
 Until the owner decides, the walk's triage step expects the fix route and the kernel-started session (what the harness and the store can show), not a `ping` → `pong` rename. The runbook says so ([step 3](phase-8-exit-runbook.md#the-walk)).
 
+**What followed (item 26a, 2026-11-23).** The owner chose option 2. Item 26a probed that prompt shape live first: a session given `/loomwright:review-pr <url>`, the kernel's instruction line and the owner's comment wrapped as data committed the rename on the PR's branch, with no run-policy change, and the rail held its push for approval. The change came from a subagent of the session's main thread, not Loomwright's fix worker ([`phase-8-26a-comment-probe.md`](phase-8-26a-comment-probe.md)). The kernel now carries the owner's one triaged comment into the fix's prompt, proposed as [D49](../DECISIONS.md) for the owner to approve in the 26a PR, and the runbook's step 3 expects the rename. The record above is unchanged.
+
 ## Honest limits
 
 - No real `/review-pr` session ran (no model, no SDK). Step 2 is the installed command's text, which the session follows.
