@@ -70,4 +70,8 @@ docs/evidence/phase-8-25e-triage-fix-probe.md
 docs/architecture/automate.md
 docs/DECISIONS.md
 
-## Status: open
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-24T06:07:43Z
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/311 (merge d790c93c)
+- **Stamped by:** the owner (2026-11-24), by hand: the run's driver never recorded #311
