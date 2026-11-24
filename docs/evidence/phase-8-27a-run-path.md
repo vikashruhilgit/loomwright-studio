@@ -85,3 +85,28 @@ No verdict is claimed for Validation 2 here. These steps are the owner's, from t
 1. From the shell you run `npm test` in, build and reinstall: `cd kernel && npm run build && node dist/cli/index.js service install` (or `studio service install`). The success line must read `its runs use gh <path>, git <path>, npm <path>, node <path>`, with no `warning: npm …` or `warning: node …` line.
 2. Read the plist's `PATH`: `plutil -extract EnvironmentVariables.PATH raw ~/Library/LaunchAgents/com.loomwright.studio.kernel.plist`. It must hold the dir of that `npm` and `node` (on this machine, `~/.nvm/versions/node/v24.11.1/bin`).
 3. Re-walk phase 8 step 1. The run session's events must show `npm test` as an `allow` `tool_decision` (reason `declared_check`) followed by a passing result in the session output, and the run's `run_declared_checks` event must carry `unrunnable: []` and `unrunnable_count: 0`.
+
+## Validation 2, steps 1 and 2: reinstall from the branch (run 2026-11-24, owner-approved)
+
+The owner approved reinstalling the live service from this branch before merge. The run built `feature/27a-run-can-run-the-checks-it-may-run` at `04f48f1d` (`cd kernel && npm ci && npm run build`) and ran `node dist/cli/index.js service install` from the owner's shell, whose first `npm` and `node` are `~/.nvm/versions/node/v24.11.1/bin`. Before the reinstall the plist's `PATH` was `/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`, the one session 266 had.
+
+Step 1, the install line. There is no `warning: npm …` or `warning: node …` line. The one warning is the existing note that `node` lives under `~/.nvm`.
+
+```
+$ node dist/cli/index.js service install
+studio service: warning: node /Users/vikashruhil/.nvm/versions/node/v24.11.1/bin/node is under ~/.nvm; the agent stops working if that Node version is removed (then run service install again with another node)
+studio: service com.loomwright.studio.kernel installed and loaded: kernel 0.0.0 (pid 25945) running from /Users/vikashruhil/.loomwright-studio/app/0.0.0 (/Users/vikashruhil/Library/LaunchAgents/com.loomwright.studio.kernel.plist); its runs use gh /opt/homebrew/bin/gh, git /opt/homebrew/bin/git, npm /Users/vikashruhil/.nvm/versions/node/v24.11.1/bin/npm, node /Users/vikashruhil/.nvm/versions/node/v24.11.1/bin/node
+```
+
+Step 2, the plist's `PATH`, then the `PATH` launchd handed to the running kernel process. It holds npm's and node's dir and no other installer entry.
+
+```
+$ plutil -extract EnvironmentVariables.PATH raw ~/Library/LaunchAgents/com.loomwright.studio.kernel.plist
+/opt/homebrew/bin:/Users/vikashruhil/.nvm/versions/node/v24.11.1/bin:/usr/bin:/bin:/usr/sbin:/sbin
+$ ps eww -p 25945 -o command= | tr ' ' '\n' | grep '^PATH='
+PATH=/opt/homebrew/bin:/Users/vikashruhil/.nvm/versions/node/v24.11.1/bin:/usr/bin:/bin:/usr/sbin:/sbin
+$ env -i PATH="/opt/homebrew/bin:/Users/vikashruhil/.nvm/versions/node/v24.11.1/bin:/usr/bin:/bin:/usr/sbin:/sbin" npm --version
+11.6.2
+```
+
+Step 3 is not run here: a kernel-started session running `npm test` (an `allow` `tool_decision`, a passing result, `unrunnable_count: 0`). It is phase 8 walk step 1, which is re-walked after 27b also lands, so no verdict is claimed for Validation 2 as a whole.
