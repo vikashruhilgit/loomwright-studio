@@ -89,7 +89,9 @@
 // declares on its base branch (`declaredChecks`, `./declared-checks.ts`), read at each launch or continuation from the
 // base commit current then through the checkout's committed reads (`committedReads`,
 // `loomwright/run-state-checkout.ts`), never the working tree. The session gate admits exactly those command lines
-// (`declared_check`); the merge kinds get none. Each start appends one `run_declared_checks` event for the run session.
+// (`declared_check`); the merge kinds get none. Each start appends one `run_declared_checks` event for the run session,
+// which also names each admitted check whose executable the kernel's own PATH (the env every run session inherits)
+// cannot find (`unrunnable`, phase 8 item 27a): the check stays admitted, the owner reads the gap before the run hits it.
 //
 // This module starts no process and merges nothing. Its one GitHub call is a
 // read: a `review_pr` run whose payload names the owner's comment reads that one
@@ -119,7 +121,7 @@ import type { SessionHandle, ToolPolicy } from "../sessions/types.js";
 import { isRunId, pausedRuns, readRunState, resumeWouldDoubleDrain, summarizeRuns } from "./run-state.js";
 import { deadLockOf, releaseKernelLock } from "../loomwright/run-lock.js";
 import { committedReads } from "../loomwright/run-state-checkout.js";
-import { declaredCheckWords, readDeclaredChecks } from "./declared-checks.js";
+import { declaredCheckWords, readDeclaredChecks, unrunnableDeclaredChecks } from "./declared-checks.js";
 import type { DeclaredChecksRead } from "./declared-checks.js";
 import { automateInvocation } from "./tickets-to-items.js";
 import { commentUrlOf, fixCommentPrompt, identityOf, isFixCommentKind, readOwnerComment } from "./owner-comment.js";
@@ -802,7 +804,8 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
     if (continuation !== undefined && err instanceof SessionError && err.code === "not_resumable") return skip(`continue_session_refused: ${err.message}`);
     throw err;
   }
-  if (declared !== undefined) recordDeclaredChecks(store, handle.id, caller.task_id ?? null, run, checkout, declared);
+  // 27a: the run session inherits the kernel's env (the manager sets no PATH of its own), so the kernel's PATH is the run's.
+  if (declared !== undefined) recordDeclaredChecks(store, handle.id, caller.task_id ?? null, run, checkout, declared, process.env.PATH);
   return { session_id: handle.id, ...(releasedLockOf === undefined ? {} : { released_lock_of: releasedLockOf }), ...(comment === undefined ? {} : { comment }) };
 }
 
@@ -815,17 +818,19 @@ function defaultBranchOf(store: Store, repo: string): string | null {
   return typeof branch === "string" && branch !== "" ? branch : null;
 }
 
-/** The most admitted checks and skipped lines one `run_declared_checks` event lists (the counts are always whole). */
+/** The most admitted checks, skipped lines and unrunnable checks one `run_declared_checks` event lists (the counts are always whole). */
 const MAX_EVENT_DECLARATIONS = 100;
 
 /**
  * Appends the run session's ONE `run_declared_checks` event (25d): the repo, the checkout, the base ref and commit
  * (or `null` and the reason), the admitted checks (command text and source) and the skipped lines (text, source and
- * reason). It never throws: the session has started, so a failed append is swallowed and the step still stores the
+ * reason), and the admitted checks whose executable `runPath` cannot find (command, executable and the owner's line,
+ * 27a). It never throws: the session has started, so a failed append is swallowed and the step still stores the
  * session's id.
  */
-function recordDeclaredChecks(store: Store, sessionId: number, taskId: number | null, run: Run, checkout: string, read: DeclaredChecksRead): void {
+function recordDeclaredChecks(store: Store, sessionId: number, taskId: number | null, run: Run, checkout: string, read: DeclaredChecksRead, runPath: string | undefined): void {
   try {
+    const unrunnable = unrunnableDeclaredChecks(read, runPath);
     appendEvent(
       store,
       "run_declared_checks",
@@ -841,6 +846,8 @@ function recordDeclaredChecks(store: Store, sessionId: number, taskId: number | 
         admitted_count: read.admitted.length,
         skipped: read.skipped.slice(0, MAX_EVENT_DECLARATIONS).map((s) => ({ text: s.text, source: s.source, reason: s.reason })),
         skipped_count: read.skipped.length,
+        unrunnable: unrunnable.slice(0, MAX_EVENT_DECLARATIONS).map((u) => ({ command: u.command, executable: u.executable, line: u.line })),
+        unrunnable_count: unrunnable.length,
       },
       new Date().toISOString(),
     );

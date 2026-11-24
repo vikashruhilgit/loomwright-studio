@@ -22,8 +22,15 @@
 // exact ref with replace objects off, and what can still move it is listed in `docs/architecture/automate.md` ("What
 // can still move the base"). Re-reading the base at each launch is the brief's design; pinning it is the owner's call.
 //
-// This module starts no process and reads no file itself: its git reads are `committedReads`
-// (`loomwright/run-state-checkout.ts`, the kernel's one git caller for a run checkout), passed in.
+// Runnable (phase 8 item 27a): a declared check stays admitted whatever the run's PATH holds (the policy above is the
+// only input to the grant), but `unrunnableDeclaredChecks` names each one whose executable the run's PATH cannot find,
+// so the launch's `run_declared_checks` event says so before the run spends tokens finding out.
+//
+// This module starts no process and reads no repo file itself: its git reads are `committedReads`
+// (`loomwright/run-state-checkout.ts`, the kernel's one git caller for a run checkout), passed in. Its one filesystem
+// touch is `unrunnableDeclaredChecks`' default probe, which stats candidate files in the run PATH's dirs.
+import { accessSync, constants, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { clip } from "../loop/internal.js";
 import { parseBashCommand } from "../sessions/shell-words.js";
 import type { CommittedFile, CommittedReads } from "../loomwright/run-state-checkout.js";
@@ -315,6 +322,64 @@ function scalarOf(rest: string): { readonly kind: "scalar"; readonly text: strin
 function trailerOk(after: string): boolean {
   const t = after.trim();
   return t === "" || (t.startsWith("#") && /^\s/.test(after));
+}
+
+/** One admitted check the run's PATH cannot run (27a): its command, the executable not found, and the line the owner reads. */
+export interface UnrunnableCheck {
+  readonly command: string;
+  readonly executable: string;
+  /** `<command> is declared but <executable> is not on the run's PATH`. */
+  readonly line: string;
+}
+
+/** Whether `path` is an executable regular file (a dir, a non-executable file or a missing path is not). Never throws. */
+function isExecutableRegularFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The admitted checks whose executable is not on `runPath` (27a), one per distinct command line, in admitted order.
+ * The executable is the check's first word when that word holds no `/` (a word with a `/` is a path, never looked up,
+ * so never named here); it is found when some absolute, non-`..` PATH entry holds it as an executable regular file
+ * (`isExecutable`, the default stats the file). An `npm …` check whose `npm` is found is also named when `node`, which
+ * npm runs on, is not. Mechanism only: the policy is untouched and the check stays admitted. Never throws.
+ */
+export function unrunnableDeclaredChecks(read: DeclaredChecksRead, runPath: string | undefined, isExecutable: (path: string) => boolean = isExecutableRegularFile): readonly UnrunnableCheck[] {
+  const dirs = (runPath ?? "").split(":").filter((dir) => isAbsolute(dir) && !dir.split("/").includes(".."));
+  const known = new Map<string, boolean>();
+  const onPath = (name: string): boolean => {
+    let found = known.get(name);
+    if (found === undefined) {
+      found = dirs.some((dir) => {
+        try {
+          return isExecutable(join(dir, name));
+        } catch {
+          return false;
+        }
+      });
+      known.set(name, found);
+    }
+    return found;
+  };
+  const out: UnrunnableCheck[] = [];
+  const seen = new Set<string>();
+  for (const check of read.admitted) {
+    if (seen.has(check.command)) continue;
+    seen.add(check.command);
+    const first = check.words[0];
+    if (first === undefined || first === "" || first.includes("/")) continue;
+    const missing = !onPath(first) ? first : first === "npm" && !onPath("node") ? "node" : undefined;
+    if (missing === undefined) continue;
+    const executable = clip(missing, MAX_TEXT);
+    out.push({ command: check.command, executable, line: `${check.command} is declared but ${executable} is not on the run's PATH` });
+  }
+  return Object.freeze(out);
 }
 
 /** The admitted checks' word lists, one per distinct command line (what `ToolPolicy.declaredChecks` holds). */

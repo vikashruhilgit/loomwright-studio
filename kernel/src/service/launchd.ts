@@ -11,12 +11,14 @@
 // `PATH` (phase 8 item 23h): every session the kernel starts inherits the
 // kernel's environment, and launchd's PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
 // holds no Homebrew `gh`, so a kernel-started Loomwright run parked at its
-// first GitHub step. Install resolves `SERVICE_TOOLS` (`gh`, `git`) through the
-// installing shell's PATH, the one the owner uses, and writes the dirs they
-// were found in (in that PATH's order) followed by launchd's default. It never
-// copies the installer's PATH: only the dirs holding those tools, so each
-// resolves in a session to the same file it does in the owner's shell. Install
-// prints what it found; a tool it can't find is a warning, not a refusal.
+// first GitHub step. Install resolves `SERVICE_TOOLS` (`gh`, `git`) and
+// `RUN_CHECK_TOOLS` (`npm`, `node`: item 27a, so a run can run the `npm test` its
+// declared checks admit) through the installing shell's PATH, the one the owner
+// uses, and writes the dirs they were found in (in that PATH's order) followed by
+// launchd's default. It never copies the installer's PATH: only the dirs holding
+// those tools, so each resolves in a session to the same file it does in the
+// owner's shell. Install prints what it found; a tool it can't find is a warning,
+// not a refusal.
 //
 // One data dir: `STUDIO_DATA_DIR` in the plist is always the same absolute
 // dir its logs go under, so the daemon resolves exactly the dir the installing
@@ -142,11 +144,21 @@ export const LAUNCHD_DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 export const SERVICE_TOOLS = ["gh", "git"] as const;
 export type ServiceTool = (typeof SERVICE_TOOLS)[number];
 
+/**
+ * The tools a run's declared checks (25d) need on its PATH (27a): `npm` for `npm test` / `npm run <name>`, and the
+ * `node` npm itself runs on. Resolved exactly as `SERVICE_TOOLS` are.
+ */
+export const RUN_CHECK_TOOLS = ["npm", "node"] as const;
+export type RunCheckTool = (typeof RUN_CHECK_TOOLS)[number];
+
+/** Every tool install resolves onto the plist's PATH: `SERVICE_TOOLS`, then `RUN_CHECK_TOOLS`. */
+export type ResolvedTool = ServiceTool | RunCheckTool;
+
 export interface ServiceToolPath {
-  /** The plist's PATH: the dirs holding `SERVICE_TOOLS` in the installer's PATH order, then `LAUNCHD_DEFAULT_PATH`, no dir twice. */
+  /** The plist's PATH: the dirs holding `SERVICE_TOOLS` and `RUN_CHECK_TOOLS` in the installer's PATH order, then `LAUNCHD_DEFAULT_PATH`, no dir twice. */
   readonly path: string;
   /** Where each tool was found (the PATH entry joined with its name, never a resolved symlink, so an upgrade keeps working), or `null`. */
-  readonly found: Readonly<Record<ServiceTool, string | null>>;
+  readonly found: Readonly<Record<ResolvedTool, string | null>>;
 }
 
 function isExecutableFile(path: string): boolean {
@@ -171,9 +183,9 @@ export function resolveServiceToolPath(installerPath: string | undefined): Servi
   const entries = (installerPath ?? "")
     .split(":")
     .filter((dir) => isAbsolute(dir) && !dir.split("/").includes("..") && !/[\r\n\0]/.test(dir));
-  const found = {} as Record<ServiceTool, string | null>;
+  const found = {} as Record<ResolvedTool, string | null>;
   const at = new Set<number>();
-  for (const tool of SERVICE_TOOLS) {
+  for (const tool of [...SERVICE_TOOLS, ...RUN_CHECK_TOOLS]) {
     const index = entries.findIndex((dir) => isExecutableFile(join(dir, tool)));
     found[tool] = index < 0 ? null : join(entries[index] as string, tool);
     if (index >= 0) at.add(index);
@@ -186,6 +198,17 @@ export function resolveServiceToolPath(installerPath: string | undefined): Servi
 /** One warning line for a tool install did not find, naming what a run then can't do. */
 export function serviceToolWarning(tool: ServiceTool): string {
   return `studio service: warning: ${tool} is not on this shell's PATH, so a run Studio starts can't use it (Loomwright's GitHub steps park); install it, then run service install again`;
+}
+
+/** The declared checks a run can't run without each of `RUN_CHECK_TOOLS` (27a). */
+const RUN_CHECK_TOOL_USES: Readonly<Record<RunCheckTool, string>> = Object.freeze({
+  npm: "npm test, npm run <name>",
+  node: "node <file>, and every npm check, since npm runs on node",
+});
+
+/** One warning line for a run-check tool install did not find (27a), naming the declared checks a run then can't run. */
+export function runCheckToolWarning(tool: RunCheckTool): string {
+  return `studio service: warning: ${tool} is not on this shell's PATH, so a run Studio starts can't run a declared check that uses it (${RUN_CHECK_TOOL_USES[tool]}); install it, then run service install again`;
 }
 
 export interface PlistParams {
@@ -385,8 +408,8 @@ export interface InstallResult extends ServiceResult {
   readonly appDir: string;
   /** The copied kernel's `package.json` version. */
   readonly version: string;
-  /** Where install found each of `SERVICE_TOOLS`, or `null` (23h). */
-  readonly tools: Readonly<Record<ServiceTool, string | null>>;
+  /** Where install found each of `SERVICE_TOOLS` (23h) and `RUN_CHECK_TOOLS` (27a), or `null`. */
+  readonly tools: Readonly<Record<ResolvedTool, string | null>>;
   /** The plist's `PATH`, which every kernel-started session inherits. */
   readonly path: string;
 }
@@ -717,6 +740,7 @@ export function installService(options: ServiceOptions = {}, deps: ServiceDeps =
   const warning = versionManagerWarning(nodePath, r.homeDir);
   if (warning !== undefined) r.warn(warning);
   for (const tool of SERVICE_TOOLS) if (tools.found[tool] === null) r.warn(serviceToolWarning(tool));
+  for (const tool of RUN_CHECK_TOOLS) if (tools.found[tool] === null) r.warn(runCheckToolWarning(tool));
 
   copyKernelApp(sourceRoot, appRoot, version, r.copy);
   const logs = join(dataDir, "logs");
