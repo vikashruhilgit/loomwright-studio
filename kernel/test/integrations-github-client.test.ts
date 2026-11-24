@@ -84,7 +84,7 @@ function repos(from: number, count: number) {
   return Array.from({ length: count }, (_, i) => ({ full_name: `owner/repo-${from + i}`, private: (from + i) % 2 === 0, id: from + i }));
 }
 
-/** Every one of the nine read methods, called with plain arguments (the four writes are `WRITES`, below). */
+/** Every one of the ten read methods, called with plain arguments (the four writes are `WRITES`, below). */
 const METHODS: ReadonlyArray<readonly [keyof GitHubClient, (gh: GitHubClient) => Promise<GitHubResponse<unknown>>]> = [
   ["getTokenInfo", (gh) => gh.getTokenInfo()],
   ["listReachableRepos", (gh) => gh.listReachableRepos()],
@@ -95,6 +95,7 @@ const METHODS: ReadonlyArray<readonly [keyof GitHubClient, (gh: GitHubClient) =>
   ["listPullComments", (gh) => gh.listPullComments("o/r", 1)],
   ["listIssues", (gh) => gh.listIssues("o/r", {})],
   ["listOpenPullComments", (gh) => gh.listOpenPullComments("o/r")],
+  ["getPullComment", (gh) => gh.getPullComment("o/r", 1, "issue_comment", 11)],
 ];
 
 /** The four write methods, called with plain arguments. */
@@ -417,7 +418,7 @@ describe("rate limits (AC9)", () => {
 
   it("every answer carries x-ratelimit-* as rateLimit", async () => {
     const { gh } = client(() => json([]));
-    for (const [, call] of METHODS.filter(([m]) => m !== "getTokenInfo" && m !== "getPull" && m !== "getPullDiff")) {
+    for (const [, call] of METHODS.filter(([m]) => m !== "getTokenInfo" && m !== "getPull" && m !== "getPullDiff" && m !== "getPullComment")) {
       expect(await call(gh)).toMatchObject({ ok: true, rateLimit: RATE_LIMIT });
     }
   });
@@ -1414,6 +1415,147 @@ describe("listOpenPullComments", () => {
     const none = client(walk());
     expect(await none.gh.listOpenPullComments("o/../x")).toEqual({ ok: false, error: "unreachable", rateLimit: null });
     expect(none.calls).toEqual([]);
+  });
+});
+
+describe("getPullComment (phase 8 item 26a)", () => {
+  const API = "https://api.github.com/repos/o/r";
+  const issueComment = (over: Record<string, unknown> = {}) => ({
+    id: 11,
+    user: user("owner"),
+    body: "fix: rename ping to pong",
+    html_url: "https://github.com/o/r/pull/7#issuecomment-11",
+    issue_url: `${API}/issues/7`,
+    updated_at: "2026-11-23T10:00:00Z",
+    ...over,
+  });
+  const reviewComment = (over: Record<string, unknown> = {}) => ({
+    id: 21,
+    user: user("owner"),
+    body: "fix: this line",
+    path: "ping.js",
+    html_url: "https://github.com/o/r/pull/7#discussion_r21",
+    pull_request_url: `${API}/pulls/7`,
+    updated_at: "2026-11-23T10:05:00Z",
+    ...over,
+  });
+  const review = (over: Record<string, unknown> = {}) => ({
+    id: 31,
+    user: user("owner"),
+    body: "fix: and this",
+    state: "COMMENTED",
+    html_url: "https://github.com/o/r/pull/7#pullrequestreview-31",
+    pull_request_url: `${API}/pulls/7`,
+    submitted_at: "2026-11-23T10:10:00Z",
+    ...over,
+  });
+
+  it.each([
+    ["issue_comment", 11, "/repos/o/r/issues/comments/11", issueComment(), "fix: rename ping to pong", "https://github.com/o/r/pull/7#issuecomment-11", "2026-11-23T10:00:00Z"],
+    ["review_comment", 21, "/repos/o/r/pulls/comments/21", reviewComment(), "fix: this line", "https://github.com/o/r/pull/7#discussion_r21", "2026-11-23T10:05:00Z"],
+    // A review has no updated_at: its submitted_at stands in, as in the listing.
+    ["review", 31, "/repos/o/r/pulls/7/reviews/31", review(), "fix: and this", "https://github.com/o/r/pull/7#pullrequestreview-31", "2026-11-23T10:10:00Z"],
+  ] as const)("%s: one GET of its own path, mapped as the listing maps it", async (kind, id, path, answer, body, url, updated_at) => {
+    const { gh, calls } = client(() => json(answer));
+    expect(await gh.getPullComment("o/r", 7, kind, id)).toEqual({
+      ok: true,
+      data: { kind, id, pr: 7, author: "owner", body, url, updated_at },
+      rateLimit: RATE_LIMIT,
+    });
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual([path]);
+    expect(calls.every((c) => c.init.method === "GET" && c.init.body === undefined)).toBe(true);
+  });
+
+  it("the single read equals the listing's entry for the same comment", async () => {
+    const one = await client(() => json(issueComment())).gh.getPullComment("o/r", 7, "issue_comment", 11);
+    const listed = await client((url) => {
+      if (url.pathname === "/repos/o/r/pulls") return json([apiPull(7)]);
+      if (url.pathname === "/repos/o/r/issues/7/comments") return json([issueComment()]);
+      return json([]);
+    }).gh.listOpenPullComments("o/r");
+    expect(one.ok && one.data).toEqual(listed.ok && listed.data[0]);
+  });
+
+  it("a comment on another pull request is http_error 404, checked from GitHub's answer", async () => {
+    const other = client(() => json(issueComment({ issue_url: `${API}/issues/8` })));
+    expect(await other.gh.getPullComment("o/r", 7, "issue_comment", 11)).toEqual({ ok: false, error: "http_error", status: 404, rateLimit: RATE_LIMIT });
+    // A number that merely ends in the PR's digits is another pull request.
+    const suffix = client(() => json(issueComment({ issue_url: `${API}/issues/17` })));
+    expect(await suffix.gh.getPullComment("o/r", 7, "issue_comment", 11)).toMatchObject({ ok: false, error: "http_error", status: 404 });
+    const reviewOther = client(() => json(reviewComment({ pull_request_url: `${API}/pulls/8` })));
+    expect(await reviewOther.gh.getPullComment("o/r", 7, "review_comment", 21)).toMatchObject({ ok: false, error: "http_error", status: 404 });
+    // The same PR number in another repo is another pull request.
+    const otherRepo = client(() => json(issueComment({ issue_url: "https://api.github.com/repos/x/r/issues/7" })));
+    expect(await otherRepo.gh.getPullComment("o/r", 7, "issue_comment", 11)).toMatchObject({ ok: false, error: "http_error", status: 404 });
+    const reviewOtherRepo = client(() => json(reviewComment({ pull_request_url: "https://api.github.com/repos/o/rr/pulls/7" })));
+    expect(await reviewOtherRepo.gh.getPullComment("o/r", 7, "review_comment", 21)).toMatchObject({ ok: false, error: "http_error", status: 404 });
+  });
+
+  it("the repo in GitHub's answer is compared without case (GitHub answers its own casing of the name)", async () => {
+    const { gh } = client(() => json(issueComment({ issue_url: "https://api.github.com/repos/O/R/issues/7" })));
+    expect(await gh.getPullComment("o/r", 7, "issue_comment", 11)).toMatchObject({ ok: true, data: { id: 11, pr: 7 } });
+    const review = client(() => json(reviewComment()));
+    expect(await review.gh.getPullComment("O/R", 7, "review_comment", 21)).toMatchObject({ ok: true, data: { id: 21, pr: 7 } });
+  });
+
+  it("a pending review (no submitted_at) is http_error 404, never its body", async () => {
+    const { gh } = client(() => json(review({ submitted_at: null, state: "PENDING" })));
+    const res = await gh.getPullComment("o/r", 7, "review", 31);
+    expect(res).toEqual({ ok: false, error: "http_error", status: 404, rateLimit: RATE_LIMIT });
+    expect(JSON.stringify(res)).not.toContain("fix: and this");
+  });
+
+  it("GitHub's own failures are passed on as they came: 404, 500, a rate limit", async () => {
+    expect(await client(() => json({ message: "Not Found" }, 404)).gh.getPullComment("o/r", 7, "issue_comment", 11)).toEqual({
+      ok: false,
+      error: "http_error",
+      status: 404,
+      rateLimit: RATE_LIMIT,
+    });
+    expect(await client(() => json({ message: "boom" }, 500)).gh.getPullComment("o/r", 7, "review_comment", 21)).toMatchObject({ error: "http_error", status: 500 });
+    expect(await client(() => json({}, 403, { "x-ratelimit-remaining": "0" })).gh.getPullComment("o/r", 7, "review", 31)).toMatchObject({ error: "rate_limited" });
+  });
+
+  it("an answer off the documented shape is unreachable, never a throw", async () => {
+    for (const answer of [issueComment({ issue_url: undefined }), issueComment({ id: "11" }), issueComment({ html_url: 7 }), []]) {
+      expect(await client(() => json(answer)).gh.getPullComment("o/r", 7, "issue_comment", 11)).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+    }
+    expect(await client(() => json(reviewComment({ pull_request_url: null }))).gh.getPullComment("o/r", 7, "review_comment", 21)).toMatchObject({
+      error: "unreachable",
+    });
+  });
+
+  it.each([
+    ["a malformed repo", "o/../x", 7, "issue_comment", 11],
+    ["pull number zero", "o/r", 0, "issue_comment", 11],
+    ["a fractional pull number", "o/r", 7.5, "review", 31],
+    ["comment id zero", "o/r", 7, "review_comment", 0],
+    ["a negative comment id", "o/r", 7, "issue_comment", -11],
+    ["an unknown kind", "o/r", 7, "commit_comment", 11],
+  ])("%s is unreachable, and no request is made", async (_, repo, pr, kind, id) => {
+    const { gh, calls } = client(() => json(issueComment()));
+    expect(await gh.getPullComment(repo, pr, kind as "issue_comment", id)).toEqual({ ok: false, error: "unreachable", rateLimit: null });
+    expect(calls).toEqual([]);
+  });
+
+  it("FakeGitHubClient answers the same shape, matches pr, kind and id, and a test can edit or delete the comment", async () => {
+    const real = await client(() => json(issueComment())).gh.getPullComment("o/r", 7, "issue_comment", 11);
+    expect(real.ok).toBe(true);
+    const comment = real.ok ? real.data : undefined;
+    if (comment === undefined) throw new Error("unreachable");
+    const fake = new FakeGitHubClient({ rateLimit: RATE_LIMIT, prComments: { "o/r": [comment] } });
+    expect(await fake.getPullComment("o/r", 7, "issue_comment", 11)).toEqual(real);
+    // Another PR, another kind, another id: not on this PR.
+    for (const [pr, kind, id] of [[8, "issue_comment", 11], [7, "review_comment", 11], [7, "issue_comment", 12]] as const) {
+      expect(await fake.getPullComment("o/r", pr, kind, id)).toEqual({ ok: false, error: "http_error", status: 404, rateLimit: RATE_LIMIT });
+    }
+    fake.setPrComments("o/r", [{ ...comment, body: "fix: rename ping to pang" }]);
+    expect(await fake.getPullComment("o/r", 7, "issue_comment", 11)).toMatchObject({ ok: true, data: { body: "fix: rename ping to pang" } });
+    fake.setPrComments("o/r", []);
+    expect(await fake.getPullComment("o/r", 7, "issue_comment", 11)).toMatchObject({ ok: false, error: "http_error", status: 404 });
+    expect(fake.callsTo("getPullComment").map((c) => c.args)).toHaveLength(6);
+    const failing = new FakeGitHubClient({ prComments: { "o/r": [comment] }, failures: { getPullComment: { ok: false, error: "unreachable", rateLimit: null } } });
+    expect(await failing.getPullComment("o/r", 7, "issue_comment", 11)).toEqual({ ok: false, error: "unreachable", rateLimit: null });
   });
 });
 

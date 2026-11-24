@@ -21,7 +21,8 @@
 //   1. a crew session's kernel tool (for `resume`, the owner's route) queues ONE `message` event whose payload is
 //      `{agent, automate_run: KernelRunPayload}`: the kind, the repo, the
 //      checkout, the attribution and, per kind, the backlog path, the PR number
-//      or the run id. Nothing from a ticket, a comment or a PR is in it;
+//      (and, for a fix, at most one owner comment by kind, id and kernel-built URL)
+//      or the run id. No text from a ticket, a comment or a PR is in it;
 //   2. the brain's `message` handler routes a payload with `automate_run` here
 //      (`handleAutomateRun`), beside its `playbook` route (a plain message never
 //      carries the key); it routes on the key, never on the kind;
@@ -30,7 +31,10 @@
 //      from checked fields only: `/loomwright:automate --backlog <path>
 //      --inline-phases` (safe mode: no auto merge, no fan out); or
 //      `/loomwright:review-pr <url>` with the URL built from the repo and number
-//      (`pullUrlOf`); or the merge command with the run id and, only where
+//      (`pullUrlOf`), followed, when the payload names the owner's comment and
+//      the launch's own re-read finds it still the owner's, by the kernel's fixed
+//      instruction line and that comment's body wrapped as data and bounded
+//      (`./owner-comment.ts`, phase 8 item 26a); or the merge command with the run id and, only where
 //      `loomwrightMergeFlags` returns it for the repo at launch, the owner's
 //      recorded trust flag (never a flag from the payload). cwd the crew member's
 //      checkout, agent the crew member, playbook, version and task the calling
@@ -87,14 +91,19 @@
 // `loomwright/run-state-checkout.ts`), never the working tree. The session gate admits exactly those command lines
 // (`declared_check`); the merge kinds get none. Each start appends one `run_declared_checks` event for the run session.
 //
-// This module starts no process, calls no GitHub endpoint and merges nothing:
-// the only effect is one start call on the session manager the loop passes in, then the run's
+// This module starts no process and merges nothing. Its one GitHub call is a
+// read: a `review_pr` run whose payload names the owner's comment reads that one
+// comment through the loop's client (`EventContext.github`, never built here) in
+// the step, before the start call; its body goes into the prompt only wrapped as
+// data and bounded, and into nothing stored. Its only effect is one start call on
+// the session manager the loop passes in, then the run's
 // `run_declared_checks` event, which cannot fail the step. The `studio` CLI loads it
 // through the brain's handler, so it imports only types, the status helpers and
 // `SessionError` in `sessions/types.ts`, the loop's `internal.ts` leaf, node
 // `path`, the agent readers, the repo-policy module (`isRepoName`,
-// `loomwrightMergeFlags`, `getRepoPolicy`), the Loomwright checkout readers and this feature's files: never the Agent
-// SDK, the session manager or `kernel.ts`.
+// `loomwrightMergeFlags`, `getRepoPolicy`), the Loomwright checkout readers and this feature's files
+// (`./owner-comment.ts` among them, which brings the GitHub connector row and the brain's
+// `wrapUntrusted` and `cutChars`): never the Agent SDK, the session manager or `kernel.ts`.
 import { resolve, sep } from "node:path";
 import { getAgent } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
@@ -113,6 +122,8 @@ import { committedReads } from "../loomwright/run-state-checkout.js";
 import { declaredCheckWords, readDeclaredChecks } from "./declared-checks.js";
 import type { DeclaredChecksRead } from "./declared-checks.js";
 import { automateInvocation } from "./tickets-to-items.js";
+import { commentUrlOf, fixCommentPrompt, identityOf, isFixCommentKind, readOwnerComment } from "./owner-comment.js";
+import type { FixCommentOutcome, FixCommentRef } from "./owner-comment.js";
 
 // The payload key that marks a `message` event as a kernel-started Loomwright run (any kind); it lives in the
 // SQL-only leaf `./run-sessions.ts` so the approvals store can name it without importing this module.
@@ -145,10 +156,16 @@ export interface AutomateRunPayload extends RunAttribution {
   readonly backlog: string;
 }
 
-/** What `kernel_pr_route` queues for a fix: the PR by repo and number only (comment and PR text are never in it). */
+/**
+ * What `kernel_pr_route` queues for a fix: the PR by repo and number and, when the
+ * route found the owner's triaged comment (phase 8 item 26a), that comment by kind,
+ * id and kernel-built URL. Comment and PR text are never in it: the launch re-reads
+ * the comment (`./owner-comment.ts`).
+ */
 export interface ReviewPrRunPayload extends RunAttribution {
   readonly kind: "review_pr";
   readonly pr: number;
+  readonly comment?: FixCommentRef;
 }
 
 /** What `kernel_automate_merge_check` queues on `go`: the parked run's id (`isRunId`). No flag: the trust flag is read again at launch. */
@@ -437,10 +454,20 @@ interface Continuation {
 /** The longest decision text a continuation carries (the kernel writes it; a longer one is refused, never cut). */
 const CONTINUE_PROMPT_MAX = 8000;
 
+/**
+ * What became of a `review_pr` run's named comment at launch (26a): the comment, the
+ * outcome of the launch's own read (`carried`, `comment_gone`, `comment_not_owner` or
+ * `comment_unreadable`) and, when the body was over the bound, how many characters were cut.
+ */
+export interface LaunchCommentRecord extends FixCommentRef {
+  readonly outcome: FixCommentOutcome;
+  readonly cut_chars?: number;
+}
+
 /** What the `automate-run` step stores: the run session's id, or no session and why. */
 export type AutomateRunResult =
-  /** `released_lock_of`: the ended kernel session whose run lock the launch released first (D46). */
-  | { readonly session_id: number; readonly released_lock_of?: number }
+  /** `released_lock_of`: the ended kernel session whose run lock the launch released first (D46). `comment`: a `review_pr` run's named comment (26a). */
+  | { readonly session_id: number; readonly released_lock_of?: number; readonly comment?: LaunchCommentRecord }
   | { readonly session_id: null; readonly skipped: string };
 
 /** The event's `automate_run` payload, checked; a `TypeError` names what is wrong (the loop fails the event, one notify). */
@@ -480,9 +507,27 @@ function automateRunOf(eventId: number, payload: Readonly<Record<string, unknown
     return { kind, ...common, run_id: r.run_id };
   }
   if (!isPositiveId(r.pr)) throw bad("pr, a positive integer");
-  if (kind === "review_pr") return { kind, ...common, pr: r.pr };
+  if (kind === "review_pr") {
+    if (r.comment === undefined) return { kind, ...common, pr: r.pr };
+    return { kind, ...common, pr: r.pr, comment: commentRefOf(r.comment, r.repo, r.pr, bad) };
+  }
   if (!isRunId(r.run_id)) throw bad("run_id, a Loomwright run id");
   return { kind: "merge_parked", ...common, pr: r.pr, run_id: r.run_id };
+}
+
+/**
+ * A `review_pr` payload's `comment`, checked: exactly `kind` (one of the comment
+ * kinds), `id` (a positive integer) and `url` (the URL the kernel builds from the
+ * repo, number, kind and id). Anything else, a body among them, is malformed.
+ */
+function commentRefOf(raw: unknown, repo: string, pr: number, bad: (what: string) => TypeError): FixCommentRef {
+  const what = "comment, absent or exactly {kind, id, url} naming a comment on the pull request";
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw bad(what);
+  const c = raw as Record<string, unknown>;
+  if (Object.keys(c).some((k) => k !== "kind" && k !== "id" && k !== "url")) throw bad(what);
+  if (!isFixCommentKind(c.kind) || !isPositiveId(c.id)) throw bad(what);
+  if (c.url !== commentUrlOf(pullUrlOf(repo, pr), c.kind, c.id)) throw bad(what);
+  return { kind: c.kind, id: c.id, url: c.url };
 }
 
 /** The prompt a `resume` run starts with: `/loomwright:automate --resume <run_id> --inline-phases`, and nothing else (safe mode). */
@@ -530,7 +575,9 @@ function liveRunSession(store: EventContext["store"], sessions: EventSessions, a
  * trust flag in the prompt ⇔ `MERGE_PARKED_TRUSTED_RUN_POLICY`. Only checked fields go in:
  * the backlog path (inside the checkout), the repo and number, the run id, and the
  * repo's merge flags read from the store now (`loomwrightMergeFlags`), never from
- * the payload. Comment, PR and ticket text are in none of them (invariant 3).
+ * the payload. Comment, PR and ticket text are in none of them (invariant 3): a
+ * fix's owner comment is added after this, from the launch's own read, wrapped as
+ * data (`startRun`, 26a).
  */
 function promptOf(store: EventContext["store"], run: Run, checkout: string): { readonly prompt: string; readonly policy: ToolPolicy } | { readonly skipped: string } {
   switch (run.kind) {
@@ -616,8 +663,8 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   const built = promptOf(store, run, checkout);
   if ("skipped" in built) return skip(built.skipped);
   const { policy: runPolicy } = built;
-  // A continuation keeps its launch kind's policy (and a merge's run-id pin) and says only the owner's decision.
-  const prompt = continuation?.prompt ?? built.prompt;
+  // A continuation keeps its launch kind's policy (and a merge's run-id pin) and says only the owner's decision: its
+  // prompt is set below, with a fix's comment (26a), just before the start.
 
   // 23o: the session to continue is this crew member's, in this checkout, and has ended (a live one can repeat the
   // held call itself: a `once` grant matches its next identical call). One the kernel's own restart ended is
@@ -687,6 +734,23 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
   const live = liveRunSession(store, sessions, run.agent, checkout, resumeInterrupted ? continuation?.session : undefined);
   if (live !== undefined) return skip(`run_session_live: session ${live}`);
 
+  // 26a: a fix naming the owner's comment re-reads it now through the loop's client (it may have been edited or
+  // deleted since the route) and re-checks its author; only the owner's own is carried, as data, into the prompt.
+  // Any other outcome launches the plain command. A continuation keeps its own prompt and reads nothing.
+  let prompt = continuation?.prompt ?? built.prompt;
+  let comment: LaunchCommentRecord | undefined;
+  if (run.kind === "review_pr" && run.comment !== undefined && continuation === undefined) {
+    const ref = run.comment;
+    const read = await readOwnerComment(ctx.github, identityOf(store), { repo: run.repo, pr: run.pr, kind: ref.kind, id: ref.id }, "comment_gone");
+    if (read.outcome === "carried") {
+      const carried = fixCommentPrompt(built.prompt, { url: ref.url, body: read.comment.body });
+      prompt = carried.prompt;
+      comment = { ...ref, outcome: "carried", ...(carried.cut_chars > 0 ? { cut_chars: carried.cut_chars } : {}) };
+    } else {
+      comment = { ...ref, outcome: read.outcome };
+    }
+  }
+
   // 23t: the repo's required checks, which the session's down-scoped token can't read from branch protection, handed to
   // the run's drain through the checkout's own Loomwright config (`required-checks.ts`, which records the outcome). It
   // runs before admission: a launch refused below leaves the current detected list, which the next launch writes anyway
@@ -739,7 +803,7 @@ async function startRun(ctx: EventContext, run: Run, continuation?: Continuation
     throw err;
   }
   if (declared !== undefined) recordDeclaredChecks(store, handle.id, caller.task_id ?? null, run, checkout, declared);
-  return releasedLockOf === undefined ? { session_id: handle.id } : { session_id: handle.id, released_lock_of: releasedLockOf };
+  return { session_id: handle.id, ...(releasedLockOf === undefined ? {} : { released_lock_of: releasedLockOf }), ...(comment === undefined ? {} : { comment }) };
 }
 
 /** The run kinds whose policy carries the repo's declared checks (25d): never a merge. */

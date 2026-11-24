@@ -334,7 +334,8 @@ export interface GitHubCommentResult {
  * permissions and the repos it reaches (phase 6 item 03), open pulls by repo
  * and filter (item 04), a pull's detail, diff, files and comments (item 06),
  * and the issue and the open-PR comment listings the `github.issues` and
- * `github.pr_comments` poll sources read (phase 8 item 05). The writes (the
+ * `github.pr_comments` poll sources read (phase 8 item 05), and one PR comment
+ * by kind and id (phase 8 item 26a). The writes (the
  * last four, phase 8 item 05) are sent only with a GitHub App installation
  * credential: with the owner's token (PAT) they send nothing and answer
  * `unreachable` (the token path stays read-only). Every response carries the
@@ -354,6 +355,14 @@ export interface GitHubClient {
   listIssues(repo: string, filters: GitHubIssueFilters): Promise<GitHubResponse<readonly GitHubIssueSummary[]>>;
   /** For every open pull request: its conversation comments, its review comments and its reviews. */
   listOpenPullComments(repo: string): Promise<GitHubResponse<readonly GitHubPrComment[]>>;
+  /**
+   * One comment or review of kind `kind` and id `id` on pull request `pr`, read
+   * fresh, mapped as `listOpenPullComments` maps it. A comment GitHub cannot
+   * find, one on another pull request, and a pending review (no `submitted_at`)
+   * all answer `http_error` 404: the comment is not on this pull request. Any
+   * other failure is passed on as it came. Phase 8 item 26a.
+   */
+  getPullComment(repo: string, pr: number, kind: GitHubPrComment["kind"], id: number): Promise<GitHubResponse<GitHubPrComment>>;
   /** Write: reply in a review comment's thread. App credential only. */
   replyToReviewComment(repo: string, pull: number, commentId: number, body: string): Promise<GitHubResponse<GitHubCommentResult>>;
   /** Write: a conversation comment on a pull request. App credential only. */

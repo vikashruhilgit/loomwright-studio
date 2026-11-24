@@ -108,6 +108,8 @@ export interface EventContext {
   runStepAsync<T>(name: string, fn: () => Promise<T>, opts?: StepOptions): Promise<T>;
   /** `EventLoopOptions.sessions`, or `undefined` when the loop was built without it. */
   readonly sessions?: EventSessions;
+  /** `EventLoopOptions.github`, when the loop was given it: the client a handler reads GitHub through (the `review_pr` launch's fresh comment read). */
+  readonly github?: GitHubClient;
 }
 
 /**
@@ -203,7 +205,10 @@ export interface EventLoopOptions {
   readonly sessions?: EventSessions;
   /** Passed to every due-work call as `DueWorkContext.loomwright`. Default none. */
   readonly loomwright?: LoomwrightInstallSettings;
-  /** Passed to every due-work call as `DueWorkContext.github`. Default none (a due poll then records `connector_missing`). */
+  /**
+   * Passed to every due-work call as `DueWorkContext.github` and to every handler as `EventContext.github`. Default none
+   * (a due poll then records `connector_missing`).
+   */
   readonly github?: GitHubClient;
 }
 
