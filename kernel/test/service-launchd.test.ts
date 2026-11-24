@@ -34,7 +34,9 @@ import {
   productionModules,
   removeOldKernelApps,
   renderPlist,
+  RUN_CHECK_TOOLS,
   resolveServiceToolPath,
+  runCheckToolWarning,
   serviceToolWarning,
   uninstallService,
   verifyServiceStart,
@@ -314,11 +316,11 @@ describe("renderPlist", () => {
   });
 });
 
-/** A dir holding an executable `gh` and `git`: an installer PATH on which both resolve. */
+/** A dir holding an executable `gh`, `git`, `npm` and `node` (27a): an installer PATH on which all four resolve. */
 function toolsBin(): string {
   const dir = join(tmp, "tools-bin");
   mkdirSync(dir, { recursive: true });
-  for (const tool of ["gh", "git"]) {
+  for (const tool of ["gh", "git", "npm", "node"]) {
     writeFileSync(join(dir, tool), "#!/bin/sh\n");
     chmodSync(join(dir, tool), 0o755);
   }
@@ -338,9 +340,10 @@ describe("resolveServiceToolPath (23h)", () => {
 
   it("keeps only the dirs holding gh and git, in the installer's order, then launchd's default", () => {
     const brew = binDir("brew", { gh: 0o755, git: 0o755, python3: 0o755 });
-    const other = binDir("other", { node: 0o755 });
+    // A tool in neither SERVICE_TOOLS nor RUN_CHECK_TOOLS: its dir must not leak.
+    const other = binDir("other", { python3: 0o755 });
     const r = resolveServiceToolPath(`${other}:${brew}:/usr/bin:/bin`);
-    expect(r.found).toEqual({ gh: join(brew, "gh"), git: join(brew, "git") });
+    expect(r.found).toEqual({ gh: join(brew, "gh"), git: join(brew, "git"), npm: null, node: null });
     expect(r.path).toBe(`${brew}:${LAUNCHD_DEFAULT_PATH}`);
     expect(r.path).not.toContain(other);
   });
@@ -367,6 +370,32 @@ describe("resolveServiceToolPath (23h)", () => {
     expect(r.path).not.toContain(tmp);
   });
 
+  it("27a: npm and node under an nvm-style dir are put on the PATH in the installer's order, and found names them; nothing else leaks", () => {
+    expect(RUN_CHECK_TOOLS).toEqual(["npm", "node"]);
+    const nvm = binDir(join("home", ".nvm", "versions", "node", "v22.14.0", "bin"), { npm: 0o755, node: 0o755, npx: 0o755 });
+    const brew = binDir("brew", { gh: 0o755, git: 0o755 });
+    const unrelated = binDir("unrelated", { python3: 0o755 });
+    const r = resolveServiceToolPath(`${unrelated}:${nvm}:/nowhere:${brew}:/usr/bin`);
+    expect(r.found).toEqual({ gh: join(brew, "gh"), git: join(brew, "git"), npm: join(nvm, "npm"), node: join(nvm, "node") });
+    expect(r.path).toBe(`${nvm}:${brew}:${LAUNCHD_DEFAULT_PATH}`);
+    expect(r.path).not.toContain(unrelated);
+    expect(r.path).not.toContain("/nowhere");
+    // A dir already in launchd's default is not written twice.
+    expect(r.path.split(":").filter((d) => d === "/usr/bin")).toHaveLength(1);
+  });
+
+  it("27a: npm and node in different dirs each put their own dir on the PATH, and each resolves there to the installer's file", () => {
+    const npmOnly = binDir("npm-only", { npm: 0o755 });
+    const nodes = binDir("nodes", { node: 0o755, npm: 0o755 });
+    const installer = `${npmOnly}:${nodes}`;
+    const r = resolveServiceToolPath(installer);
+    expect(r.found).toEqual({ gh: null, git: null, npm: join(npmOnly, "npm"), node: join(nodes, "node") });
+    expect(r.path).toBe(`${npmOnly}:${nodes}:${LAUNCHD_DEFAULT_PATH}`);
+    for (const tool of RUN_CHECK_TOOLS) {
+      expect(resolveServiceToolPath(r.path).found[tool]).toBe(resolveServiceToolPath(installer).found[tool]);
+    }
+  });
+
   it("a tool found nowhere (or no PATH at all) leaves launchd's default alone", () => {
     expect(resolveServiceToolPath(undefined).path).toBe(LAUNCHD_DEFAULT_PATH);
     // A tool found in a default dir adds nothing twice.
@@ -387,7 +416,7 @@ describe("installService", () => {
       dataDir,
       appDir: join(dataDir, "app", VERSION),
       version: VERSION,
-      tools: { gh: null, git: null },
+      tools: { gh: null, git: null, npm: null, node: null },
       path: LAUNCHD_DEFAULT_PATH,
     });
     expect(readdirSync(agents).sort()).toEqual([SIBLING, `${SERVICE_LABEL}.plist`].sort());
@@ -409,7 +438,7 @@ describe("installService", () => {
     const l = launchctl();
     const bin = toolsBin();
     const result = installService({ dataDir, sourceRoot, env: { PATH: `/nowhere:${bin}:/usr/bin` } }, l.deps);
-    expect(result.tools).toEqual({ gh: join(bin, "gh"), git: join(bin, "git") });
+    expect(result.tools).toEqual({ gh: join(bin, "gh"), git: join(bin, "git"), npm: join(bin, "npm"), node: join(bin, "node") });
     expect(result.path).toBe(`${bin}:${LAUNCHD_DEFAULT_PATH}`);
     expect(plistString(readFileSync(plistPath(homeDir), "utf8"), "PATH")).toBe(result.path);
     expect(l.warnings).toEqual([]);
@@ -418,8 +447,33 @@ describe("installService", () => {
   it("23h: a tool not on the installer's PATH is one warning line each, and the install goes on", () => {
     const l = launchctl();
     const result = installService({ dataDir, sourceRoot, env: {} }, l.deps);
-    expect(l.warnings).toEqual([serviceToolWarning("gh"), serviceToolWarning("git")]);
+    expect(l.warnings).toEqual([serviceToolWarning("gh"), serviceToolWarning("git"), runCheckToolWarning("npm"), runCheckToolWarning("node")]);
     expect(result.path).toBe(LAUNCHD_DEFAULT_PATH);
+    expect(l.verbs()).toContain("bootstrap");
+  });
+
+  it("27a: npm or node not on the installer's PATH is one warning line each naming the declared checks a run can't run, and the install goes on", () => {
+    expect(runCheckToolWarning("npm")).toBe(
+      "studio service: warning: npm is not on this shell's PATH, so a run Studio starts can't run a declared check that uses it (npm test, npm run <name>); install it, then run service install again",
+    );
+    expect(runCheckToolWarning("node")).toBe(
+      "studio service: warning: node is not on this shell's PATH, so a run Studio starts can't run a declared check that uses it (node <file>, and every npm check, since npm runs on node); install it, then run service install again",
+    );
+    // 23h's text is unchanged.
+    expect(serviceToolWarning("gh")).toBe(
+      "studio service: warning: gh is not on this shell's PATH, so a run Studio starts can't use it (Loomwright's GitHub steps park); install it, then run service install again",
+    );
+    const bin = join(tmp, "no-node");
+    mkdirSync(bin, { recursive: true });
+    for (const tool of ["gh", "git", "npm"]) {
+      writeFileSync(join(bin, tool), "#!/bin/sh\n");
+      chmodSync(join(bin, tool), 0o755);
+    }
+    const l = launchctl();
+    const result = installService({ dataDir, sourceRoot, env: { PATH: bin } }, l.deps);
+    expect(l.warnings).toEqual([runCheckToolWarning("node")]);
+    expect(result.tools).toEqual({ gh: join(bin, "gh"), git: join(bin, "git"), npm: join(bin, "npm"), node: null });
+    expect(result.path).toBe(`${bin}:${LAUNCHD_DEFAULT_PATH}`);
     expect(l.verbs()).toContain("bootstrap");
   });
 

@@ -15,7 +15,7 @@ import type { ApiServer, StatusBody } from "../src/api/index.js";
 import type { KeychainReader } from "../src/auth/index.js";
 import { CLI_TIMEOUT_MS, STOP_ALL_TIMEOUT_MS, USAGE, formatStatus, readlineConfirm, runCli, summarizeStopAll } from "../src/cli/index.js";
 import type { CliDeps } from "../src/cli/index.js";
-import { SERVICE_LABEL, plistPath } from "../src/service/index.js";
+import { SERVICE_LABEL, plistPath, runCheckToolWarning, serviceToolWarning } from "../src/service/index.js";
 import type { ServiceDeps } from "../src/service/index.js";
 import { engagePause, isPaused } from "../src/console/pause.js";
 import { Store } from "../src/store/index.js";
@@ -537,11 +537,11 @@ describe("studio service (item 09, AC1; H07)", () => {
     writeFileSync(join(dir, "api.json"), JSON.stringify({ port: server.port, host: "127.0.0.1", pid: SERVICE_PID, started_at: NOW.toISOString() }));
   }
 
-  /** 23h: a dir holding an executable `gh` and `git`, the installer PATH every install test runs with unless it says otherwise. */
+  /** 23h, 27a: a dir holding an executable `gh`, `git`, `npm` and `node`, the installer PATH every install test runs with unless it says otherwise. */
   function toolsBin(): string {
     const dir = join(tmp, "tools-bin");
     mkdirSync(dir, { recursive: true });
-    for (const tool of ["gh", "git"]) {
+    for (const tool of ["gh", "git", "npm", "node"]) {
       writeFileSync(join(dir, tool), "#!/bin/sh\n");
       chmodSync(join(dir, tool), 0o755);
     }
@@ -564,7 +564,7 @@ describe("studio service (item 09, AC1; H07)", () => {
     oneLine(c.stdout.text());
     const appDir = join(c.serviceData, "app", VERSION);
     expect(c.stdout.text()).toBe(
-      `studio: service ${SERVICE_LABEL} installed and loaded: kernel ${kernelVersion()} (pid ${SERVICE_PID}) running from ${appDir} (${plistPath(c.homeDir)}); its runs use gh ${join(tmp, "tools-bin", "gh")}, git ${join(tmp, "tools-bin", "git")}\n`,
+      `studio: service ${SERVICE_LABEL} installed and loaded: kernel ${kernelVersion()} (pid ${SERVICE_PID}) running from ${appDir} (${plistPath(c.homeDir)}); its runs use gh ${join(tmp, "tools-bin", "gh")}, git ${join(tmp, "tools-bin", "git")}, npm ${join(tmp, "tools-bin", "npm")}, node ${join(tmp, "tools-bin", "node")}\n`,
     );
     expect(existsSync(plistPath(c.homeDir))).toBe(true);
     expect(existsSync(join(appDir, "dist", "daemon.js"))).toBe(true);
@@ -646,17 +646,18 @@ describe("studio service (item 09, AC1; H07)", () => {
     expect(existsSync(protectedDir)).toBe(false);
   });
 
-  it("23h: no gh on the installer's PATH: one warning line on stderr, the install goes on, and its line says gh was not found", async () => {
+  it("23h, 27a: only git on the installer's PATH: one warning line each for gh, npm and node, the install goes on, and its line says they were not found", async () => {
     const bin = join(tmp, "git-only");
     mkdirSync(bin, { recursive: true });
     writeFileSync(join(bin, "git"), "#!/bin/sh\n");
     chmodSync(join(bin, "git"), 0o755);
     const c = serviceCli({ env: { PATH: bin } });
     expect(await c.run("service", "install")).toBe(0);
-    oneLine(c.stderr.text());
+    expect(c.stderr.text()).toBe(`${serviceToolWarning("gh")}\n${runCheckToolWarning("npm")}\n${runCheckToolWarning("node")}\n`);
     expect(c.stderr.text()).toContain("warning: gh is not on this shell's PATH");
+    expect(c.stderr.text()).toContain("warning: npm is not on this shell's PATH, so a run Studio starts can't run a declared check that uses it (npm test, npm run <name>)");
     oneLine(c.stdout.text());
-    expect(c.stdout.text()).toContain(`; its runs use gh not found, git ${join(bin, "git")}\n`);
+    expect(c.stdout.text()).toContain(`; its runs use gh not found, git ${join(bin, "git")}, npm not found, node not found\n`);
     expect(readFileSync(plistPath(c.homeDir), "utf8")).toContain(`<key>PATH</key>\n    <string>${bin}:/usr/bin:/bin:/usr/sbin:/sbin</string>`);
   });
 

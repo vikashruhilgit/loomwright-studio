@@ -10,16 +10,18 @@
 //   - AC5: a script or workflow the run adds on its own branch (committed or not) is refused.
 //   - AC6: the studio-sandbox shape: `npm test` admitted, `node ping.js` and `npm test --watch` refused.
 //   - AC8: the session gate records the admission in a `tool_decision` row with reason `declared_check`.
+//   - 27a: an admitted check whose executable the run's PATH lacks (`npm`, or the `node` npm runs on) is named on the
+//     launch's `run_declared_checks` event (`unrunnable`); the policy is unchanged. Every PATH here is a temp dir.
 //
 // Real temp git repositories (`execFileSync("git", …)`), the real launch path over the real `EventLoop`, and a real
 // `SessionManager` over the fake spawner for the gate. Never the SDK, a model, a network or a real Loomwright.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { HookCallback, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DECLARED_CHECK_SKIP_REASONS, declaredCheckWords, readDeclaredChecks, workflowRunLines } from "../src/automate/declared-checks.js";
+import { DECLARED_CHECK_SKIP_REASONS, declaredCheckWords, readDeclaredChecks, unrunnableDeclaredChecks, workflowRunLines } from "../src/automate/declared-checks.js";
 import type { DeclaredChecksRead } from "../src/automate/declared-checks.js";
 import { AUTOMATE_RUN_KEY, AUTOMATE_RUN_POLICY, MERGE_PARKED_RUN_POLICY, REVIEW_PR_RUN_POLICY, handleAutomateRun } from "../src/automate/launch.js";
 import { checkoutConfinement, committedReads } from "../src/loomwright/run-state-checkout.js";
@@ -43,6 +45,20 @@ vi.mock("../src/auth/keychain.js", async (importOriginal) => ({
 }));
 
 const REPO = "o/r";
+
+/** The absolute git the fixtures run (`execFileSync("git", …)` finds it the same way), resolved once at load. */
+const GIT = (process.env.PATH ?? "")
+  .split(":")
+  .filter((dir) => dir.startsWith("/"))
+  .map((dir) => join(dir, "git"))
+  .find((path) => {
+    try {
+      accessSync(path, constants.X_OK);
+      return statSync(path).isFile();
+    } catch {
+      return false;
+    }
+  }) ?? "git";
 const PLAYBOOK_MODEL = "claude-opus-4-1";
 
 let tmp: string;
@@ -53,8 +69,19 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   rmSync(tmp, { recursive: true, force: true });
 });
+
+/** A temp dir holding an executable stub of each of `tools`: a run PATH entry built for the test, never the host's. */
+function binDir(dir: string, tools: readonly string[]): string {
+  mkdirSync(dir, { recursive: true });
+  for (const tool of tools) {
+    writeFileSync(join(dir, tool), "#!/bin/sh\n");
+    chmodSync(join(dir, tool), 0o755);
+  }
+  return dir;
+}
 
 // ---- Git fixtures ---------------------------------------------------------------------------------------------
 
@@ -625,12 +652,82 @@ describe("decideToolUse admits a declared check exactly, and nothing near it (AC
 
 // ---- The launch (AC1, AC8) ---------------------------------------------------------------------------------------
 
+describe("unrunnableDeclaredChecks names each admitted check whose executable the run's PATH lacks (27a)", () => {
+  const readOf = (...commands: string[]): DeclaredChecksRead => ({
+    base_ref: "refs/remotes/origin/main",
+    base_sha: "0".repeat(40),
+    admitted: commands.map((command) => ({ command, words: command.split(" "), source: "package.json scripts.test" })),
+    skipped: [],
+  });
+
+  it("a missing npm is named by its line; a missing node behind a found npm is named as node; both found is []", () => {
+    const read = readOf("npm test", "npm test", "npm run lint");
+    const empty = binDir(join(tmp, "empty"), []);
+    expect(unrunnableDeclaredChecks(read, empty)).toEqual([
+      { command: "npm test", executable: "npm", line: "npm test is declared but npm is not on the run's PATH" },
+      { command: "npm run lint", executable: "npm", line: "npm run lint is declared but npm is not on the run's PATH" },
+    ]);
+    const npmOnly = binDir(join(tmp, "npm-only"), ["npm"]);
+    expect(unrunnableDeclaredChecks(read, `${empty}:${npmOnly}`)).toEqual([
+      { command: "npm test", executable: "node", line: "npm test is declared but node is not on the run's PATH" },
+      { command: "npm run lint", executable: "node", line: "npm run lint is declared but node is not on the run's PATH" },
+    ]);
+    // npm and node in different dirs: both found.
+    const nodeDir = binDir(join(tmp, "node-dir"), ["node"]);
+    expect(unrunnableDeclaredChecks(read, `${npmOnly}:${nodeDir}`)).toEqual([]);
+    expect(unrunnableDeclaredChecks(readOf(), empty)).toEqual([]);
+  });
+
+  it("only absolute, non-.. entries holding an executable regular file count; a first word with a / is never named", () => {
+    const read = readOf("make check", "./scripts/check.sh", "node ping.js");
+    const noexec = join(tmp, "noexec");
+    mkdirSync(noexec, { recursive: true });
+    writeFileSync(join(noexec, "make"), "#!/bin/sh\n");
+    chmodSync(join(noexec, "make"), 0o644);
+    const asDir = join(tmp, "asdir");
+    mkdirSync(join(asDir, "make"), { recursive: true });
+    const real = binDir(join(tmp, "real"), ["make", "node"]);
+    const missing = unrunnableDeclaredChecks(read, `:${noexec}:${asDir}:real:${tmp}/x/../real`);
+    expect(missing.map((u) => u.executable)).toEqual(["make", "node"]);
+    expect(unrunnableDeclaredChecks(read, undefined).map((u) => u.command)).toEqual(["make check", "node ping.js"]);
+    expect(unrunnableDeclaredChecks(read, real)).toEqual([]);
+  });
+
+  it("the injected probe sees each candidate path once per name, and a throwing probe counts as not found (never throws)", () => {
+    const seen: string[] = [];
+    const probe = (path: string): boolean => {
+      seen.push(path);
+      if (path.startsWith("/boom")) throw new Error("EIO");
+      return path === "/b/npm" || path === "/b/node";
+    };
+    expect(unrunnableDeclaredChecks(readOf("npm test", "npm run x", "jest"), "/boom:/b", probe)).toEqual([
+      { command: "jest", executable: "jest", line: "jest is declared but jest is not on the run's PATH" },
+    ]);
+    expect(seen).toEqual(["/boom/npm", "/b/npm", "/boom/node", "/b/node", "/boom/jest", "/b/jest"]);
+  });
+});
+
 describe("the launch reads the declarations, puts them in the run policy and records one run_declared_checks event (AC1, AC8)", () => {
   let env: ToolEnv;
   let repo: Repo;
   let base: string;
+  /** 27a: the launch probes the kernel's own PATH, so every test here runs with one built from temp dirs only. */
+  let runBin: string;
+
+  /**
+   * A temp dir whose `git` runs the git the fixtures already use (found once, before PATH is replaced) and which holds
+   * stubs of `tools`: the kernel PATH a launch test runs under, so the probe never sees the host's npm or node.
+   */
+  function runPathWith(name: string, tools: readonly string[]): string {
+    const dir = binDir(join(tmp, name), tools);
+    writeFileSync(join(dir, "git"), `#!/bin/sh\nexec '${GIT}' "$@"\n`);
+    chmodSync(join(dir, "git"), 0o755);
+    return dir;
+  }
 
   beforeEach(() => {
+    runBin = runPathWith("run-bin", ["npm", "node"]);
+    vi.stubEnv("PATH", runBin);
     env = toolEnv("studio-declared-launch-");
     env.store.prepare("INSERT INTO agents (id, display_name, avatar_shape, avatar_hue, status, created_by, charter_json) VALUES ('mason', 'Mason', 'crab', 'crew-teal', 'active', 'owner', '{}')").run();
     // The harness's checkout is a bare `.git/config`: make it a real repository with the sandbox on origin/main.
@@ -706,7 +803,41 @@ describe("the launch reads the declarations, puts them in the run policy and rec
       admitted_count: 3,
       skipped: [],
       skipped_count: 0,
+      unrunnable: [],
+      unrunnable_count: 0,
     });
+  });
+
+  it("27a: a declared check whose executable the kernel's PATH lacks is named on the event; the policy is unchanged", async () => {
+    const pb = env.playbook("live");
+    const r = recorder();
+    (r.sessions.getSession(41) as { playbook: number }).playbook = pb;
+    // No npm on the kernel's PATH.
+    vi.stubEnv("PATH", runPathWith("no-npm", ["node"]));
+    queue(runOf(pb, "backlog", 41));
+    await loopOver(r.sessions).tick();
+    // AC4: still admitted exactly as before, and npm test is still the declared_check.
+    expect(r.starts[0]?.policy.declaredChecks).toEqual([["npm", "test"], ["npm", "run", "test"]]);
+    expect(bash(r.starts[0]?.policy as ToolPolicy, "npm test")).toEqual(ADMITTED);
+    expect(r.starts[0]?.policy.allowedBashPrefixes).toEqual(AUTOMATE_RUN_POLICY.allowedBashPrefixes);
+    const first = events(env.store, "run_declared_checks")[0]?.payload;
+    expect(first).toMatchObject({ admitted_count: 3, skipped_count: 0, unrunnable_count: 2 });
+    expect(first?.unrunnable).toEqual([
+      { command: "npm test", executable: "npm", line: "npm test is declared but npm is not on the run's PATH" },
+      { command: "npm run test", executable: "npm", line: "npm run test is declared but npm is not on the run's PATH" },
+    ]);
+
+    // npm found, the node it runs on not: named as node (a review_pr launch, the same event).
+    vi.stubEnv("PATH", runPathWith("no-node", ["npm"]));
+    queue(runOf(pb, "review_pr", 41));
+    await loopOver(r.sessions).tick();
+    const second = events(env.store, "run_declared_checks")[1]?.payload;
+    expect(second).toMatchObject({ kind: "review_pr", unrunnable_count: 2 });
+    expect((second?.unrunnable as { executable: string; line: string }[]).map((u) => [u.executable, u.line])).toEqual([
+      ["node", "npm test is declared but node is not on the run's PATH"],
+      ["node", "npm run test is declared but node is not on the run's PATH"],
+    ]);
+    expect(r.starts[1]?.policy.declaredChecks).toEqual([["npm", "test"], ["npm", "run", "test"]]);
   });
 
   it("review_pr: the stored repo policy's default branch is the base, and the next launch re-reads the base current then", async () => {
