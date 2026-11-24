@@ -361,7 +361,14 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
     const skipped = typeof f.skipped_count === "number" && Number.isSafeInteger(f.skipped_count) && f.skipped_count >= 0 ? f.skipped_count : Array.isArray(f.skipped) ? f.skipped.length : 0;
     const base = `${plain(f.base_ref) ?? "its base branch"} at ${plain(f.base_sha.slice(0, 12)) ?? "a commit"}`;
     const ran = admitted === undefined ? `may run none of ${repo}'s checks` : `may run ${repo}'s declared checks (${admitted})`;
-    return `The kernel read ${base}: ${session} ${ran}${skipped > 0 ? `; ${skipped} declared line${skipped === 1 ? " was" : "s were"} skipped` : ""}.`;
+    // 27a: each admitted check whose executable the run's PATH lacks, by its own line (the first 5), unrunnable_count the total.
+    const lines = Array.isArray(f.unrunnable)
+      ? [...new Set((f.unrunnable as unknown[]).map((u) => fields(u).line).map((l) => (typeof l === "string" ? plain(l) : undefined)).filter((s): s is string => s !== undefined))]
+      : [];
+    const total = typeof f.unrunnable_count === "number" && Number.isSafeInteger(f.unrunnable_count) && f.unrunnable_count >= 0 ? f.unrunnable_count : lines.length;
+    const more = Math.max(total, lines.length) - Math.min(lines.length, 5);
+    const unrunnable = lines.length === 0 ? "" : `; ${lines.slice(0, 5).join("; ")}${more > 0 ? `; and ${more} more` : ""}`;
+    return `The kernel read ${base}: ${session} ${ran}${skipped > 0 ? `; ${skipped} declared line${skipped === 1 ? " was" : "s were"} skipped` : ""}${unrunnable}.`;
   },
   run_reply_sent: (p, r) => {
     const g = reader(p);

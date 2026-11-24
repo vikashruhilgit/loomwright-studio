@@ -166,6 +166,34 @@ describe("the sentences", () => {
     expect(said({ ...at, admitted: [], skipped: [{}, {}], skipped_count: -1 })).toBe(
       "The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run none of o/r's checks; 2 declared lines were skipped.",
     );
+    // 27a: an empty unrunnable list reads byte-identically to no key at all.
+    expect(said({ ...at, admitted: [{ command: "npm test" }], skipped: [], skipped_count: 0, unrunnable: [], unrunnable_count: 0 })).toBe(
+      "The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run o/r's declared checks (npm test).",
+    );
+  });
+
+  it("run_declared_checks (27a): each unrunnable check's line is appended, at most 5 by name, unrunnable_count the total", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const at = { repo: "o/r", base_ref: "refs/remotes/origin/main", base_sha: sha };
+    const said = (payload: unknown) => auditSentence("run_declared_checks", payload, refs({ sessionId: 41 }));
+    const npmTest = { command: "npm test", executable: "npm", line: "npm test is declared but npm is not on the run's PATH" };
+    expect(said({ ...at, admitted: [{ command: "npm test" }], skipped: [], skipped_count: 0, unrunnable: [npmTest], unrunnable_count: 1 })).toBe(
+      "The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run o/r's declared checks (npm test); npm test is declared but npm is not on the run's PATH.",
+    );
+    // After the skipped count; a node-only gap reads its own line.
+    const lint = { command: "npm run lint", executable: "node", line: "npm run lint is declared but node is not on the run's PATH" };
+    expect(said({ ...at, admitted: [{ command: "npm test" }, { command: "npm run lint" }], skipped: [{}], skipped_count: 1, unrunnable: [npmTest, lint], unrunnable_count: 2 })).toBe(
+      "The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run o/r's declared checks (npm test, npm run lint); 1 declared line was skipped; npm test is declared but npm is not on the run's PATH; npm run lint is declared but node is not on the run's PATH.",
+    );
+    // More than 5, or a count above the listed (the event's own bound): the rest are counted.
+    const many = Array.from({ length: 7 }, (_, i) => ({ line: `c${i} is declared but c${i} is not on the run's PATH` }));
+    expect(said({ ...at, admitted: [{ command: "c0" }], unrunnable: many, unrunnable_count: 120 })).toBe(
+      `The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run o/r's declared checks (c0); ${many.slice(0, 5).map((m) => m.line).join("; ")}; and 115 more.`,
+    );
+    // No count, or a malformed one: the listed lines are counted; a malformed entry is dropped, never printed.
+    expect(said({ ...at, admitted: [{ command: "c0" }], unrunnable: [...many, null, { line: 3 }, "x"], unrunnable_count: -2 })).toBe(
+      `The kernel read refs/remotes/origin/main at 0123456789ab: session 41 may run o/r's declared checks (c0); ${many.slice(0, 5).map((m) => m.line).join("; ")}; and 2 more.`,
+    );
   });
 
   it("no sentence carries a dollar figure (D24)", () => {
