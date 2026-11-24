@@ -186,7 +186,7 @@ Follow-ups from the 25f probes (Loomwright 18.1.2, `kernel/test/phase-8-walk-ord
 
 - **A re-drain path after triage is wanted.** A parked PR that gets a comment or a fix after its READY can no longer merge through `--merge-parked` (`ready_stale_feedback`, `head_sha_moved`), and 18.1.2 offers the kernel no way to re-drain it, which is why triage now follows the merge.
 - **A run's continuation cannot carry the owner's words.** The 25f requirement offered "a ticket run's continuation" as step 6's session, but its prompt is only the kernel's decision text (`runContinuationPrompt`), so step 6 uses a crew session given `gh pr` instead.
-- **The triage fix never saw the `fix:` comment** (Part B, [evidence](phase-8-25e-triage-fix-probe.md)). Item 26a carries the owner's one triaged comment into the fix's prompt ([D49](../DECISIONS.md), the D45 amendment, for the owner to approve in the 26a PR); its live probe committed the rename ([26a evidence](phase-8-26a-comment-probe.md)), and step 3 now expects it.
+- **The triage fix never saw the `fix:` comment** (Part B, [evidence](phase-8-25e-triage-fix-probe.md)). Item 26a carries the owner's one triaged comment into the fix's prompt ([D49](../DECISIONS.md), the D45 amendment); its live probe committed the rename ([26a evidence](phase-8-26a-comment-probe.md)), and step 3 now expects it.
 
 ## Closing phase 8
 
