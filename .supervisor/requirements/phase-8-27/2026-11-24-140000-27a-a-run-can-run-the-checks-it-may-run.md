@@ -48,3 +48,9 @@ docs/architecture/automate.md
 docs/evidence/phase-8-exit-runbook.md
 
 ## Status: open
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-24T19:02:28Z
+- **Brief:** .supervisor/jobs/done/2026-11-24-27a-run-can-run-the-checks-it-may-run.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/312
