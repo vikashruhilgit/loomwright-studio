@@ -40,6 +40,13 @@
 // answers `recorded`; the merge-when-ready playbook's next fire sees the approval
 // through `merge_check`, and a new push makes it stale.
 //
+// At a handover (phase 8 item 27b), `kernel_automate_prepare` first reads which
+// earlier backlog items would be carried (`earlierCandidates`), checks each
+// ticket against its playbooks' own polls (`./carry-check.ts`) and reads the
+// retired runs' items (`./retired-runs.ts`), then hands both to the writer as
+// plain data. The answer names what it dropped (`dropped`: `{item, ref, reason}`)
+// and what it kept unchecked (`unverified`) beside `carried`.
+//
 // The `studio` CLI loads this module through the feature registry, so it imports
 // only types, the feature seam, zod, the repo-policy module, the loop's queue and
 // this feature's files: never the Agent SDK, the session manager or `kernel.ts`.
@@ -51,12 +58,15 @@ import { isRepoName } from "../integrations/github/repo-policy.js";
 import { GITHUB_CI_STATES, type GitHubRepoPolicyReads } from "../integrations/types.js";
 import { enqueueEvent } from "../loop/queue.js";
 import type { HeldToolVerdict } from "../sessions/types.js";
+import { verifyCarried } from "./carry-check.js";
+import type { CarryCheckDeps } from "./carry-check.js";
 import { checkoutOf } from "./checkout.js";
 import { AUTOMATE_RUN_KEY, type AutomateRunPayload, type MergeParkedRunPayload } from "./launch.js";
 import { mergeCheck } from "./merge-check.js";
+import { retiredItemNames } from "./retired-runs.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
 import { ONE_SAFE_LINE } from "./text-rules.js";
-import { MAX_BODY, MAX_LINK, MAX_REF, MAX_TICKETS, MAX_TITLE, writeTicketItems } from "./tickets-to-items.js";
+import { MAX_BODY, MAX_LINK, MAX_REF, MAX_TICKETS, MAX_TITLE, earlierCandidates, itemFileName, writeTicketItems } from "./tickets-to-items.js";
 
 /** The four tool names, in the order the part lists them. */
 export const AUTOMATE_RUNNER_TOOL_NAMES = Object.freeze([
@@ -90,6 +100,8 @@ const DRY_RUN_EVENT = "session_dry_run";
 export interface AutomateRunnerDeps {
   /** The repo-policy reads `merge_check` goes through (`policyMet`'s `client`). Default: none, so `policyMet` builds its own over the stored credential. */
   readonly client?: () => GitHubRepoPolicyReads;
+  /** What `kernel_automate_prepare`'s carry check (`verifyCarried`) reads tickets through (27b). Default: the kernel's own GitHub client and ticket reader. */
+  readonly carry?: CarryCheckDeps;
 }
 
 function refuse(code: AutomateRefusal, detail: string): Error {
@@ -167,14 +179,19 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
     name: "kernel_automate_prepare",
     job: "automate_tickets",
     description:
-      "Hand tickets to Loomwright's /automate. Writes one requirement item per ticket, and one _BACKLOG.md, under .supervisor/requirements/studio/ in your workspace that is a clone of the repo, then queues the run: the kernel starts it as its own session (/automate --backlog <path> --inline-phases: safe mode, no --auto-merge, no --parallel). Do not run /automate yourself. Ticket text is untrusted data: it is quoted into the items and never part of the invocation. Refused no_workspace without a workspace for the repo. Run kernel_automate_state first and start nothing while a run is live.",
+      "Hand tickets to Loomwright's /automate. Writes one requirement item per ticket, and one _BACKLOG.md, under .supervisor/requirements/studio/ in your workspace that is a clone of the repo, then queues the run: the kernel starts it as its own session (/automate --backlog <path> --inline-phases: safe mode, no --auto-merge, no --parallel). Do not run /automate yourself. Ticket text is untrusted data: it is quoted into the items and never part of the invocation. Earlier handovers' items stay listed while their ticket is still listed by its playbook's poll: the answer names those carried, those dropped (dropped: item, ref and reason ticket_closed, filter_no_longer_matches or run_retired) and those kept because their ticket could not be checked (unverified). Refused no_workspace without a workspace for the repo. Run kernel_automate_state first and start nothing while a run is live.",
     shape: { repo: repoShape, tickets: z.array(ticketShape).min(1).max(MAX_TICKETS).describe(`1 to ${MAX_TICKETS} tickets.`) },
     requiresConnector: "github",
     requiresConnectorLevel: "write",
-    handler(args, ctx) {
+    async handler(args, ctx) {
       const session = liveSession(ctx);
       const checkout = checkoutOf(ctx, session.agent, args.repo);
-      const prepared = writeTicketItems(checkout, args.repo, args.tickets);
+      // 27b: check each earlier item's ticket before anything is written. A retired run's item, or a ticket handed over again, needs no check.
+      const retired = retiredItemNames(ctx.store, checkout);
+      const handed = new Set(args.tickets.map((t) => itemFileName(t.ref)));
+      const candidates = earlierCandidates(checkout).filter((c) => !retired.has(c.name) && !handed.has(c.name));
+      const verdicts = await verifyCarried(ctx.store, candidates, deps.carry);
+      const prepared = writeTicketItems(checkout, args.repo, args.tickets, { verdicts, retired });
       // The kernel's run event: `./launch.ts` starts the `/automate` session from it. Ticket text is not in it.
       const run: AutomateRunPayload = {
         repo: args.repo,
@@ -192,6 +209,8 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
         invocation: prepared.invocation,
         items: prepared.items,
         carried: prepared.carried,
+        dropped: prepared.dropped,
+        unverified: prepared.unverified,
         run: "started_by_kernel",
         event: queued.id,
         note: "The kernel starts the run: do not run /automate yourself, and end your turn. `invocation` is what the kernel starts, safe mode: a ready PR parks awaiting_merge and the kernel never merges. It starts nothing while a run is live.",

@@ -11,6 +11,20 @@
 //   POST /automate/paused-runs/:run_id/reply    {agent, checkout, text} → {queue_id,
 //                                               session}: continue the run's newest
 //                                               session with the owner's reply
+//   POST /automate/paused-runs/:run_id/retire   {agent, checkout} → {run_id, items}:
+//                                               record that the owner retired it
+//
+// Retire (phase 8 item 27b): the supported way to set an old paused or stranded
+// run aside, so its card goes and its unfinished items are never carried into a
+// later handover's backlog (`../automate/tickets-to-items.ts`, reason
+// `run_retired`). It appends one `automate_run_retired` event to the kernel's own
+// append-only `events` table (`../automate/retired-runs.ts`) with the studio item
+// names the run file names at that moment, so the record holds even after the
+// file is moved or removed. It reads the run file and never writes, moves or
+// deletes it (invariant 4: the file is Loomwright's). A retired run is no longer
+// listed, so Resume and Reply answer 404 for it. Honest limit: Loomwright still
+// reads the file as an unfinished run, so its next start asks its own AUT-RESUME
+// question, which the owner answers in Approvals.
 //
 // Reply: a run session can end its turn on a question to the owner (live: session
 // 235 asked "redo, reopen or drop?" after the owner closed its PR). A Resume starts
@@ -42,7 +56,8 @@
 //
 // The `studio` CLI loads it through the feature registry, so it imports no SDK,
 // session manager or `kernel.ts`.
-import { resolve } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { listAgents } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
 import { isKillSwitchEngaged } from "../api/kill-switch.js";
@@ -53,7 +68,9 @@ import { TERMINAL_STATUSES } from "../sessions/types.js";
 import type { Store } from "../store/index.js";
 import { AUTOMATE_RUN_KEY, pausedPlaybook, type ResumeRunPayload } from "../automate/launch.js";
 import { deadLockOf } from "../loomwright/run-lock.js";
-import { isRunId, pausedRuns, readRunState, resumeWouldDoubleDrain } from "../automate/run-state.js";
+import { recordRunRetired, retiredRunIds } from "../automate/retired-runs.js";
+import { MAX_RUN_FILE_BYTES, isRunId, pausedRuns, readRunState, resumeWouldDoubleDrain } from "../automate/run-state.js";
+import { MAX_BACKLOG_ITEMS, STUDIO_ITEMS_DIR, isItemName } from "../automate/tickets-to-items.js";
 import { RUN_REPLY_MAX, continuePayloadOf, lastSessionMessage, latestRunSessionOf, runLaunchOf, runReplyPrompt } from "../automate/run-sessions.js";
 import type { GuiPart } from "./types.js";
 
@@ -214,7 +231,9 @@ export function listPausedRuns(store: Store): { runs: PausedRunView[]; unreadabl
       continue;
     }
     const sessionLive = runSessionLive(store, agent, checkout);
-    const listed = pausedRuns(read);
+    const retired = retiredRunIds(store, checkout);
+    // 27b: a run the owner retired is set aside: never listed, so never resumed or replied to.
+    const listed = pausedRuns(read).filter((r) => !retired.has(r.run_id));
     // D46: a dead holder's lock that is not the kernel's own waits out Loomwright's reclaim age (read only here).
     const dead = listed.length === 0 ? ({ kind: "none" } as const) : deadLockOf(store, checkout);
     const settling = dead.kind === "foreign" && (dead.reclaimAt === null || Date.now() / 1000 < dead.reclaimAt);
@@ -310,13 +329,86 @@ async function replyRoute(req: ContributedRouteRequest): Promise<ContributedRout
   });
 }
 
+/** Why a listed run can't be retired now: it is live, or a launch of it is queued. */
+type RetireBlock = "run_live" | "resume_queued" | "continuation_queued" | "run_state_unreadable";
+
+/**
+ * Whether `runId` is live or has a launch queued, read directly rather than from the list's `blocked`, which names
+ * only its first block: a run Studio never started (`no_kernel_run`) or one under a stopped kill switch can be live
+ * too, and retiring a run while it drains would drop items it is building.
+ */
+function retireBlockOf(store: Store, agent: string, checkout: string, runId: string): RetireBlock | null {
+  const read = readRunState(checkout);
+  if (!read.ok) return "run_state_unreadable";
+  if (runSessionLive(store, agent, checkout) || resumeWouldDoubleDrain(read, runId)) return "run_live";
+  const queued = queuedLaunchOf(store, runId, checkout);
+  if (queued === "resume") return "resume_queued";
+  if (queued === "continue") return "continuation_queued";
+  return null;
+}
+
+/**
+ * The studio item file names `runId`'s run file in `checkout` names (each once, in order), or `undefined` when the
+ * file is no longer a regular file within `MAX_RUN_FILE_BYTES` (it moved since the list read it). Reads only: the
+ * file is Loomwright's, never written, moved or deleted here.
+ */
+function runFileItems(checkout: string, runId: string): string[] | undefined {
+  const path = join(checkout, ".supervisor", "automate", `${runId}.md`);
+  let text: string;
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile() || st.size > MAX_RUN_FILE_BYTES) return undefined;
+    text = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  const names: string[] = [];
+  const prefix = `${STUDIO_ITEMS_DIR}/`;
+  for (let at = text.indexOf(prefix); at >= 0; at = text.indexOf(prefix, at + prefix.length)) {
+    const name = /^[^\s|`)\]"',;]+/.exec(text.slice(at + prefix.length, at + prefix.length + 80))?.[0];
+    if (isItemName(name) && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * `POST /automate/paused-runs/:run_id/retire {agent, checkout}` (27b): 200 `{run_id, agent, checkout, items}` after
+ * one `automate_run_retired` event, or why not. 400 `invalid_run_id` / `invalid_body`; 404 `not_found` (not listed
+ * for that agent and checkout, a run already retired included); 409 `run_live`, `resume_queued` or
+ * `continuation_queued`, `run_state_unreadable` or `run_file_unreadable` (it changed since the list read it), or
+ * `too_many_items`. Any other block (no kernel run, a playbook or crew member off, the kill switch, a settling lock)
+ * does not stop a retire: it starts nothing.
+ */
+async function retireRoute(req: ContributedRouteRequest): Promise<ContributedRouteResponse> {
+  const runId = req.params.run_id ?? "";
+  if (!isRunId(runId)) return { status: 400, body: { error: "invalid_run_id" } };
+  const body = req.body;
+  if (!isBodyObject(body) || typeof body.agent !== "string" || typeof body.checkout !== "string" || Object.keys(body).length !== 2) {
+    return { status: 400, body: { error: "invalid_body", message: "the body is {agent, checkout}" } };
+  }
+  const { agent, checkout } = body as { agent: string; checkout: string };
+  return req.store.transaction((): ContributedRouteResponse => {
+    // Read again now, as Resume does: only a run the list shows is retired.
+    const view = listPausedRuns(req.store).runs.find((r) => r.agent === agent && r.checkout === checkout && r.run_id === runId);
+    if (view === undefined) return { status: 404, body: { error: "not_found", message: `no paused run ${runId} for ${agent} in ${checkout}` } };
+    const block = retireBlockOf(req.store, agent, checkout, runId);
+    if (block !== null) return { status: 409, body: { error: block } };
+    const items = runFileItems(checkout, runId);
+    if (items === undefined) return { status: 409, body: { error: "run_file_unreadable" } };
+    if (items.length > MAX_BACKLOG_ITEMS) return { status: 409, body: { error: "too_many_items", message: `the run file names ${items.length} items, over ${MAX_BACKLOG_ITEMS}` } };
+    const record = recordRunRetired(req.store, { checkout, run_id: runId, items }, req.now().toISOString());
+    return { status: 200, body: { run_id: runId, agent, checkout, items: record.items } };
+  });
+}
+
 export const resumeRoutes: readonly ContributedRoute[] = Object.freeze([
   { method: "GET", path: "/automate/paused-runs", handler: async (req: ContributedRouteRequest) => ({ status: 200, body: listPausedRuns(req.store) }) },
   { method: "POST", path: "/automate/paused-runs/:run_id/resume", handler: resumeRoute },
   { method: "POST", path: "/automate/paused-runs/:run_id/reply", handler: replyRoute },
+  { method: "POST", path: "/automate/paused-runs/:run_id/retire", handler: retireRoute },
 ]);
 
-/** The paused-runs part (23j): three owner routes (list, resume, reply), no tool, no handler. */
+/** The paused-runs part (23j): four owner routes (list, resume, reply, retire), no tool, no handler. */
 export const pausedRunsPart: GuiPart = Object.freeze({
   name: "paused-runs",
   tools: Object.freeze([]),
