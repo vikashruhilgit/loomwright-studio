@@ -24,7 +24,8 @@
 //   `approvals` resource names its PR. The resource is the store's (never a second fetch); with none loaded, nothing waits.
 // - A paused Loomwright run (`GET /automate/paused-runs`, phase 8 item 23j) is a Parked run card after the Parked
 //   column's cards (`./ParkedRunCard.tsx`), read with every read of the board. A read that fails keeps the runs on
-//   screen (a run never vanishes on a hiccup); Resume reads both again whenever the kernel answered it.
+//   screen (a run never vanishes on a hiccup); Resume, Reply and Retire (27b) read both again whenever the kernel
+//   answered them, so a retired run's card goes at once.
 // - Any task state the board does not read (`waiting on owner`) is in the Other
 //   group with its own word; it is never guessed into a column.
 // - The keys: J / K and the arrows move between cards across the columns, Enter
@@ -45,7 +46,7 @@ import { useKernelReach, withLastKnown } from "../../shell/last-known";
 import { useLiveStore, useResource } from "../../store/react";
 import { printable } from "../approvals/printable";
 import { TaskDetail } from "./TaskDetail";
-import { readPausedRuns, replyToRun, resumePausedRun } from "./ParkedRunCard";
+import { readPausedRuns, replyToRun, resumePausedRun, retirePausedRun } from "./ParkedRunCard";
 import { ticketColumnOf, waitingApprovalOf } from "./TicketPrCard";
 import { KIND_LABEL, agentText, buildBoard, cardAgent, cardOrder, refetchMark, sessionTitles, skippedText, startOfDay, startOfToday } from "./model";
 import type { Board, BoardCard } from "./model";
@@ -234,6 +235,16 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
   const replyRun = useCallback(
     async (run: PausedRunView, text: string): Promise<ApiResult<unknown>> => {
       const result = await replyToRun(api, run, text);
+      if (result.status !== 0 && mounted.current) void refetch();
+      return result;
+    },
+    [api, refetch],
+  );
+
+  // 27b: a Parked run card's Retire, then the board read again so a retired run's card goes.
+  const retireRun = useCallback(
+    async (run: PausedRunView): Promise<ApiResult<unknown>> => {
+      const result = await retirePausedRun(api, run);
       if (result.status !== 0 && mounted.current) void refetch();
       return result;
     },
@@ -465,7 +476,7 @@ export function TasksScreen({ api, registry = commandRegistry }: TasksScreenProp
           {skipped}
         </p>
       )}
-      <BoardView board={board} day={startOfDay(now)} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} onReply={replyRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
+      <BoardView board={board} day={startOfDay(now)} roster={roster} approvals={approvals} titles={titles} pausedRuns={pausedRuns} onResume={resumeRun} onReply={replyRun} onRetire={retireRun} offline={offline} activeKey={activeKey} onOpen={openCard} onFocused={setActiveKey} onFocusLost={onFocusLost} />
     </TasksFrame>
   );
 }

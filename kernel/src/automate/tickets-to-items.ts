@@ -31,11 +31,23 @@
 // Earlier lines come first, in their order, then this handover's new ones; a
 // ticket handed over again keeps its place.
 //
+// An earlier line is also checked against its ticket (phase 8 item 27b): the
+// runner asks `./carry-check.ts` whether each candidate (`earlierCandidates`) is
+// still listed by its playbooks' own polls, and reads the retired runs' items
+// (`./retired-runs.ts`), then hands both here as plain data (`CarryInput`). A
+// retired run's item is dropped `run_retired`, a drop verdict drops the line with
+// its reason, and `unverified` (or no verdict at all) keeps it and names it. A
+// ticket this handover hands over again is never dropped. The item file stays
+// where it is: only the backlog line goes. Without `carry`, nothing is dropped.
+//
 // The `studio` CLI loads this module through the feature registry, so it imports
 // only `node:` builtins: never the Agent SDK, the session manager or `kernel.ts`.
+// (Its siblings `./run-state.js` and `./text-rules.js` too, and one type-only
+// import of `./carry-check.js`, which is erased: no store, trigger or client.)
 import { createHash, randomBytes } from "node:crypto";
 import { linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
+import type { CarryDropReason } from "./carry-check.js";
 import { runFileTexts } from "./run-state.js";
 import { UNSAFE_BODY_CHARS, UNSAFE_TEXT_CHAR, oneLine } from "./text-rules.js";
 
@@ -92,6 +104,38 @@ export interface PreparedTickets {
   readonly items: readonly PreparedItem[];
   /** Repo-root-relative items an earlier handover listed that the backlog still lists, ahead of this one's (23i). */
   readonly carried: readonly string[];
+  /** Earlier items the backlog no longer lists, each with its dedupe ref (`null` when its file has none) and why (27b). */
+  readonly dropped: readonly CarryDrop[];
+  /** Repo-root-relative carried items whose ticket could not be checked (27b): kept, never silently dropped. */
+  readonly unverified: readonly string[];
+}
+
+/** One earlier item a handover stopped listing. */
+export interface CarryDrop {
+  /** Repo-root-relative, as `carried` names an item. */
+  readonly item: string;
+  readonly ref: string | null;
+  readonly reason: CarryDropReason;
+}
+
+/** What the runner found for one earlier item: carry it, carry it unchecked, or drop it with a reason. */
+export type CarryVerdict = "keep" | "unverified" | CarryDropReason;
+
+/** The 27b verdicts `writeTicketItems` applies, by item file name: plain data, decided outside this module. */
+export interface CarryInput {
+  readonly verdicts: ReadonlyMap<string, CarryVerdict>;
+  /** Item file names a retired run named: dropped `run_retired`. */
+  readonly retired: ReadonlySet<string>;
+}
+
+/** An earlier item a handover would carry, with the ticket its file names (27b). */
+export interface CarryCandidate {
+  /** The item's file name in `STUDIO_ITEMS_DIR`. */
+  readonly name: string;
+  /** The item's `- dedupe ref:`, or `null` when its file has no usable one. */
+  readonly ref: string | null;
+  /** The item's `- link:`, or `null` when its file has no usable one. */
+  readonly link: string | null;
 }
 
 /** A dedupe ref is a plain token: no space, no control character, no markdown beyond `._:/#@-`. */
@@ -271,6 +315,111 @@ function earlierItems(dir: string, checkout: string): string[] {
   return names;
 }
 
+/** Whether `name` is an item file name a kernel backlog line can hold (`KEPT_LINE`'s name). */
+export function isItemName(name: unknown): name is string {
+  return typeof name === "string" && KEPT_LINE.test(`- [ ] ${STUDIO_ITEMS_DIR}/${name}`);
+}
+
+/** The largest requirement item file the kernel reads back (`readItemSource`): far over any `renderItem` output. */
+export const MAX_ITEM_BYTES = 128 * 1024;
+
+/** A `renderItem` `- dedupe ref:` line: the ref inside one code span. */
+const REF_LINE = /^- dedupe ref: `([^`]+)`$/;
+
+/** What a requirement item says about its ticket (`parseItemSource`). */
+export interface ItemSource {
+  /** The `- dedupe ref:` under `## Source ticket`, or `null` when absent or not a plain ref (`REF_PATTERN`). */
+  readonly ref: string | null;
+  /** The `- link:` under `## Source ticket`, or `null` when absent or not a plain link (`LINK_PATTERN`). */
+  readonly link: string | null;
+  /** The item's first `# ` heading, cleaned (`cleanTitle`), or `null` when it has none or it cleans to nothing. */
+  readonly title: string | null;
+}
+
+/**
+ * The ticket an item's text names: the first `- dedupe ref:` line (a ref in one code span) and the first `- link:`
+ * line inside its `## Source ticket` section (up to the next `## ` heading), as `renderItem` writes them, and its
+ * first `# ` heading. Only that section is read: every line of the ticket's body is behind `> ` in another section.
+ * The one parser of an item's ticket (the handover's carry check and the PR tracker both read it).
+ */
+export function parseItemSource(text: string): ItemSource {
+  const lines = text.split(/\r?\n/);
+  const heading = lines.find((l) => l.startsWith("# "));
+  const cleaned = heading === undefined ? "" : cleanTitle(heading.slice(2));
+  const title = cleaned === "" ? null : cleaned;
+  const at = lines.findIndex((l) => l.trim() === "## Source ticket");
+  let ref: string | null = null;
+  let link: string | null = null;
+  if (at >= 0) {
+    let refSeen = false;
+    let linkSeen = false;
+    for (const line of lines.slice(at + 1)) {
+      if (line.startsWith("## ")) break;
+      const value = refSeen ? undefined : REF_LINE.exec(line)?.[1];
+      if (value !== undefined) {
+        refSeen = true;
+        ref = REF_PATTERN.test(value) ? value : null;
+      } else if (!linkSeen && line.startsWith("- link: ")) {
+        linkSeen = true;
+        const url = line.slice("- link: ".length);
+        link = LINK_PATTERN.test(url) ? url : null;
+      }
+      if (refSeen && linkSeen) break;
+    }
+  }
+  return { ref, link, title };
+}
+
+/**
+ * `parseItemSource` of the item file at `path`, or `null` when it is not a regular file (a symlink included), is over
+ * `MAX_ITEM_BYTES`, or can't be read. The caller checks that `path` is inside the items folder.
+ */
+export function readItemSource(path: string): ItemSource | null {
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile() || st.size > MAX_ITEM_BYTES) return null;
+    return parseItemSource(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** The ticket ref and link the item at `path` names, each `null` when the file or the line is unusable. */
+function itemSource(path: string): { ref: string | null; link: string | null } {
+  const source = readItemSource(path);
+  return { ref: source?.ref ?? null, link: source?.link ?? null };
+}
+
+/** `checkout/.supervisor/requirements/studio` when every level is a real directory, else `undefined` (nothing is created). */
+function existingItemsDir(checkout: string): string | undefined {
+  let dir = checkout;
+  for (const part of STUDIO_ITEMS_DIR.split("/")) {
+    dir = join(dir, part);
+    let st;
+    try {
+      st = lstatSync(dir);
+    } catch (err) {
+      if ((err as { code?: unknown }).code === "ENOENT") return undefined;
+      throw err;
+    }
+    // A symlinked level reads nothing here: `writeTicketItems` refuses it (`unsafe_path`) before it writes.
+    if (st.isSymbolicLink() || !st.isDirectory()) return undefined;
+  }
+  return dir;
+}
+
+/**
+ * The earlier items a handover in `checkout` would carry (27b), in backlog order:
+ * exactly the names `earlierItems` keeps, each with the dedupe ref and link its
+ * item file names. Reads only. Throws as `earlierItems` throws (a run file that
+ * can't be read), so the caller writes nothing.
+ */
+export function earlierCandidates(checkout: string): CarryCandidate[] {
+  const dir = existingItemsDir(checkout);
+  if (dir === undefined) return [];
+  return earlierItems(dir, checkout).map((name) => ({ name, ...itemSource(join(dir, name)) }));
+}
+
 /**
  * `checkout/.supervisor/requirements/studio`, created one level at a time: a level
  * that exists must be a real directory (never a symlink, which could lead out of the
@@ -303,8 +452,14 @@ function ensureItemsDir(checkout: string): string {
  * directory (a symlinked `.supervisor`), before anything is created there; and
  * `RangeError` `unsafe_path: …` for a backlog path that cannot be put in an
  * invocation, before any item is written.
+ *
+ * `carry` (27b) applies the runner's verdicts to the earlier lines: a name in
+ * `retired` is dropped `run_retired`, a drop verdict drops it with that reason,
+ * `keep` carries it, and `unverified` or no verdict (a line that appeared after
+ * the check) carries it and names it in `unverified`. A ticket this call hands
+ * over again is never dropped. Without `carry` nothing is dropped.
  */
-export function writeTicketItems(checkout: string, repo: string, tickets: readonly Ticket[]): PreparedTickets {
+export function writeTicketItems(checkout: string, repo: string, tickets: readonly Ticket[], carry?: CarryInput): PreparedTickets {
   if (tickets.length === 0 || tickets.length > MAX_TICKETS) throw new RangeError(`invalid_input: hand over 1 to ${MAX_TICKETS} tickets at a time`);
   const seen = new Set<string>();
   for (const t of tickets) {
@@ -319,7 +474,30 @@ export function writeTicketItems(checkout: string, repo: string, tickets: readon
   const invocation = automateInvocation(backlog);
   // 23i: what earlier handovers listed stays, ahead of this one; read before anything is written.
   const earlier = earlierItems(dir, checkout);
-  const names = [...new Set([...earlier, ...tickets.map((t) => itemFileName(t.ref))])];
+  const handed = new Set(tickets.map((t) => itemFileName(t.ref)));
+  const rel = (name: string): string => `${STUDIO_ITEMS_DIR}/${name}`;
+  // 27b: the runner's verdicts, applied to the earlier lines (none without `carry`).
+  const dropped: CarryDrop[] = [];
+  const unverified: string[] = [];
+  const drop = (name: string, reason: CarryDropReason): false => {
+    dropped.push({ item: rel(name), ref: itemSource(join(dir, name)).ref, reason });
+    return false;
+  };
+  const kept =
+    carry === undefined
+      ? earlier
+      : earlier.filter((name) => {
+          if (handed.has(name)) return true; // handed over again: never dropped
+          if (carry.retired.has(name)) return drop(name, "run_retired");
+          const verdict = carry.verdicts.get(name);
+          if (verdict === "keep") return true;
+          if (verdict === undefined || verdict === "unverified") {
+            unverified.push(rel(name));
+            return true;
+          }
+          return drop(name, verdict);
+        });
+  const names = [...new Set([...kept, ...tickets.map((t) => itemFileName(t.ref))])];
   if (names.length > MAX_BACKLOG_ITEMS) {
     throw new RangeError(`invalid_input: the backlog would list ${names.length} items, over ${MAX_BACKLOG_ITEMS}; let the run drain it first`);
   }
@@ -327,7 +505,6 @@ export function writeTicketItems(checkout: string, repo: string, tickets: readon
     const path = join(dir, itemFileName(t.ref));
     return { ref: t.ref, path, existing: !writeNew(path, renderItem(t, repo)) };
   });
-  const handed = new Set(tickets.map((t) => itemFileName(t.ref)));
   replaceFile(
     backlog,
     renderBacklog(
@@ -336,5 +513,5 @@ export function writeTicketItems(checkout: string, repo: string, tickets: readon
       invocation,
     ),
   );
-  return { backlog, invocation, items, carried: earlier.filter((n) => !handed.has(n)).map((n) => `${STUDIO_ITEMS_DIR}/${n}`) };
+  return { backlog, invocation, items, carried: kept.filter((n) => !handed.has(n)).map(rel), dropped, unverified };
 }

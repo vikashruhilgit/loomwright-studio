@@ -43,7 +43,7 @@
 // only types, the feature seam, the agent settings and registry readers, the
 // repo-policy module, the loop's store helpers, node `fs`/`path` and this
 // feature's files: never the Agent SDK, the session manager or `kernel.ts`.
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { listAgents } from "../agents/registry.js";
 import { readAgentSettings } from "../agents/settings.js";
@@ -60,7 +60,7 @@ import { githubClientOf, identityOf, ownerOf, parkedItemOf, pullUrlOf } from "./
 import type { OwnerIdentity, PrGitHubClient } from "./routing.js";
 import { parsePullUrl, readRunState } from "./run-state.js";
 import type { CurrentItem, RunFile, RunStateRead } from "./run-state.js";
-import { REF_PATTERN, STUDIO_ITEMS_DIR, cleanTitle } from "./tickets-to-items.js";
+import { STUDIO_ITEMS_DIR, readItemSource } from "./tickets-to-items.js";
 
 // ---- Closed sets ----------------------------------------------------------------------
 
@@ -81,9 +81,6 @@ const ENDED: readonly PrTrackState[] = ["merged", "closed"];
 
 /** The most pull requests one pass reads (a rate guard against GitHub, not a polling interval). */
 export const MAX_TRACKED_PER_PASS = 25;
-
-/** The largest requirement item the tracker reads for a ticket ref (a ticket body is at most 20000 characters). */
-const MAX_ITEM_BYTES = 128 * 1024;
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 
@@ -242,10 +239,11 @@ interface TicketItem {
 
 /**
  * The ticket behind a `kernel_automate_prepare` item: its `- dedupe ref:` line
- * under `## Source ticket` and its `# ` heading. Read only from a regular file
- * directly in `<workspace>/.supervisor/requirements/studio/` (a path outside it,
- * a symlink or a file over `MAX_ITEM_BYTES` reads as none), and the ref must be a
- * plain token. `null` for anything else.
+ * under `## Source ticket` and its `# ` heading (`readItemSource`, the one item
+ * parser). Read only from a regular file directly in
+ * `<workspace>/.supervisor/requirements/studio/` (a path outside it, a symlink or a
+ * file over `MAX_ITEM_BYTES` reads as none), and the ref must be a plain token.
+ * `null` for anything else.
  */
 function ticketOf(workspace: string, itemPath: string): TicketItem | null {
   try {
@@ -253,24 +251,9 @@ function ticketOf(workspace: string, itemPath: string): TicketItem | null {
     const file = resolve(workspace, itemPath);
     if (resolve(file, "..") !== dir) return null;
     if (!(realpathSync(dir) + sep).startsWith(realpathSync(workspace) + sep)) return null;
-    const st = lstatSync(file);
-    if (!st.isFile() || st.size > MAX_ITEM_BYTES) return null;
-    const lines = readFileSync(file, "utf8").split(/\r?\n/);
-    const heading = lines.find((l) => l.startsWith("# "));
-    const at = lines.findIndex((l) => l.trim() === "## Source ticket");
-    if (at < 0) return null;
-    let ref: string | null = null;
-    for (const line of lines.slice(at + 1)) {
-      if (line.startsWith("## ")) break;
-      const m = /^- dedupe ref: `([^`]+)`$/.exec(line);
-      if (m !== null) {
-        ref = m[1] as string;
-        break;
-      }
-    }
-    if (ref === null || !REF_PATTERN.test(ref)) return null;
-    const title = heading === undefined ? "" : cleanTitle(heading.slice(2));
-    return { ref, title: title === "" ? null : title };
+    const source = readItemSource(file);
+    if (source === null || source.ref === null) return null;
+    return { ref: source.ref, title: source.title };
   } catch {
     return null;
   }
