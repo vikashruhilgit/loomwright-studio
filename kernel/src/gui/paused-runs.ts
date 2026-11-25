@@ -329,13 +329,48 @@ async function replyRoute(req: ContributedRouteRequest): Promise<ContributedRout
   });
 }
 
-/** Why a listed run can't be retired now: it is live, or a launch of it is queued. */
-type RetireBlock = "run_live" | "resume_queued" | "continuation_queued" | "run_state_unreadable";
+/** Why a listed run can't be retired now: it is live, a launch of it is queued, or a decision would continue it. */
+type RetireBlock = "run_live" | "resume_queued" | "continuation_queued" | "approval_pending" | "run_state_unreadable";
 
 /**
- * Whether `runId` is live or has a launch queued, read directly rather than from the list's `blocked`, which names
- * only its first block: a run Studio never started (`no_kernel_run`) or one under a stopped kill switch can be live
- * too, and retiring a run while it drains would drop items it is building.
+ * Whether a continuation of a kernel run session of `agent` in `checkout` whose launch names no run id (a backlog
+ * launch's, D47) is queued. `queuedLaunchOf` matches by run id, which such a launch never carries (the 23s limit), so
+ * a retire counts it as this run's: one checkout drains one run at a time.
+ */
+function unnamedContinuationQueued(store: Store, agent: string, checkout: string): boolean {
+  const want = resolve(checkout);
+  return store
+    .prepare<[string], string | null>(
+      `SELECT json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.checkout') FROM event_queue WHERE status = 'pending' AND json_valid(payload_json)
+         AND json_extract(payload_json, '$.agent') = ? AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.kind') = 'continue'
+         AND json_extract(payload_json, '$.${AUTOMATE_RUN_KEY}.run_id') IS NULL`,
+    )
+    .pluck()
+    .all(agent)
+    .some((c) => typeof c === "string" && resolve(c) === want);
+}
+
+/**
+ * Whether a kernel run session of `agent` in `checkout` (one an `automate-run` step started, `runLaunchOf`) holds a
+ * pending approval. The owner's decision on it would queue a `continue` of that session (D47), so a retired run would
+ * carry on; a retire waits until the owner has decided it and the continuation has ended. A session that has not
+ * ended is already `run_live`, and no ended session asks for a new approval, so nothing pending can appear after a
+ * retire passes this check.
+ */
+function runApprovalPending(store: Store, agent: string, checkout: string): boolean {
+  const want = resolvedPath(checkout);
+  return store
+    .prepare<[string], { session: number; cwd: string | null }>(
+      "SELECT a.requesting_session AS session, s.cwd FROM approvals a JOIN sessions s ON s.id = a.requesting_session WHERE a.status = 'pending' AND s.agent = ?",
+    )
+    .all(agent)
+    .some((r) => r.cwd !== null && resolvedPath(r.cwd) === want && runLaunchOf(store, r.session) !== undefined);
+}
+
+/**
+ * Whether `runId` is live, has a launch queued, or would be continued by a pending decision, read directly rather
+ * than from the list's `blocked`, which names only its first block: a run Studio never started (`no_kernel_run`) or
+ * one under a stopped kill switch can be live too, and retiring a run while it drains would drop items it is building.
  */
 function retireBlockOf(store: Store, agent: string, checkout: string, runId: string): RetireBlock | null {
   const read = readRunState(checkout);
@@ -343,7 +378,8 @@ function retireBlockOf(store: Store, agent: string, checkout: string, runId: str
   if (runSessionLive(store, agent, checkout) || resumeWouldDoubleDrain(read, runId)) return "run_live";
   const queued = queuedLaunchOf(store, runId, checkout);
   if (queued === "resume") return "resume_queued";
-  if (queued === "continue") return "continuation_queued";
+  if (queued === "continue" || unnamedContinuationQueued(store, agent, checkout)) return "continuation_queued";
+  if (runApprovalPending(store, agent, checkout)) return "approval_pending";
   return null;
 }
 
@@ -374,8 +410,8 @@ function runFileItems(checkout: string, runId: string): string[] | undefined {
 /**
  * `POST /automate/paused-runs/:run_id/retire {agent, checkout}` (27b): 200 `{run_id, agent, checkout, items}` after
  * one `automate_run_retired` event, or why not. 400 `invalid_run_id` / `invalid_body`; 404 `not_found` (not listed
- * for that agent and checkout, a run already retired included); 409 `run_live`, `resume_queued` or
- * `continuation_queued`, `run_state_unreadable` or `run_file_unreadable` (it changed since the list read it), or
+ * for that agent and checkout, a run already retired included); 409 `run_live`, `resume_queued`,
+ * `continuation_queued` or `approval_pending` (a held call of a run session in the checkout), `run_state_unreadable` or `run_file_unreadable` (it changed since the list read it), or
  * `too_many_items`. Any other block (no kernel run, a playbook or crew member off, the kill switch, a settling lock)
  * does not stop a retire: it starts nothing.
  */

@@ -15,13 +15,13 @@
 // Everything runs on a temp store and temp checkout with a fake GitHub client and
 // a fake ticket reader: no network, no Keychain, never the SDK or a model. The 23i
 // carry tests stay in `automate-runner.test.ts`, unchanged.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CARRY_DROP_REASONS, verifyCarried } from "../src/automate/carry-check.js";
-import { RUN_RETIRED_EVENT, recordRunRetired, retiredItemNames, retiredRunIds } from "../src/automate/retired-runs.js";
+import { RETIRED_HANDED_AGAIN_EVENT, RUN_RETIRED_EVENT, recordHandedAgain, recordRunRetired, retiredItemNames, retiredRunIds } from "../src/automate/retired-runs.js";
 import { createAutomateRunnerTools } from "../src/automate/runner.js";
-import { BACKLOG_FILE, STUDIO_ITEMS_DIR, earlierCandidates, itemFileName, writeTicketItems } from "../src/automate/tickets-to-items.js";
+import { BACKLOG_FILE, MAX_ITEM_BYTES, STUDIO_ITEMS_DIR, earlierCandidates, itemFileName, parseItemSource, writeTicketItems } from "../src/automate/tickets-to-items.js";
 import type { McpTicketReader, McpTicketResult } from "../src/integrations/mcp/trackers.js";
 import type { GitHubClient, GitHubIssueFilters, GitHubIssueSummary } from "../src/integrations/types.js";
 import { toolEnv } from "./fixtures/loomwright-run-files/harness.js";
@@ -382,6 +382,15 @@ describe("the carry check's pieces", () => {
     ]);
   });
 
+  it("the one item parser reads ref and link only under ## Source ticket, and an item over MAX_ITEM_BYTES reads as none (kept unverified)", () => {
+    const text = ["# Title", "## Notes", "- dedupe ref: `o/r#7`", "- link: https://github.com/o/r/issues/7", "## Source ticket", "- repo: o/r", "- dedupe ref: `o/r#21`", "- link: https://github.com/o/r/issues/21", "## Ticket data (untrusted)", "- dedupe ref: `o/r#8`"].join("\n");
+    expect(parseItemSource(text)).toEqual({ ref: "o/r#21", link: "https://github.com/o/r/issues/21", title: "Title" });
+    expect(parseItemSource("# T\n- dedupe ref: `o/r#7`\n")).toEqual({ ref: null, link: null, title: "T" });
+    writeTicketItems(env.checkout, "o/r", [issue(21)]);
+    writeFileSync(join(env.checkout, STUDIO_ITEMS_DIR, itemFileName("o/r#21")), `${readFileSync(join(env.checkout, STUDIO_ITEMS_DIR, itemFileName("o/r#21")), "utf8")}${"x".repeat(MAX_ITEM_BYTES)}`);
+    expect(earlierCandidates(env.checkout)).toEqual([{ name: itemFileName("o/r#21"), ref: null, link: null }]);
+  });
+
   it("verifyCarried reads only: no event, no queue row, and each poll is fetched once per call", async () => {
     connectGithub();
     githubPoll();
@@ -437,6 +446,23 @@ describe("retired runs: the automate_run_retired record", () => {
     insert.run(RUN_RETIRED_EVENT, JSON.stringify({ checkout: env.checkout, run_id: "r2", items: [NAME_A, "../../etc/passwd", 5] }));
     expect(retiredRunIds(env.store, env.checkout)).toEqual(new Set(["r2"]));
     expect(retiredItemNames(env.store, env.checkout)).toEqual(new Set([NAME_A]));
+  });
+
+  it("a name handed over again after its retire is lifted in event order, and a later retire names it again", () => {
+    recordRunRetired(env.store, { checkout: env.checkout, run_id: "2026-11-20-001", items: [NAME_A, NAME_B] }, "2026-11-25T10:00:00Z");
+    const before = eventCount();
+    // A handover of tickets no retired run named writes nothing.
+    expect(recordHandedAgain(env.store, env.checkout, [itemFileName("o/r#99")], "2026-11-25T11:00:00Z")).toEqual([]);
+    expect(eventCount()).toBe(before);
+    expect(recordHandedAgain(env.store, env.checkout, [NAME_A, itemFileName("o/r#99")], "2026-11-25T11:00:00Z")).toEqual([NAME_A]);
+    expect(env.store.prepare("SELECT COUNT(*) FROM events WHERE kind = ?").pluck().get(RETIRED_HANDED_AGAIN_EVENT)).toBe(1);
+    expect(retiredItemNames(env.store, env.checkout)).toEqual(new Set([NAME_B]));
+    // Another checkout's hand-over lifts nothing here.
+    recordHandedAgain(env.store, join(env.root, "elsewhere"), [NAME_B], "2026-11-25T11:30:00Z");
+    expect(retiredItemNames(env.store, env.checkout)).toEqual(new Set([NAME_B]));
+    recordRunRetired(env.store, { checkout: env.checkout, run_id: "2026-11-25-001", items: [NAME_A] }, "2026-11-25T12:00:00Z");
+    expect(retiredItemNames(env.store, env.checkout)).toEqual(new Set([NAME_A, NAME_B]));
+    expect(retiredRunIds(env.store, env.checkout)).toEqual(new Set(["2026-11-20-001", "2026-11-25-001"]));
   });
 
   it("refuses a record it could not read back, before writing anything", () => {

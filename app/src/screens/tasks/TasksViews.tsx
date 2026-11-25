@@ -343,7 +343,7 @@ export function BoardView({ board, day, roster, approvals, titles, pausedRuns = 
                     />
                   ))}
                   {runs.map((run) => (
-                    <ParkedRunCard key={parkedRunKey(run)} run={run} agent={avatarAgent(run.agent, roster)} offline={offline} onResume={onResume} {...(onReply === undefined ? {} : { onReply })} {...(onRetire === undefined ? {} : { onRetire })} />
+                    <ParkedRunCard key={parkedRunKey(run)} run={run} agent={avatarAgent(run.agent, roster)} offline={offline} onResume={onResume} {...(onReply === undefined ? {} : { onReply })} {...(onRetire === undefined ? {} : { onRetire })} onFocusLost={onFocusLost} />
                   ))}
                 </ul>
               )}

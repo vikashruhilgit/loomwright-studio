@@ -2030,7 +2030,7 @@ export interface PausedRunResumeResponse {
  * `POST /automate/paused-runs/:run_id/retire` (phase 8 item 27b): exactly these two keys. The kernel records that the
  * owner retired the run (one `automate_run_retired` event); it is no longer listed or resumable, and no later handover
  * carries its unfinished items. The run file is never written, moved or deleted. Refused with 400 `invalid_run_id` /
- * `invalid_body`, 404 `not_found`, or 409 `run_live`, `resume_queued`, `continuation_queued`, `run_state_unreadable`,
+ * `invalid_body`, 404 `not_found`, or 409 `run_live`, `resume_queued`, `continuation_queued`, `approval_pending`, `run_state_unreadable`,
  * `run_file_unreadable` or `too_many_items`. Any other `PausedRunBlock` does not stop a retire.
  */
 export interface PausedRunRetireBody {

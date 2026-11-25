@@ -44,8 +44,10 @@
 // earlier backlog items would be carried (`earlierCandidates`), checks each
 // ticket against its playbooks' own polls (`./carry-check.ts`) and reads the
 // retired runs' items (`./retired-runs.ts`), then hands both to the writer as
-// plain data. The answer names what it dropped (`dropped`: `{item, ref, reason}`)
-// and what it kept unchecked (`unverified`) beside `carried`.
+// plain data. A retired item it hands over again is lifted from the retire record
+// (`recordHandedAgain`), so the retire applies only to lines written before it.
+// The answer names what it dropped (`dropped`: `{item, ref, reason}`) and what it
+// kept unchecked (`unverified`) beside `carried`.
 //
 // The `studio` CLI loads this module through the feature registry, so it imports
 // only types, the feature seam, zod, the repo-policy module, the loop's queue and
@@ -63,7 +65,7 @@ import type { CarryCheckDeps } from "./carry-check.js";
 import { checkoutOf } from "./checkout.js";
 import { AUTOMATE_RUN_KEY, type AutomateRunPayload, type MergeParkedRunPayload } from "./launch.js";
 import { mergeCheck } from "./merge-check.js";
-import { retiredItemNames } from "./retired-runs.js";
+import { recordHandedAgain, retiredItemNames } from "./retired-runs.js";
 import { readRunState, summarizeRuns } from "./run-state.js";
 import { ONE_SAFE_LINE } from "./text-rules.js";
 import { MAX_BODY, MAX_LINK, MAX_REF, MAX_TICKETS, MAX_TITLE, earlierCandidates, itemFileName, writeTicketItems } from "./tickets-to-items.js";
@@ -202,7 +204,13 @@ export function createAutomateRunnerTools(deps: AutomateRunnerDeps = {}): readon
         task: session.task,
         source_session: ctx.sessionId,
       };
-      const queued = enqueueEvent(ctx.store, { kind: "message", payload: { agent: session.agent, [AUTOMATE_RUN_KEY]: run } }, ctx.now());
+      // A retire applies only to the lines written before it: a retired run's item this call hands over again is lifted
+      // (`recordHandedAgain`), so a later handover checks it as any other line. One transaction with the run event.
+      const now = ctx.now();
+      const queued = ctx.store.transaction(() => {
+        recordHandedAgain(ctx.store, checkout, handed, now.toISOString());
+        return enqueueEvent(ctx.store, { kind: "message", payload: { agent: session.agent, [AUTOMATE_RUN_KEY]: run } }, now);
+      });
       return {
         repo: args.repo,
         backlog: prepared.backlog,

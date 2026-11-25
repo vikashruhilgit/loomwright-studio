@@ -320,30 +320,74 @@ export function isItemName(name: unknown): name is string {
   return typeof name === "string" && KEPT_LINE.test(`- [ ] ${STUDIO_ITEMS_DIR}/${name}`);
 }
 
+/** The largest requirement item file the kernel reads back (`readItemSource`): far over any `renderItem` output. */
+export const MAX_ITEM_BYTES = 128 * 1024;
+
 /** A `renderItem` `- dedupe ref:` line: the ref inside one code span. */
-const REF_LINE = /^- dedupe ref: `([^`]*)`$/;
+const REF_LINE = /^- dedupe ref: `([^`]+)`$/;
+
+/** What a requirement item says about its ticket (`parseItemSource`). */
+export interface ItemSource {
+  /** The `- dedupe ref:` under `## Source ticket`, or `null` when absent or not a plain ref (`REF_PATTERN`). */
+  readonly ref: string | null;
+  /** The `- link:` under `## Source ticket`, or `null` when absent or not a plain link (`LINK_PATTERN`). */
+  readonly link: string | null;
+  /** The item's first `# ` heading, cleaned (`cleanTitle`), or `null` when it has none or it cleans to nothing. */
+  readonly title: string | null;
+}
 
 /**
- * The dedupe ref and link the item at `path` names: its first `- dedupe ref:` and
- * `- link:` lines (`renderItem` writes them under `## Source ticket`; every line
- * of the ticket's body is behind `> `, so none of it can be one). Each is `null`
- * when the line is absent or does not hold a plain ref (`REF_PATTERN`) or link
- * (`LINK_PATTERN`). A file that can't be read throws.
+ * The ticket an item's text names: the first `- dedupe ref:` line (a ref in one code span) and the first `- link:`
+ * line inside its `## Source ticket` section (up to the next `## ` heading), as `renderItem` writes them, and its
+ * first `# ` heading. Only that section is read: every line of the ticket's body is behind `> ` in another section.
+ * The one parser of an item's ticket (the handover's carry check and the PR tracker both read it).
  */
-function itemSource(path: string): { ref: string | null; link: string | null } {
-  let ref: string | null | undefined;
-  let link: string | null | undefined;
-  for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
-    if (ref === undefined && line.startsWith("- dedupe ref: ")) {
-      const value = REF_LINE.exec(line)?.[1];
-      ref = value !== undefined && REF_PATTERN.test(value) ? value : null;
-    } else if (link === undefined && line.startsWith("- link: ")) {
-      const value = line.slice("- link: ".length);
-      link = LINK_PATTERN.test(value) ? value : null;
+export function parseItemSource(text: string): ItemSource {
+  const lines = text.split(/\r?\n/);
+  const heading = lines.find((l) => l.startsWith("# "));
+  const cleaned = heading === undefined ? "" : cleanTitle(heading.slice(2));
+  const title = cleaned === "" ? null : cleaned;
+  const at = lines.findIndex((l) => l.trim() === "## Source ticket");
+  let ref: string | null = null;
+  let link: string | null = null;
+  if (at >= 0) {
+    let refSeen = false;
+    let linkSeen = false;
+    for (const line of lines.slice(at + 1)) {
+      if (line.startsWith("## ")) break;
+      const value = refSeen ? undefined : REF_LINE.exec(line)?.[1];
+      if (value !== undefined) {
+        refSeen = true;
+        ref = REF_PATTERN.test(value) ? value : null;
+      } else if (!linkSeen && line.startsWith("- link: ")) {
+        linkSeen = true;
+        const url = line.slice("- link: ".length);
+        link = LINK_PATTERN.test(url) ? url : null;
+      }
+      if (refSeen && linkSeen) break;
     }
-    if (ref !== undefined && link !== undefined) break;
   }
-  return { ref: ref ?? null, link: link ?? null };
+  return { ref, link, title };
+}
+
+/**
+ * `parseItemSource` of the item file at `path`, or `null` when it is not a regular file (a symlink included), is over
+ * `MAX_ITEM_BYTES`, or can't be read. The caller checks that `path` is inside the items folder.
+ */
+export function readItemSource(path: string): ItemSource | null {
+  try {
+    const st = lstatSync(path);
+    if (!st.isFile() || st.size > MAX_ITEM_BYTES) return null;
+    return parseItemSource(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** The ticket ref and link the item at `path` names, each `null` when the file or the line is unusable. */
+function itemSource(path: string): { ref: string | null; link: string | null } {
+  const source = readItemSource(path);
+  return { ref: source?.ref ?? null, link: source?.link ?? null };
 }
 
 /** `checkout/.supervisor/requirements/studio` when every level is a real directory, else `undefined` (nothing is created). */

@@ -18,11 +18,14 @@
 //   resumable, and no later handover carries its unfinished items. Loomwright's run file is left exactly as it is. Off
 //   while the kernel is away and while the run is live or a resume or continuation is queued (the kernel refuses
 //   those with a 409, shown in the card); any other block (for example a run Studio didn't start) does not stop it.
+//   Focus is never dropped: opening the confirm moves it to "Retire run", closing it (Keep it, or a refused retire)
+//   back to Retire, and a card that leaves the board while it holds focus reports it (`onFocusLost`), as a board card
+//   does, so the board hands focus on.
 //
 // Every string from the run file (the title, the pause reason, the item, the PR URL) and the checkout path is
 // untrusted: it passes through `printable` and is a text child only. The PR URL is shown as text, never an `href`
 // (the window opens no links, as `../chat/integrationCards.tsx` does it).
-import { useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ApiResult, PausedRunBlock, PausedRunReplyResponse, PausedRunResumeResponse, PausedRunRetireResponse, PausedRunView, PausedRunsResponse, StudioBridge } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarAgent } from "../../components/Avatar/Avatar";
@@ -134,12 +137,17 @@ export function retireBlocked(run: Pick<PausedRunView, "blocked">): boolean {
   return run.blocked !== null && RETIRE_BLOCKS.has(run.blocked);
 }
 
+/** The retire-only 409 words (the rest are `blockText`'s). */
+const RETIRE_WORDS = table<string>({
+  approval_pending: "A held call of its run is waiting for your decision in Approvals",
+});
+
 /** What a refused or failed Retire says in the card. */
 export function retireErrorText(result: ApiResult<unknown>): string {
   if (result.ok) return "";
   if ("connection" in result) return "Couldn't reach the kernel; nothing was retired.";
   const code = String(result.body.error);
-  if (result.status === 409) return `Couldn't retire: ${blockText(code)}.`;
+  if (result.status === 409) return `Couldn't retire: ${RETIRE_WORDS[code] ?? blockText(code)}.`;
   if (result.status === 404) return "Couldn't retire: this run is no longer listed here.";
   const message = typeof result.body.message === "string" ? `: ${printable(result.body.message)}` : "";
   return `The kernel refused (${result.status} ${printable(code)})${message}.`;
@@ -180,10 +188,12 @@ export interface ParkedRunCardProps {
   readonly onReply?: (run: PausedRunView, text: string) => Promise<ApiResult<unknown>>;
   /** Sends the Retire (`retirePausedRun`) and, when the kernel answered, reads the board again. Absent: no Retire. */
   readonly onRetire?: (run: PausedRunView) => Promise<ApiResult<unknown>>;
+  /** Told the card's key (`parkedRunKey`) when the card leaves the DOM while it holds focus, so the board hands focus on. */
+  readonly onFocusLost?: (key: string) => void;
 }
 
 /** The Parked run card: what the run is, whose and where, why it paused, and Resume (or why not). */
-export function ParkedRunCard({ run, agent, offline, onResume, onReply, onRetire }: ParkedRunCardProps) {
+export function ParkedRunCard({ run, agent, offline, onResume, onReply, onRetire, onFocusLost }: ParkedRunCardProps) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [confirmRetire, setConfirmRetire] = useState(false);
@@ -193,6 +203,31 @@ export function ParkedRunCard({ run, agent, offline, onResume, onReply, onRetire
   const [sending, setSending] = useState(false);
   const [replyNote, setReplyNote] = useState<{ readonly ok: boolean; readonly text: string } | undefined>();
   const replyId = useId();
+  const footRef = useRef<HTMLDivElement>(null);
+  const retireRef = useRef<HTMLButtonElement>(null);
+  const confirmYesRef = useRef<HTMLButtonElement>(null);
+  const confirmWasOpen = useRef(false);
+  // The confirm replaces the focused Retire (and closing it removes the focused "Retire run" or "Keep it"): move focus
+  // with it, but only when focus was dropped or is still in the card's foot, never away from where the owner moved it.
+  useEffect(() => {
+    const wasOpen = confirmWasOpen.current;
+    confirmWasOpen.current = confirmRetire;
+    if (confirmRetire === wasOpen) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && !(footRef.current?.contains(active) ?? false)) return;
+    (confirmRetire ? confirmYesRef : retireRef).current?.focus();
+  }, [confirmRetire]);
+  const cardKey = parkedRunKey(run);
+  // Reports the card leaving the DOM while it holds focus (a retired run's card goes), as a board card does.
+  const watch = useCallback(
+    (node: HTMLLIElement | null) => {
+      if (node === null || onFocusLost === undefined) return undefined;
+      return () => {
+        if (node.contains(document.activeElement)) onFocusLost(cardKey);
+      };
+    },
+    [cardKey, onFocusLost],
+  );
   const last = run.last_session ?? null;
   const replyable = onReply !== undefined && canReply(run);
 
@@ -233,7 +268,7 @@ export function ParkedRunCard({ run, agent, offline, onResume, onReply, onRetire
   };
 
   return (
-    <li className="ticket-card" data-testid={`parked-run-${run.run_id}`}>
+    <li className="ticket-card" ref={watch} data-testid={`parked-run-${run.run_id}`}>
       <div className="tasks-card ticket-face parked-run-face">
         <span className="tasks-card-kind">
           <span className="tasks-card-label">
@@ -277,7 +312,7 @@ export function ParkedRunCard({ run, agent, offline, onResume, onReply, onRetire
           <span className="parked-run-text" data-testid="parked-run-where">{`${agent.name} · ${where}`}</span>
         </span>
       </div>
-      <div className="ticket-foot" data-testid="parked-run-foot">
+      <div className="ticket-foot" ref={footRef} data-testid="parked-run-foot">
         {blocked === null ? null : (
           <span className="ticket-foot-note" data-testid="parked-run-blocked">
             {blocked === "lock_settling" && clockText(run.resume_at) !== "" ? `Can resume at ${clockText(run.resume_at)}` : blockText(blocked)}
@@ -299,6 +334,7 @@ export function ParkedRunCard({ run, agent, offline, onResume, onReply, onRetire
             variant="ghost"
             size="row"
             disabled={retireOff}
+            ref={retireRef}
             data-testid="parked-run-retire"
             onClick={() => {
               setRetireError(undefined);
@@ -318,7 +354,7 @@ export function ParkedRunCard({ run, agent, offline, onResume, onReply, onRetire
             <span className="ticket-foot-note ticket-foot-full" data-testid="parked-run-retire-confirm">
               Retire this run? Studio stops showing it and never hands its unfinished items to a later run. Loomwright's run file is left as it is.
             </span>
-            <Button variant="danger" size="row" disabled={retireOff} loading={retiring} data-testid="parked-run-retire-confirm-yes" onClick={() => void retire()}>
+            <Button variant="danger" size="row" disabled={retireOff} loading={retiring} ref={confirmYesRef} data-testid="parked-run-retire-confirm-yes" onClick={() => void retire()}>
               Retire run
             </Button>
             <Button variant="ghost" size="row" disabled={retiring} data-testid="parked-run-retire-cancel" onClick={() => setConfirmRetire(false)}>

@@ -381,6 +381,13 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
     const items = count === undefined ? "" : ` (${count} ${count === 1 ? "item" : "items"})`;
     return `You retired run ${plain(f.run_id) ?? "a run"}${items}: it is no longer listed, and no later handover carries its items.`;
   },
+  // 27b: a handover handed a retired run's ticket over again (`recordHandedAgain`): `{checkout, items}`.
+  automate_retired_item_handed_again: (p) => {
+    const f = fields(p);
+    const count = Array.isArray(f.items) ? f.items.length : undefined;
+    const items = count === undefined ? "tickets" : `${count} ${count === 1 ? "ticket" : "tickets"}`;
+    return `A handover handed ${items} of a retired run over again; later handovers carry them while their playbook still lists them.`;
+  },
   auth_provider_chosen: (p) => {
     const g = reader(p);
     return `You chose ${g("to") ?? "an auth provider"} for every session${withText(g("from"), " (was ")}${g("from") === undefined ? "" : ")"}.`;

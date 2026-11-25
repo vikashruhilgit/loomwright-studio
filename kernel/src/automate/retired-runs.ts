@@ -10,6 +10,12 @@
 // not Loomwright's state. The owner's Retire route writes it; the handover and
 // the paused-runs list read it.
 //
+// A retire applies only to the lines written before it. A ticket handed over again
+// after its run was retired is the playbook's live work again: the handover that
+// hands it over appends one `automate_retired_item_handed_again` event naming it
+// (`recordHandedAgain`), and `retiredItemNames` reads the two kinds in event
+// order, so a later retire names it again and a later hand-over lifts it again.
+//
 // The reads parse `payload_json` defensively: a row that is not this shape is
 // ignored, never thrown. A checkout is compared as `paused-runs.ts` compares it
 // (`resolve`, realpath-free).
@@ -24,6 +30,9 @@ import { MAX_BACKLOG_ITEMS, isItemName } from "./tickets-to-items.js";
 
 /** The event kind of a retired run (its one writer is `recordRunRetired`). */
 export const RUN_RETIRED_EVENT = "automate_run_retired";
+
+/** The event kind of retired items a later handover handed over again (its one writer is `recordHandedAgain`). */
+export const RETIRED_HANDED_AGAIN_EVENT = "automate_retired_item_handed_again";
 
 /** One retired run, as recorded. */
 export interface RunRetired {
@@ -53,24 +62,30 @@ export function recordRunRetired(store: Store, retired: RunRetired, at: string):
   return record;
 }
 
+/** The checkout and item names of one well-formed record payload for `checkout`, else `undefined`. */
+function parsedRecord(payloadJson: string, want: string): { checkout: string; p: Record<string, unknown>; items: string[] } | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadJson);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  const p = parsed as Record<string, unknown>;
+  if (typeof p["checkout"] !== "string" || p["checkout"] === "" || resolve(p["checkout"]) !== want) return undefined;
+  const items = Array.isArray(p["items"]) ? (p["items"] as unknown[]).filter(isItemName) : [];
+  return { checkout: p["checkout"], p, items };
+}
+
 /** Every well-formed retired-run record for `checkout`, oldest first. */
 function retiredRecords(store: Store, checkout: string): RunRetired[] {
   const want = resolve(checkout);
   const rows = store.prepare<[string], { payload_json: string }>("SELECT payload_json FROM events WHERE kind = ? ORDER BY id").all(RUN_RETIRED_EVENT);
   const out: RunRetired[] = [];
   for (const row of rows) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(row.payload_json);
-    } catch {
-      continue;
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) continue;
-    const p = parsed as Record<string, unknown>;
-    if (typeof p["checkout"] !== "string" || p["checkout"] === "" || resolve(p["checkout"]) !== want) continue;
-    if (!isRunId(p["run_id"])) continue;
-    const items = Array.isArray(p["items"]) ? (p["items"] as unknown[]).filter(isItemName) : [];
-    out.push({ checkout: p["checkout"], run_id: p["run_id"], items });
+    const rec = parsedRecord(row.payload_json, want);
+    if (rec === undefined || !isRunId(rec.p["run_id"])) continue;
+    out.push({ checkout: rec.checkout, run_id: rec.p["run_id"], items: rec.items });
   }
   return out;
 }
@@ -80,7 +95,37 @@ export function retiredRunIds(store: Store, checkout: string): Set<string> {
   return new Set(retiredRecords(store, checkout).map((r) => r.run_id));
 }
 
-/** The item file names every run retired in `checkout` named: a handover never carries them (`run_retired`). Reads only. */
+/**
+ * The item file names a retired run in `checkout` named and no handover has handed over again since (event order):
+ * a handover never carries them (`run_retired`). Reads only.
+ */
 export function retiredItemNames(store: Store, checkout: string): Set<string> {
-  return new Set(retiredRecords(store, checkout).flatMap((r) => r.items));
+  const want = resolve(checkout);
+  const rows = store
+    .prepare<[string, string], { kind: string; payload_json: string }>("SELECT kind, payload_json FROM events WHERE kind IN (?, ?) ORDER BY id")
+    .all(RUN_RETIRED_EVENT, RETIRED_HANDED_AGAIN_EVENT);
+  const names = new Set<string>();
+  for (const row of rows) {
+    const rec = parsedRecord(row.payload_json, want);
+    if (rec === undefined) continue;
+    if (row.kind === RUN_RETIRED_EVENT) {
+      if (!isRunId(rec.p["run_id"])) continue;
+      for (const name of rec.items) names.add(name);
+    } else {
+      for (const name of rec.items) names.delete(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Records that a handover in `checkout` handed over `handed` (item file names) again: those a retired run named are
+ * lifted from `retiredItemNames` by one `automate_retired_item_handed_again` event at `at`. Writes nothing when none
+ * of them is retired. Returns the names it lifted, in `handed`'s order.
+ */
+export function recordHandedAgain(store: Store, checkout: string, handed: Iterable<string>, at: string): string[] {
+  const retired = retiredItemNames(store, checkout);
+  const items = [...new Set(handed)].filter((name) => isItemName(name) && retired.has(name));
+  if (items.length > 0) appendEvent(store, RETIRED_HANDED_AGAIN_EVENT, NO_REF, { checkout, items }, at);
+  return items;
 }

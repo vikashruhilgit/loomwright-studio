@@ -150,6 +150,34 @@ describe("POST /automate/paused-runs/:run_id/retire (27b)", () => {
     expect(retiredRows()).toEqual([]);
   });
 
+  it("refuses 409 approval_pending while a run session in the checkout holds a pending approval, and retires once it is decided", async () => {
+    queueSourceLaunch();
+    // A backlog run session that ended its turn on a held push: its launch names no run id.
+    const sessionId = Number(env.store.prepare("INSERT INTO sessions (agent, status, cwd) VALUES ('mason', 'completed', ?)").run(env.checkout).lastInsertRowid);
+    const run = { repo: "o/r", backlog: join(env.checkout, STUDIO_ITEMS_DIR, BACKLOG_FILE), checkout: env.checkout, playbook: live.playbook, playbook_version: 1, task: null, source_session: 99 };
+    const launch = enqueueEvent(env.store, { kind: "message", payload: { agent: "mason", [AUTOMATE_RUN_KEY]: run } }).id;
+    env.store.prepare("UPDATE event_queue SET status = 'done' WHERE id = ?").run(launch);
+    env.store.prepare("INSERT INTO work_steps (key, status, result_json) VALUES (?, 'done', ?)").run(`event:${launch}:automate-run`, JSON.stringify({ session_id: sessionId }));
+    const approval = Number(
+      env.store.prepare("INSERT INTO approvals (requesting_agent, requesting_session, action, payload_json) VALUES ('mason', ?, 'Bash', '{}')").run(sessionId).lastInsertRowid,
+    );
+    expect(await retire()).toEqual({ status: 409, body: { error: "approval_pending" } });
+    // The owner decides it.
+    env.store.prepare("UPDATE approvals SET status = 'denied' WHERE id = ?").run(approval);
+    // Deciding it queues a continuation of that backlog session, which names no run id: still refused.
+    const cont = enqueueEvent(env.store, { kind: "message", payload: { agent: "mason", [AUTOMATE_RUN_KEY]: { ...run, kind: "continue", of: "backlog", session: sessionId, prompt: "Denied." } } }).id;
+    expect(await retire()).toEqual({ status: 409, body: { error: "continuation_queued" } });
+    expect(retiredRows()).toEqual([]);
+    env.store.prepare("UPDATE event_queue SET status = 'done' WHERE id = ?").run(cont);
+    expect((await retire()).status).toBe(200);
+  });
+
+  it("a pending approval of a crew session that is no run session does not stop a retire", async () => {
+    const sessionId = Number(env.store.prepare("INSERT INTO sessions (agent, status, cwd) VALUES ('mason', 'completed', ?)").run(env.checkout).lastInsertRowid);
+    env.store.prepare("INSERT INTO approvals (requesting_agent, requesting_session, action, payload_json) VALUES ('mason', ?, 'Bash', '{}')").run(sessionId);
+    expect((await retire()).status).toBe(200);
+  });
+
   it("refuses what the list would not show 404, and a bad id or body 400, recording nothing", async () => {
     expect(await retire({ agent: "mason", checkout: env.checkout }, "automate-2026-11-20-002")).toMatchObject({ status: 404, body: { error: "not_found" } });
     expect(await retire({ agent: "ghost", checkout: env.checkout })).toMatchObject({ status: 404 });
@@ -196,6 +224,22 @@ describe("a later handover never carries a retired run's items (27b)", () => {
     expect(out["carried"]).toEqual([]);
     expect(out["unverified"]).toEqual([]);
     expect(checklist()).toEqual([`- [ ] ${rel(itemFileName("o/r#30"))}`]);
+  });
+
+  it("a retired ticket handed over again is carried at a later handover that does not hand it over (the retire applies only to earlier lines)", async () => {
+    rmSync(runPath());
+    await prepare([issue(21), issue(12)]);
+    writeRun(OLD_RUN);
+    expect((await retire()).status).toBe(200);
+    rmSync(runPath());
+    // The playbook hands #21 over again: its poll lists it open.
+    const again = await prepare([issue(21)]);
+    expect(again["dropped"]).toEqual([{ item: rel(NAME_12), ref: "o/r#12", reason: "run_retired" }]);
+    const out = await prepare([issue(30)]);
+    expect(out["dropped"]).toEqual([]);
+    expect(out["carried"]).toEqual([rel(NAME_21)]);
+    expect(out["unverified"]).toEqual([rel(NAME_21)]);
+    expect(checklist()).toEqual([`- [ ] ${rel(NAME_21)}`, `- [ ] ${rel(itemFileName("o/r#30"))}`]);
   });
 
   it("while the retired run's file is still there, its items are not carried either (the 23i run-file rule)", async () => {

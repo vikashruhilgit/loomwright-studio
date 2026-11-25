@@ -348,6 +348,59 @@ describe("Retire (27b)", () => {
     expect(screen.getByTestId("parked-run-retire-error").textContent).toBe("Couldn't reach the kernel; nothing was retired.");
   });
 
+  it("never drops focus: the confirm takes it, Keep it and a refusal hand it back to Retire", async () => {
+    drawWithRetire(run(), vi.fn<OnRetire>(async () => ({ ok: false, status: 409, body: { error: "approval_pending" } })));
+    retireButton().focus();
+    fireEvent.click(retireButton());
+    expect(document.activeElement).toBe(screen.getByTestId("parked-run-retire-confirm-yes"));
+    fireEvent.click(screen.getByTestId("parked-run-retire-cancel"));
+    expect(document.activeElement).toBe(retireButton());
+    fireEvent.click(retireButton());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-retire-confirm-yes"));
+    });
+    expect(screen.getByTestId("parked-run-retire-error").textContent).toBe("Couldn't retire: A held call of its run is waiting for your decision in Approvals.");
+    expect(document.activeElement).toBe(retireButton());
+  });
+
+  it("leaves focus where the owner moved it when the confirm closes", async () => {
+    let finish: (r: ApiResult<unknown>) => void = () => undefined;
+    const onRetire = vi.fn<OnRetire>(() => new Promise((resolve) => (finish = resolve)));
+    render(
+      <>
+        <button type="button" data-testid="elsewhere">
+          Elsewhere
+        </button>
+        <ul>
+          <ParkedRunCard run={run()} agent={AGENT} offline={false} onResume={vi.fn<OnResume>(async () => ok({ queue_id: 1 }))} onRetire={onRetire} />
+        </ul>
+      </>,
+    );
+    fireEvent.click(retireButton());
+    fireEvent.click(screen.getByTestId("parked-run-retire-confirm-yes"));
+    const elsewhere = screen.getByTestId("elsewhere");
+    elsewhere.focus();
+    await act(async () => {
+      finish(ok({ run_id: "x", items: [] }));
+    });
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it("reports its key when it leaves the board holding focus (a retired run's card goes), and not otherwise", () => {
+    const onFocusLost = vi.fn<(key: string) => void>();
+    const card = (shown: boolean) => (
+      <ul>{shown ? <ParkedRunCard run={run()} agent={AGENT} offline={false} onResume={vi.fn<OnResume>(async () => ok({ queue_id: 1 }))} onRetire={vi.fn<OnRetire>()} onFocusLost={onFocusLost} /> : null}</ul>
+    );
+    const { rerender } = render(card(true));
+    rerender(card(false));
+    expect(onFocusLost).not.toHaveBeenCalled();
+    rerender(card(true));
+    retireButton().focus();
+    rerender(card(false));
+    expect(onFocusLost).toHaveBeenCalledTimes(1);
+    expect(onFocusLost).toHaveBeenCalledWith("paused:mason:/Users/owner/code/sandbox:2026-11-16-tickets");
+  });
+
   it("words a 404 and an unknown refusal, escaped", () => {
     expect(retireErrorText({ ok: false, status: 404, body: { error: "not_found" } })).toBe("Couldn't retire: this run is no longer listed here.");
     expect(retireErrorText({ ok: false, status: 409, body: { error: `run_file_unreadable${ESC}` } })).toBe("Couldn't retire: run_file_unreadable\\x1b.");
