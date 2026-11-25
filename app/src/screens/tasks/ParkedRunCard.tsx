@@ -13,12 +13,17 @@
 //   message (`last_session`, model text: untrusted, a text child with its line breaks) and a reply box; Send is
 //   `POST /automate/paused-runs/:run_id/reply`, which continues THAT session with the owner's words. A Resume would
 //   start a new session that asks the same question again.
+// - Retire (phase 8 item 27b): `POST /automate/paused-runs/:run_id/retire` with the body exactly `{agent, checkout}`,
+//   after one confirm in the card. The kernel records that the owner set the run aside: it is no longer listed or
+//   resumable, and no later handover carries its unfinished items. Loomwright's run file is left exactly as it is. Off
+//   while the kernel is away and while the run is live or a resume or continuation is queued (the kernel refuses
+//   those with a 409, shown in the card); any other block (for example a run Studio didn't start) does not stop it.
 //
 // Every string from the run file (the title, the pause reason, the item, the PR URL) and the checkout path is
 // untrusted: it passes through `printable` and is a text child only. The PR URL is shown as text, never an `href`
 // (the window opens no links, as `../chat/integrationCards.tsx` does it).
 import { useId, useState } from "react";
-import type { ApiResult, PausedRunBlock, PausedRunReplyResponse, PausedRunResumeResponse, PausedRunView, PausedRunsResponse, StudioBridge } from "../../api/contract";
+import type { ApiResult, PausedRunBlock, PausedRunReplyResponse, PausedRunResumeResponse, PausedRunRetireResponse, PausedRunView, PausedRunsResponse, StudioBridge } from "../../api/contract";
 import { Avatar } from "../../components/Avatar/Avatar";
 import type { AvatarAgent } from "../../components/Avatar/Avatar";
 import { Badge } from "../../components/Badge/Badge";
@@ -52,6 +57,20 @@ export async function resumePausedRun(api: StudioBridge, run: Pick<PausedRunView
     return await api.request<PausedRunResumeResponse>({
       method: "POST",
       path: "/automate/paused-runs/:run_id/resume",
+      params: { run_id: run.run_id },
+      body: { agent: run.agent, checkout: run.checkout },
+    });
+  } catch {
+    return NO_ANSWER;
+  }
+}
+
+/** Retire one paused run (27b): the body is exactly `{agent, checkout}`, the run id a path param. */
+export async function retirePausedRun(api: StudioBridge, run: Pick<PausedRunView, "agent" | "checkout" | "run_id">): Promise<ApiResult<PausedRunRetireResponse>> {
+  try {
+    return await api.request<PausedRunRetireResponse>({
+      method: "POST",
+      path: "/automate/paused-runs/:run_id/retire",
       params: { run_id: run.run_id },
       body: { agent: run.agent, checkout: run.checkout },
     });
@@ -107,6 +126,25 @@ export function resumeErrorText(result: ApiResult<unknown>): string {
   return `The kernel refused (${result.status} ${printable(code)})${message}.`;
 }
 
+/** The blocks that also stop a Retire: the run is live, or a launch of it is queued. */
+const RETIRE_BLOCKS: ReadonlySet<PausedRunBlock> = new Set<PausedRunBlock>(["run_live", "resume_queued", "continuation_queued"]);
+
+/** Whether the list says the run can't be retired now (the kernel checks again on the POST). */
+export function retireBlocked(run: Pick<PausedRunView, "blocked">): boolean {
+  return run.blocked !== null && RETIRE_BLOCKS.has(run.blocked);
+}
+
+/** What a refused or failed Retire says in the card. */
+export function retireErrorText(result: ApiResult<unknown>): string {
+  if (result.ok) return "";
+  if ("connection" in result) return "Couldn't reach the kernel; nothing was retired.";
+  const code = String(result.body.error);
+  if (result.status === 409) return `Couldn't retire: ${blockText(code)}.`;
+  if (result.status === 404) return "Couldn't retire: this run is no longer listed here.";
+  const message = typeof result.body.message === "string" ? `: ${printable(result.body.message)}` : "";
+  return `The kernel refused (${result.status} ${printable(code)})${message}.`;
+}
+
 /** What a refused or failed reply says in the card. */
 export function replyErrorText(result: ApiResult<unknown>): string {
   if (result.ok) return "";
@@ -140,12 +178,17 @@ export interface ParkedRunCardProps {
   readonly onResume: (run: PausedRunView) => Promise<ApiResult<unknown>>;
   /** Sends a reply (`replyToRun`) and, when it was queued, reads the board again. Absent: no reply box. */
   readonly onReply?: (run: PausedRunView, text: string) => Promise<ApiResult<unknown>>;
+  /** Sends the Retire (`retirePausedRun`) and, when the kernel answered, reads the board again. Absent: no Retire. */
+  readonly onRetire?: (run: PausedRunView) => Promise<ApiResult<unknown>>;
 }
 
 /** The Parked run card: what the run is, whose and where, why it paused, and Resume (or why not). */
-export function ParkedRunCard({ run, agent, offline, onResume, onReply }: ParkedRunCardProps) {
+export function ParkedRunCard({ run, agent, offline, onResume, onReply, onRetire }: ParkedRunCardProps) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [confirmRetire, setConfirmRetire] = useState(false);
+  const [retiring, setRetiring] = useState(false);
+  const [retireError, setRetireError] = useState<string | undefined>();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [replyNote, setReplyNote] = useState<{ readonly ok: boolean; readonly text: string } | undefined>();
@@ -176,6 +219,17 @@ export function ParkedRunCard({ run, agent, offline, onResume, onReply }: Parked
     const result = await onResume(run);
     setPending(false);
     if (!result.ok) setError(resumeErrorText(result));
+  };
+
+  const retireOff = offline || retireBlocked(run);
+  const retire = async (): Promise<void> => {
+    if (onRetire === undefined || retireOff || retiring) return;
+    setRetiring(true);
+    setRetireError(undefined);
+    const result = await onRetire(run);
+    setRetiring(false);
+    setConfirmRetire(false);
+    if (!result.ok) setRetireError(retireErrorText(result));
   };
 
   return (
@@ -240,9 +294,41 @@ export function ParkedRunCard({ run, agent, offline, onResume, onReply }: Parked
         >
           Resume
         </Button>
+        {onRetire === undefined || confirmRetire ? null : (
+          <Button
+            variant="ghost"
+            size="row"
+            disabled={retireOff}
+            data-testid="parked-run-retire"
+            onClick={() => {
+              setRetireError(undefined);
+              setConfirmRetire(true);
+            }}
+          >
+            Retire
+          </Button>
+        )}
         {error === undefined ? null : (
           <span className="ticket-foot-note ticket-foot-full" role="status" data-testid="parked-run-error">
             {error}
+          </span>
+        )}
+        {onRetire === undefined || !confirmRetire ? null : (
+          <>
+            <span className="ticket-foot-note ticket-foot-full" data-testid="parked-run-retire-confirm">
+              Retire this run? Studio stops showing it and never hands its unfinished items to a later run. Loomwright's run file is left as it is.
+            </span>
+            <Button variant="danger" size="row" disabled={retireOff} loading={retiring} data-testid="parked-run-retire-confirm-yes" onClick={() => void retire()}>
+              Retire run
+            </Button>
+            <Button variant="ghost" size="row" disabled={retiring} data-testid="parked-run-retire-cancel" onClick={() => setConfirmRetire(false)}>
+              Keep it
+            </Button>
+          </>
+        )}
+        {retireError === undefined ? null : (
+          <span className="ticket-foot-note ticket-foot-full" role="status" data-tone="danger" data-testid="parked-run-retire-error">
+            {retireError}
           </span>
         )}
         {!replyable ? null : (

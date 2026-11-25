@@ -374,6 +374,13 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
     const g = reader(p);
     return `You replied to ${sessionNo(r).toLowerCase()}${withText(g("run_id"), ", run ")}; the run carries on from where it stopped.`;
   },
+  // 27b: the owner's Retire on a Parked run card (`kernel/src/automate/retired-runs.ts`): `{checkout, run_id, items}`.
+  automate_run_retired: (p) => {
+    const f = fields(p);
+    const count = Array.isArray(f.items) ? f.items.length : undefined;
+    const items = count === undefined ? "" : ` (${count} ${count === 1 ? "item" : "items"})`;
+    return `You retired run ${plain(f.run_id) ?? "a run"}${items}: it is no longer listed, and no later handover carries its items.`;
+  },
   auth_provider_chosen: (p) => {
     const g = reader(p);
     return `You chose ${g("to") ?? "an auth provider"} for every session${withText(g("from"), " (was ")}${g("from") === undefined ? "" : ")"}.`;

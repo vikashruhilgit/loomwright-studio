@@ -287,6 +287,8 @@ interface BoardViewProps {
   readonly onResume?: (run: PausedRunView) => Promise<ApiResult<unknown>>;
   /** A Parked run card's reply to the run's last message (`TasksScreen.tsx` sends it and reads the board again). */
   readonly onReply?: (run: PausedRunView, text: string) => Promise<ApiResult<unknown>>;
+  /** A Parked run card's Retire (27b; `TasksScreen.tsx` sends it and reads the board again). Absent: no Retire. */
+  readonly onRetire?: (run: PausedRunView) => Promise<ApiResult<unknown>>;
   readonly offline: boolean;
   readonly activeKey: string | null;
   readonly onOpen: (card: BoardCard) => void;
@@ -296,7 +298,7 @@ interface BoardViewProps {
 
 const NO_RESUME = async (): Promise<ApiResult<unknown>> => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "connection_failed" } });
 
-export function BoardView({ board, day, roster, approvals, titles, pausedRuns = [], onResume = NO_RESUME, onReply, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
+export function BoardView({ board, day, roster, approvals, titles, pausedRuns = [], onResume = NO_RESUME, onReply, onRetire, offline, activeKey, onOpen, onFocused, onFocusLost }: BoardViewProps) {
   const idBase = useId();
   const order = cardOrder(board);
   const tabKey = order.some((c) => c.key === activeKey) ? activeKey : (order[0]?.key ?? null);
@@ -341,7 +343,7 @@ export function BoardView({ board, day, roster, approvals, titles, pausedRuns = 
                     />
                   ))}
                   {runs.map((run) => (
-                    <ParkedRunCard key={parkedRunKey(run)} run={run} agent={avatarAgent(run.agent, roster)} offline={offline} onResume={onResume} {...(onReply === undefined ? {} : { onReply })} />
+                    <ParkedRunCard key={parkedRunKey(run)} run={run} agent={avatarAgent(run.agent, roster)} offline={offline} onResume={onResume} {...(onReply === undefined ? {} : { onReply })} {...(onRetire === undefined ? {} : { onRetire })} />
                   ))}
                 </ul>
               )}

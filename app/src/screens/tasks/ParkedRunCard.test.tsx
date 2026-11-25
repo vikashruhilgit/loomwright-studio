@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 // The Parked run card (phase 8 item 23j): its fields, Resume enabled only when nothing blocks it (and the plain words
 // when something does), off while the kernel is away, the POST's exact path and body, the 409 / 404 / connection
-// errors in the card, and run-file text rendered inert.
+// errors in the card, and run-file text rendered inert. 27b: Retire, after one confirm, off while offline or while the
+// run is live or a launch of it is queued, its POST's exact body, and a refusal in the card.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiResult, PausedRunBlock, PausedRunView } from "../../api/contract";
 import { fakeBridge, ok } from "../../store/fake-bridge";
-import { ParkedRunCard, blockText, readPausedRuns, replyToRun, resumeErrorText, resumePausedRun } from "./ParkedRunCard";
+import { ParkedRunCard, blockText, readPausedRuns, replyToRun, resumeErrorText, resumePausedRun, retireErrorText, retirePausedRun } from "./ParkedRunCard";
 
 const ESC = String.fromCharCode(0x1b);
 const RLO = "‮";
@@ -270,5 +271,97 @@ describe("reply to the run's last message", () => {
     expect(sent).toEqual([
       { method: "POST", path: "/automate/paused-runs/:run_id/reply", params: { run_id: "2026-11-16-tickets" }, body: { agent: "mason", checkout: "/Users/owner/code/sandbox", text: "Redo it." } },
     ]);
+  });
+});
+
+describe("Retire (27b)", () => {
+  type OnRetire = (run: PausedRunView) => Promise<ApiResult<unknown>>;
+
+  function drawWithRetire(view: PausedRunView, onRetire = vi.fn<OnRetire>(async () => ok({ run_id: view.run_id, items: [] })), offline = false) {
+    render(
+      <ul>
+        <ParkedRunCard run={view} agent={AGENT} offline={offline} onResume={vi.fn<OnResume>(async () => ok({ queue_id: 1 }))} onRetire={onRetire} />
+      </ul>,
+    );
+    return onRetire;
+  }
+  const retireButton = (): HTMLButtonElement => screen.getByTestId("parked-run-retire") as HTMLButtonElement;
+
+  it("is not drawn without onRetire", () => {
+    draw(run());
+    expect(screen.queryByTestId("parked-run-retire")).toBeNull();
+  });
+
+  it("asks once, then sends the run; Keep it sends nothing", async () => {
+    const onRetire = drawWithRetire(run());
+    expect(retireButton().disabled).toBe(false);
+    fireEvent.click(retireButton());
+    expect(screen.getByTestId("parked-run-retire-confirm").textContent).toContain("never hands its unfinished items to a later run");
+    expect(onRetire).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("parked-run-retire-cancel"));
+    expect(screen.queryByTestId("parked-run-retire-confirm")).toBeNull();
+    expect(onRetire).not.toHaveBeenCalled();
+    fireEvent.click(retireButton());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-retire-confirm-yes"));
+    });
+    expect(onRetire).toHaveBeenCalledTimes(1);
+    expect(onRetire.mock.calls[0]?.[0]).toMatchObject({ agent: "mason", checkout: "/Users/owner/code/sandbox", run_id: "2026-11-16-tickets" });
+    expect(screen.queryByTestId("parked-run-retire-error")).toBeNull();
+  });
+
+  it.each(["run_live", "resume_queued", "continuation_queued"] as const)("Retire disabled while the run is %s", (block) => {
+    const onRetire = drawWithRetire(run({ blocked: block }));
+    expect(retireButton().disabled).toBe(true);
+    fireEvent.click(retireButton());
+    expect(screen.queryByTestId("parked-run-retire-confirm")).toBeNull();
+    expect(onRetire).not.toHaveBeenCalled();
+  });
+
+  it("Retire disabled while offline", () => {
+    const onRetire = drawWithRetire(run(), undefined, true);
+    expect(retireButton().disabled).toBe(true);
+    fireEvent.click(retireButton());
+    expect(onRetire).not.toHaveBeenCalled();
+  });
+
+  it.each(["no_kernel_run", "playbook_not_live", "agent_not_active", "kill_switch_engaged", "lock_settling"] as const)("stays on while only Resume is blocked (%s)", (block) => {
+    drawWithRetire(run({ blocked: block }));
+    expect(retireButton().disabled).toBe(false);
+    expect(resumeButton().disabled).toBe(true);
+  });
+
+  it("shows a refusal in the card in plain words, and a connection failure", async () => {
+    drawWithRetire(run(), vi.fn<OnRetire>(async () => ({ ok: false, status: 409, body: { error: "run_live" } })));
+    fireEvent.click(retireButton());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-retire-confirm-yes"));
+    });
+    expect(screen.getByTestId("parked-run-retire-error").textContent).toBe("Couldn't retire: A run is going in this workspace.");
+    expect(retireButton()).toBeTruthy();
+    cleanup();
+    drawWithRetire(run(), vi.fn<OnRetire>(async () => ({ ok: false, status: 0, connection: { state: "unreachable", reason: "timeout" } })));
+    fireEvent.click(retireButton());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("parked-run-retire-confirm-yes"));
+    });
+    expect(screen.getByTestId("parked-run-retire-error").textContent).toBe("Couldn't reach the kernel; nothing was retired.");
+  });
+
+  it("words a 404 and an unknown refusal, escaped", () => {
+    expect(retireErrorText({ ok: false, status: 404, body: { error: "not_found" } })).toBe("Couldn't retire: this run is no longer listed here.");
+    expect(retireErrorText({ ok: false, status: 409, body: { error: `run_file_unreadable${ESC}` } })).toBe("Couldn't retire: run_file_unreadable\\x1b.");
+    expect(retireErrorText({ ok: false, status: 400, body: { error: "invalid_body", message: "the body is {agent, checkout}" } })).toBe("The kernel refused (400 invalid_body): the body is {agent, checkout}.");
+  });
+
+  it("Retire posts exactly {agent, checkout} to the run's retire path", async () => {
+    const fake = fakeBridge();
+    fake.route("POST /automate/paused-runs/:run_id/retire", (req) => ok({ run_id: req.params?.run_id, agent: "mason", checkout: "/x", items: [] }));
+    expect((await retirePausedRun(fake.bridge, run())).ok).toBe(true);
+    const sent = fake.requestsTo("POST /automate/paused-runs/:run_id/retire").map((r) => r.req);
+    expect(sent).toEqual([
+      { method: "POST", path: "/automate/paused-runs/:run_id/retire", params: { run_id: "2026-11-16-tickets" }, body: { agent: "mason", checkout: "/Users/owner/code/sandbox" } },
+    ]);
+    expect(Object.keys(sent[0]?.body as object)).toEqual(["agent", "checkout"]);
   });
 });

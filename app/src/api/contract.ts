@@ -54,6 +54,7 @@ export type RouteOrigin =
   | "p8-item-17"
   | "p8-item-18"
   | "p8-item-23"
+  | "p8-item-27"
   | "github-app"
   | "d42";
 
@@ -93,7 +94,8 @@ export interface ContractRoute {
  * (item 03), the MCP connectors (item 06), the repo merge policy (item 08),
  * thread summarize, summary, start-fresh and rename (item 17) and the saved
  * workspaces' list or lookup, add and remove (item 18) and a paused Loomwright
- * run's list and Resume (item 23j, origin `p8-item-23`). Owner routes too.
+ * run's list and Resume (item 23j, origin `p8-item-23`) and its Retire (item 27b,
+ * origin `p8-item-27`). Owner routes too.
  */
 export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/status", origin: "phase-1" },
@@ -173,6 +175,7 @@ export const CONTRACT_ROUTES: readonly ContractRoute[] = Object.freeze([
   { method: "GET", path: "/automate/paused-runs", origin: "p8-item-23" },
   { method: "POST", path: "/automate/paused-runs/:run_id/resume", origin: "p8-item-23" },
   { method: "POST", path: "/automate/paused-runs/:run_id/reply", origin: "d42" },
+  { method: "POST", path: "/automate/paused-runs/:run_id/retire", origin: "p8-item-27" },
 ]);
 
 // ---- Shared shapes -------------------------------------------------------------
@@ -1821,6 +1824,7 @@ export interface ContractRouteMap {
   "GET /automate/paused-runs": Route<NoQuery, undefined, PausedRunsResponse>;
   "POST /automate/paused-runs/:run_id/resume": Route<NoQuery, PausedRunResumeBody, PausedRunResumeResponse>;
   "POST /automate/paused-runs/:run_id/reply": Route<NoQuery, PausedRunReplyBody, PausedRunReplyResponse>;
+  "POST /automate/paused-runs/:run_id/retire": Route<NoQuery, PausedRunRetireBody, PausedRunRetireResponse>;
 }
 
 export type RouteKey = keyof ContractRouteMap;
@@ -2020,6 +2024,26 @@ export interface PausedRunResumeResponse {
   readonly run_id: string;
   readonly agent: string;
   readonly checkout: string;
+}
+
+/**
+ * `POST /automate/paused-runs/:run_id/retire` (phase 8 item 27b): exactly these two keys. The kernel records that the
+ * owner retired the run (one `automate_run_retired` event); it is no longer listed or resumable, and no later handover
+ * carries its unfinished items. The run file is never written, moved or deleted. Refused with 400 `invalid_run_id` /
+ * `invalid_body`, 404 `not_found`, or 409 `run_live`, `resume_queued`, `continuation_queued`, `run_state_unreadable`,
+ * `run_file_unreadable` or `too_many_items`. Any other `PausedRunBlock` does not stop a retire.
+ */
+export interface PausedRunRetireBody {
+  readonly agent: string;
+  readonly checkout: string;
+}
+
+export interface PausedRunRetireResponse {
+  readonly run_id: string;
+  readonly agent: string;
+  readonly checkout: string;
+  /** The studio item file names (`ticket-….md`) the run file named, which no later handover carries. */
+  readonly items: readonly string[];
 }
 
 // ---- The bridge: what the preload exposes as `window.api` -------------------------------
