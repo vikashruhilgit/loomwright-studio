@@ -272,6 +272,62 @@ describe("AC2: a ticket whose source can't be read is kept in place and named un
     const orphan = await prepareWith({ github: fakeGithub({ "o/r": [] }, { "o/r": [listed(21)] }).client })([issue(22)]);
     expect(orphan["unverified"]).toEqual([rel("o/r#21")]);
   });
+
+  it("a ClickUp page that says has_more is unverified even with under MAX_POLL_ITEMS usable tasks: the ticket may be on the next page", async () => {
+    connectClickup();
+    clickupPoll();
+    await prepareWith({ tickets: fakeTickets([]) })([task("86bd5gdbq")]);
+    // The server's first page: 100 tasks, most without the poll's tag, so only 3 are usable; more pages follow.
+    const page = [...Array.from({ length: 97 }, (_, i) => clickupTask(`other${i}`, [])), ...["a1", "a2", "a3"].map((id) => clickupTask(id, ["studio-sandbox"]))];
+    const reader: McpTicketReader = {
+      async call(): Promise<McpTicketResult> {
+        return { ok: true, text: JSON.stringify({ tasks: page, count: page.length, page: 0, has_more: true, next_page: 1 }) };
+      },
+    };
+    const out = await prepareWith({ tickets: reader })([task("a1")]);
+    expect(out["dropped"]).toEqual([]);
+    expect(out["unverified"]).toEqual([rel("clickup:86bd5gdbq")]);
+    expect(checklist()).toEqual([line("clickup:86bd5gdbq"), line("clickup:a1")]);
+  });
+
+  it("only polls that can fire count: a poll turned off, or one whose playbook is not enabled, is never read and never drops", async () => {
+    connectGithub();
+    githubPoll();
+    await prepareWith({ github: fakeGithub({ "o/r": [] }).client })([issue(21)]);
+    // The one poll of o/r is turned off: no relevant poll, so the ticket is kept unverified and nothing is fetched.
+    env.store.prepare("UPDATE triggers SET enabled = 0").run();
+    const off = fakeGithub({ "o/r": [] }, { "o/r": [listed(21)] });
+    const offOut = await prepareWith({ github: off.client })([issue(22)]);
+    expect(offOut["dropped"]).toEqual([]);
+    expect(offOut["unverified"]).toEqual([rel("o/r#21")]);
+    expect(off.calls).toEqual([]);
+
+    // A poll that is on, of a playbook that is disabled or still a draft: the same.
+    for (const status of ["disabled", "draft"]) {
+      env.store.prepare("DELETE FROM triggers").run();
+      const slug = env.store.prepare<[number], string>("SELECT slug FROM playbooks WHERE id = ?").pluck().get(env.playbook("live")) as string;
+      env.store.prepare("UPDATE playbooks SET status = ? WHERE slug = ?").run(status, slug);
+      addPoll({ source: "github.issues", repos: ["o/r"], filters: { labels: ["studio"] } }, slug);
+      const gh = fakeGithub({ "o/r": [] }, { "o/r": [listed(21)] });
+      const out = await prepareWith({ github: gh.client })([issue(22)]);
+      expect(out["dropped"]).toEqual([]);
+      expect(out["unverified"]).toEqual([rel("o/r#21")]);
+      expect(gh.calls).toEqual([]);
+    }
+  });
+
+  it("beside a poll that can fire, one that can't is not read: the verdict rests on the firing poll's listing alone", async () => {
+    connectClickup();
+    clickupPoll();
+    // A second ClickUp poll, turned off. Were it read, its listing (the same fake answer) would be fetched twice.
+    addPoll({ source: "clickup.tasks", filters: { space: "77" } });
+    env.store.prepare("UPDATE triggers SET enabled = 0 WHERE id = (SELECT MAX(id) FROM triggers)").run();
+    await prepareWith({ tickets: fakeTickets([]) })([task("86bd5gdbq")]);
+    const reader = fakeTickets([clickupTask("86bd9new1", ["studio-sandbox"])]);
+    const out = await prepareWith({ tickets: reader })([task("86bd9new1")]);
+    expect(out["dropped"]).toEqual([{ item: rel("clickup:86bd5gdbq"), ref: "clickup:86bd5gdbq", reason: "filter_no_longer_matches" }]);
+    expect(reader.calls).toBe(1);
+  });
 });
 
 // ---- AC4: kept in place, handed again, retired ---------------------------------------------

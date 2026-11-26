@@ -146,7 +146,9 @@ function itemOf(filters: ClickupPollSpec["filters"], entry: unknown): SourceItem
  * The `clickup.tasks` fetch: one call of the definition's task-listing tool
  * through `tickets` with the poll's filters, then the kernel's own tag check on
  * what came back. Items are ordered by updated time, then ref, an id listed
- * twice kept once, uncapped here (`../poll.ts` caps them). A failure stops the fetch.
+ * twice kept once, uncapped here (`../poll.ts` caps them). Only the first page
+ * is read: when the answer says `has_more`, the fetch carries `more: true`. A
+ * failure stops the fetch.
  */
 export async function fetchClickupTasks(tickets: McpTicketReader, store: Store, spec: ClickupPollSpec): Promise<SourceFetch> {
   const read = await readTickets(tickets, store, "clickup", MCP_TRACKERS.clickup.tool, argsOf(spec.filters), "tasks", scopeOf(spec.filters));
@@ -156,7 +158,8 @@ export async function fetchClickupTasks(tickets: McpTicketReader, store: Store, 
     const item = itemOf(spec.filters, entry);
     if (item !== undefined) items.push(item);
   }
-  return { ok: true, items: orderItems(items) };
+  // `more`: the server said another page follows, so a task missing here may still be listed.
+  return read.more === true ? { ok: true, items: orderItems(items), more: true } : { ok: true, items: orderItems(items) };
 }
 
 // ---- A name given at draft time, turned into an ID -----------------------------
