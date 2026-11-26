@@ -39,6 +39,7 @@ Recorded 2026-11-02 in the phase 8 product-owner session (eight rounds of AskUse
 - [ ] .supervisor/requirements/phase-8/2026-11-02-160010-pr-tracker-and-owner-aware-comment-routing.md
 - [ ] .supervisor/requirements/phase-8/2026-11-02-160011-tasks-card-ticket-pr-approvals-ci-and-triage.md
 - [ ] .supervisor/requirements/phase-8/2026-11-02-160014-phase-8-exit-check-and-live-run-on-studio-sandbox.md
+- [ ] .supervisor/requirements/phase-8-15/2026-11-09-160015-wire-the-session-token-minter.md
 
 ## Order
 | Item | Delivers | Depends on |
@@ -57,6 +58,7 @@ Recorded 2026-11-02 in the phase 8 product-owner session (eight rounds of AskUse
 | 12 | App: Jira and ClickUp connect, App permission upgrade, repo policy card | 02, 03, 07, 08 |
 | 11 | App: Tasks ticket → PR card and history | 02, 10 |
 | 14 | Exit: `phase-8-exit.spec.ts`, runbook, live run on studio-sandbox, evidence, ROADMAP ✓ | 11, 12, 13 |
+| 15 | (added 2026-11-09, found by item 14) Wire `mintSessionToken` into the shipped daemon as the sessions' `SessionTokenMint`; docs that say "not wired yet" | 03, 04 |
 
 ## Run
 **Re-traced 2026-11-03 (Touches fix).** Items 05 and 06 each stopped at Launch Pad: their Touches named only new files, not the shared seam files where item 01's refusals and empty parts live, nor the tests that pin them. Items 07–14 were re-traced against `main` at `20684c8`, one acceptance criterion at a time (grep the refusal code, part or symbol each one changes; list every hit and its pinning test). Each item now carries a "Touches traced from the code" note naming why each shared file is listed. Item 09 was reshaped by the owner's 2026-11-03 decision (the playbook's own session runs `/automate`; no tool starts a session), and item 10's fix tool was dropped with it.
