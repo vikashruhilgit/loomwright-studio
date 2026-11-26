@@ -43,3 +43,9 @@ docs/architecture/automate.md
 docs/evidence/phase-8-exit-runbook.md
 
 ## Status: open
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-25T17:37:20Z
+- **Brief:** .supervisor/jobs/done/2026-11-25-27b-handover-never-queues-gone-ticket.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/313
