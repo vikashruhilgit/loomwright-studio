@@ -10,9 +10,14 @@
 // stored. The source comes from the item's link:
 //   https://github.com/<o>/<r>/issues/<n>  → every `github.issues` poll whose repos include <o>/<r> (case-insensitive)
 //   https://app.clickup.com/t/<id>         → every `clickup.tasks` poll
-// The relevant triggers are `triggers` rows of kind `poll` linked to an existing
-// playbook. Each is fetched at most once per call. A ticket counts as listed when
-// an item's `url` equals the link, or its `ref` equals `github:<o>/<r>#<n>`
+// The relevant triggers are the polls that can fire: `triggers` rows of kind
+// `poll` that are on (`enabled = 1`) and linked to a playbook whose status is
+// `enabled`, the same two conditions a due poll is gated on (`../triggers/poll.ts`).
+// A poll that is off, or whose playbook is a draft or disabled, hands nothing
+// over, so its filter says nothing about whether a ticket is still wanted: a
+// ticket only such polls list is `unverified` (the owner's ruling on 27b's review,
+// 2026-11-26). Each relevant trigger is fetched at most once per call. A ticket
+// counts as listed when an item's `url` equals the link, or its `ref` equals `github:<o>/<r>#<n>`
 // (case-insensitive) / `clickup:<id>`.
 //
 // The verdict, per candidate:
@@ -26,9 +31,12 @@
 //     `filter_no_longer_matches` (a probe that fails, too: the ticket is proven
 //     off every filter, only the label is weaker); ClickUp: `filter_no_longer_matches`.
 // It fails toward keeping work: nothing it can't prove gone is dropped. A
-// listing "may be incomplete" when it was cut (`found > items.length`) or it
-// holds `MAX_POLL_ITEMS` or more: a paged source (ClickUp answers about 100
-// tasks per call, `has_more`) can stop there without the kernel seeing it.
+// listing "may be incomplete" when it was cut (`found > items.length`), it
+// holds `MAX_POLL_ITEMS` or more, or the source said another page follows
+// (`more`, ClickUp's `has_more`): the fetch reads one page only, and the
+// kernel's own tag check can leave that page with far fewer usable tasks than
+// the server sent. A ClickUp answer that says nothing of `has_more` is read as
+// complete (the live tool always answers it).
 //
 // It reads only: no write, no event. It never throws for a source (a client
 // that throws is a failed fetch). Ticket data is never read as instructions:
@@ -83,7 +91,7 @@ function ticketOf(link: string | null): Ticket | undefined {
   return undefined;
 }
 
-/** A poll trigger linked to a playbook: its parsed spec, or `undefined` when the stored spec can't be read. */
+/** A poll that can fire (on, of an enabled playbook): its parsed spec, or `undefined` when the stored spec can't be read. */
 interface PollTrigger {
   readonly id: number;
   readonly spec: PollSpec | undefined;
@@ -91,7 +99,7 @@ interface PollTrigger {
 
 function pollTriggers(store: Store): PollTrigger[] {
   const rows = store
-    .prepare<[], { id: number; spec_json: string }>("SELECT t.id, t.spec_json FROM triggers t JOIN playbooks p ON p.slug = t.playbook WHERE t.kind = 'poll' ORDER BY t.id")
+    .prepare<[], { id: number; spec_json: string }>("SELECT t.id, t.spec_json FROM triggers t JOIN playbooks p ON p.slug = t.playbook WHERE t.kind = 'poll' AND t.enabled = 1 AND p.status = 'enabled' ORDER BY t.id")
     .all();
   return rows.map((r) => {
     try {
@@ -186,7 +194,7 @@ async function verdictOf(
       continue;
     }
     if (read.fetched.items.some((item) => item.url === candidate.link || item.ref.toLowerCase() === ticket.ref.toLowerCase())) return "keep";
-    if (read.fetched.found > read.fetched.items.length || read.fetched.found >= MAX_POLL_ITEMS) incomplete = true;
+    if (read.fetched.more === true || read.fetched.found > read.fetched.items.length || read.fetched.found >= MAX_POLL_ITEMS) incomplete = true;
   }
   if (failed) return "unverified";
   if (incomplete || unreadable) return "unverified";

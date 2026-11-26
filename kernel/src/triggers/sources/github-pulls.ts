@@ -11,7 +11,7 @@ import { clip, errorMessage } from "../../loop/internal.js";
 
 /** What a source's fetch came to before the cap: every item found, or the first repo's failure. */
 export type SourceFetch =
-  | { readonly ok: true; readonly items: readonly SourceItem[] }
+  | { readonly ok: true; readonly items: readonly SourceItem[]; readonly more?: true }
   | { readonly ok: false; readonly error: "rate_limited"; readonly repo: string; readonly resets_at: string }
   | { readonly ok: false; readonly error: "http_error" | "unreachable" | "client_error"; readonly repo: string; readonly status?: number; readonly message?: string };
 

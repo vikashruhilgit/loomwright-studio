@@ -399,9 +399,14 @@ export interface PollFireOutcome {
   readonly items?: number;
 }
 
-/** What Phase A's fetch came to: the items (capped) and how many were found, or the first repo's failure. */
+/**
+ * What Phase A's fetch came to: the items (capped) and how many were found, or
+ * the first repo's failure. `more` is set when the source said another page
+ * follows that was not read (ClickUp's `has_more`): `found` then counts only
+ * what was read.
+ */
 export type Fetched =
-  | { readonly ok: true; readonly items: readonly SourceItem[]; readonly found: number }
+  | { readonly ok: true; readonly items: readonly SourceItem[]; readonly found: number; readonly more?: true }
   | { readonly ok: false; readonly error: "rate_limited"; readonly repo: string; readonly resets_at: string }
   | { readonly ok: false; readonly error: "http_error" | "unreachable" | "client_error"; readonly repo: string; readonly status?: number; readonly message?: string };
 
@@ -444,7 +449,8 @@ function fetchSource(github: GitHubClient | undefined, spec: PollSpec, tickets: 
 export async function fetchPollItems(github: GitHubClient | undefined, spec: PollSpec, tickets: McpTicketReader = createMcpTicketReader(), store?: Store): Promise<Fetched> {
   const fetched = await fetchSource(github, spec, tickets, store);
   if (!fetched.ok) return fetched;
-  return { ok: true, items: fetched.items.slice(0, MAX_POLL_ITEMS), found: fetched.items.length };
+  const read = { ok: true as const, items: fetched.items.slice(0, MAX_POLL_ITEMS), found: fetched.items.length };
+  return fetched.more === true ? { ...read, more: true } : read;
 }
 
 /** Whether a due poll may fetch now, or which miss its instant is. */

@@ -59,8 +59,12 @@ export function failure(scope: string, code: string): Extract<SourceFetch, { ok:
   return { ok: false, error: "client_error", repo: scope, message: code };
 }
 
-/** The entries of the tool's answer, or the failure to give back. */
-export type TicketRead = { readonly ok: true; readonly entries: readonly unknown[] } | Extract<SourceFetch, { ok: false }>;
+/**
+ * The entries of the tool's answer, or the failure to give back. `more` is set
+ * when the answer says another page follows (`has_more: true`, as ClickUp's
+ * `clickup_filter_tasks` answers): the entries are then not the whole listing.
+ */
+export type TicketRead = { readonly ok: true; readonly entries: readonly unknown[]; readonly more?: true } | Extract<SourceFetch, { ok: false }>;
 
 /**
  * Call `tool` of the `kind` connector and read `arrayKey` (or a bare array)
@@ -90,9 +94,10 @@ export async function readTickets(
   } catch {
     return failure(scope, "mcp_protocol");
   }
-  const list = Array.isArray(parsed) ? parsed : typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>)[arrayKey] : undefined;
+  const envelope = objectOf(parsed);
+  const list = Array.isArray(parsed) ? parsed : envelope?.[arrayKey];
   if (!Array.isArray(list)) return failure(scope, "mcp_protocol");
-  return { ok: true, entries: list };
+  return envelope?.["has_more"] === true ? { ok: true, entries: list, more: true } : { ok: true, entries: list };
 }
 
 /** A plain object, else `undefined`. */
