@@ -433,9 +433,10 @@ describe("approvalApplierOf: the kernel-applied actions' applier over the contri
     expect(() => approvalApplierOf([])).not.toThrow();
   });
 
-  it("the shipped composition builds: its appliers are the enable's and the two charter tools', each a member of the set", () => {
+  it("the shipped composition builds: its appliers are the memory proposal's (wa-f), the enable's and the two charter tools', each a member of the set", () => {
     const tools = mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools;
     expect(tools.filter((t) => t.applyOnApproval !== undefined).map((t) => `${KERNEL_MCP_SERVER_NAME}:${t.name}`)).toEqual([
+      `${KERNEL_MCP_SERVER_NAME}:kernel_memory_propose`,
       `${KERNEL_MCP_SERVER_NAME}:kernel_playbook_enable`,
       `${KERNEL_MCP_SERVER_NAME}:kernel_agent_create`,
       `${KERNEL_MCP_SERVER_NAME}:kernel_agent_update`,

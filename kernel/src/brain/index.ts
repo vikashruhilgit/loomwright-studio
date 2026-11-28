@@ -24,11 +24,13 @@
 // modules they read through (`../approvals/store.js`, `../console/events.js`,
 // `../console/workspaces.js`, `../gui/budget-audit.js`,
 // `../integrations/github/routes.js`, `../playbooks/store.js`,
-// `../auth/choice.js`, `../loop/internal.js`); none of them loads the session
-// manager or the SDK.
+// `../auth/choice.js`, `../loop/internal.js`), and, for `kernel_memory_propose`
+// (`./memory-propose.ts`, wa-f), `../gui/memory-paths.js` and `../tools/handoff.js`;
+// none of them loads the session manager or the SDK.
 import type { FeatureContribution } from "../features/contribution.js";
 import { askSubcommand, messagesSubcommand } from "./cli.js";
 import { brainMessageHandler } from "./handler.js";
+import { memoryProposeTool } from "./memory-propose.js";
 import { brainRoutes } from "./routes.js";
 import { studioTools } from "./studio-tools.js";
 
@@ -61,6 +63,8 @@ export { brainMessageHandler, interruptedAgentSession, listedWorkspace } from ".
 export type { BrainHandlerDeps } from "./handler.js";
 export { MEMORY_FILES, ensureMemoryFiles, memoryDir, readMemoryFile, wrightMemoryDir } from "./memory.js";
 export type { MemoryFile, MemoryRead } from "./memory.js";
+export { MAX_MEMORY_ENTRY_CHARS, MAX_MEMORY_EVIDENCE_CHARS, MEMORY_PROPOSAL_FILES, MEMORY_PROPOSE_REFUSALS, MEMORY_PROPOSE_TOOL_NAME, appendedText, memoryProposeTool, proposalDisplay } from "./memory-propose.js";
+export type { MemoryProposalFile, MemoryProposeRefusal } from "./memory-propose.js";
 export {
   BRAIN_AGENTS,
   BRAIN_MESSAGE_STATUSES,
@@ -97,7 +101,7 @@ export type { LookupAnswer, LookupRefusal } from "./studio-tools.js";
 
 export const brainContribution: FeatureContribution = Object.freeze({
   name: "brain",
-  tools: Object.freeze([...studioTools]),
+  tools: Object.freeze([...studioTools, memoryProposeTool]),
   routes: brainRoutes,
   subcommands: Object.freeze([askSubcommand(), messagesSubcommand()]),
   handlers: Object.freeze({ message: brainMessageHandler() }),

@@ -1117,7 +1117,7 @@ describe("standing grants: always on a rail approval from a playbook session", (
     expect(grantUses(t).map((e) => e.payload)).toEqual([{ id: 1, tool: "Bash" }]);
   });
 
-  it.each(["kernel_agent_create", "kernel_agent_update"])(
+  it.each(["kernel_agent_create", "kernel_agent_update", "kernel_memory_propose"])(
     "%s is held from a playbook session with standing grants in place; always on it is refused always_not_supported, writing nothing",
     async (name) => {
       const tool = `mcp__kernel__${name}`;
@@ -1426,7 +1426,7 @@ describe("kernel-applied actions: the owner's once on a held kernel action is ap
   const texts = (t: ReturnType<typeof setup>) => t.messages().map((m) => (m.payload as { text: string }).text);
 
   it("is a closed set in code whose every member is always held, so always never reaches one", () => {
-    expect(KERNEL_APPLIED_ACTIONS).toEqual(["mcp__kernel__kernel_playbook_enable", "mcp__kernel__kernel_agent_create", "mcp__kernel__kernel_agent_update"]);
+    expect(KERNEL_APPLIED_ACTIONS).toEqual(["mcp__kernel__kernel_playbook_enable", "mcp__kernel__kernel_agent_create", "mcp__kernel__kernel_agent_update", "mcp__kernel__kernel_memory_propose"]);
     for (const tool of KERNEL_APPLIED_ACTIONS) expect(ALWAYS_HELD_TOOLS).toContain(tool);
   });
 

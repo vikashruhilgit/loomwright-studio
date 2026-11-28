@@ -124,7 +124,7 @@ function shuffledWithDuplicate(list: readonly string[]): string[] {
 
 describe("the recorded past lists", () => {
   it("are the 15-, 21- and 25-tool lists, each a subset of the next and of PROPOSED_ALLOWED_TOOLS (no upgrade can remove a tool)", () => {
-    expect(PAST_PROPOSED_TOOL_LISTS.map((l) => l.length)).toEqual([15, 21, 25]);
+    expect(PAST_PROPOSED_TOOL_LISTS.map((l) => l.length)).toEqual([15, 21, 25, 31]);
     for (const [i, list] of PAST_PROPOSED_TOOL_LISTS.entries()) {
       expect(list.filter((t) => !PROPOSED_ALLOWED_TOOLS.includes(t)), `list ${i}`).toEqual([]);
       const next = PAST_PROPOSED_TOOL_LISTS[i + 1];

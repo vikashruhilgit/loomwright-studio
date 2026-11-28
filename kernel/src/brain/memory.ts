@@ -301,8 +301,8 @@ export function threadSummaryRelativePath(agent: string, thread: number): string
   return `${agent}/threads/${thread}.md`;
 }
 
-/** An error with a Node-style `code`, for the refusals below. */
-function codedError(code: string, message: string): Error {
+/** An error with a Node-style `code`, for the refusals below (and wa-f's applier, `./memory-propose.ts`). */
+export function codedError(code: string, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
@@ -335,7 +335,8 @@ function threadsDir(dataDir: string, agent: string, create: boolean): string {
   return dir;
 }
 
-function lstatOrUndefined(path: string): ReturnType<typeof lstatSync> | undefined {
+/** `path`'s own entry (`lstat`: a link is never followed), or undefined when absent; any other error is thrown. wa-f's applier reads through it too. */
+export function lstatOrUndefined(path: string): ReturnType<typeof lstatSync> | undefined {
   try {
     return lstatSync(path);
   } catch (err) {

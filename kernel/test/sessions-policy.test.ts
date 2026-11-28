@@ -668,6 +668,38 @@ describe("a live, write-granted policy gets the same rail answers (phase 8 item 
   });
 });
 
+describe("the approval decision block (wa-f): an agent session never decides an approval through the studio CLI", () => {
+  const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
+  const studio: ToolPolicy = { allowedTools: [], allowedBashPrefixes: ["studio", "/opt/bin/studio"] };
+
+  it("a Bash studio approve 1 once in a session whose prefixes admit studio is allowed by the policy and denied approval_decision_blocked by the rail", () => {
+    expect(decideToolUse(studio, "Bash", { command: "studio approve 1 once" })).toEqual({ decision: "allow", reason: "bash_prefix_allowed" });
+    expect(classifyToolCall("Bash", { command: "studio approve 1 once" }, rail)).toEqual({ kind: "deny", reason: "approval_decision_blocked" });
+  });
+
+  it("every decision form, by path, brace, quote, glob or case, is denied; studio approvals and other words are not", () => {
+    for (const command of [
+      "studio approve 1 always",
+      "studio deny 1",
+      "/opt/bin/studio approve 1 once",
+      "./studio deny 2",
+      "studio {approve,x} 1 once",
+      "studio 'approve' 1 once",
+      'studio "deny" 1',
+      "stu''dio approve 1 once",
+      "studio appr* 1 once",
+      "studio d?ny 1",
+      "STUDIO Approve 1 once",
+      "studio '' approve 1 once",
+    ]) {
+      expect(classifyToolCall("Bash", { command }, rail), command).toEqual({ kind: "deny", reason: "approval_decision_blocked" });
+    }
+    for (const command of ["studio approvals", "studio approvals --all", "studio approvals revoke 3", "studio ask approve it", "studio status", "echo studio approve 1 once", "studios approve 1", "{studio,x} approve 1"]) {
+      expect(classifyToolCall("Bash", { command }, rail), command).toEqual({ kind: "ordinary" });
+    }
+  });
+});
+
 describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
   const rail = { dataDir: "/data", homeDir: "/home/o", cwd: "/work" };
 
@@ -678,6 +710,7 @@ describe("ALWAYS_HELD_TOOLS (phase 3 foundation)", () => {
       "mcp__kernel__kernel_agent_update",
       "mcp__kernel__kernel_merge_approval_request",
       "AskUserQuestion",
+      "mcp__kernel__kernel_memory_propose",
     ]);
     expect(Object.isFrozen(ALWAYS_HELD_TOOLS)).toBe(true);
   });
