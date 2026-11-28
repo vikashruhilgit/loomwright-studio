@@ -71,3 +71,7 @@ kernel/test/approvals.test.ts
 kernel/test/sessions-policy.test.ts
 app/src/screens/approvals/ApprovalsScreen.tsx
 app/src/screens/approvals/ApprovalsScreen.test.tsx
+
+## Owner condition (2026-11-28, binding)
+
+Relayed by the coordinator when wa-f was started: keep the approval with the owner. An agent may only propose a lesson; it never accepts its own lesson or any other. In the build this means: no agent session (Wright or crew) can decide a `kernel_memory_propose` approval, whether its own or another agent's, through any tool, delegation or route; only the owner's decision path applies it; and a test pins that an agent's attempt to decide one is refused and writes nothing. The PR body shows this condition and the test that pins it.
