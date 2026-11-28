@@ -124,9 +124,9 @@ export const AGENT_CREATE_TOOL_NAME = "kernel_agent_create";
 
 /**
  * What Wright does once a member's approval is decided (phase 8 item 21f): a
- * playbook only on the owner's ask, a dry run never unasked. In the create's
- * description and its applied sentence, so an install whose `role.md`
- * predates the template's rule still reads it where it acts.
+ * playbook only on the owner's ask, a dry run never unasked. The rule is in
+ * Wright's Studio guide (`../brain/guide.ts`) and is repeated in the create's
+ * description and its applied sentence, so Wright reads it where it acts.
  */
 export const AFTER_MEMBER_APPROVAL =
   "Draft its playbook only if the owner asked for one, and run no dry run the owner did not ask for: a dry run spends the owner's tokens, so offer it instead.";

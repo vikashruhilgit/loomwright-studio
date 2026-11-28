@@ -524,6 +524,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
         sessions: manager,
         loomwright: { configured: options.sessions?.loomwrightPath, installedPluginsPath: options.sessions?.installedPluginsPath },
         ...githubOf,
+        // The one catalogue, for the brain's Studio guide; null (it could not be built) passes none, and the guide says so.
+        ...(toolCatalogue === null ? {} : { catalogue: toolCatalogue }),
       },
       { now, ...deps.loopDeps },
     );

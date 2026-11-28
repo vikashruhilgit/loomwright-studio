@@ -1,3 +1,4 @@
+import type { ToolCatalogue } from "../features/catalogue.js";
 import type { GitHubClient } from "../integrations/types.js";
 import type { CancelTimer, ResumeSessionParams, SessionHandle, SessionRow, StartSessionParams } from "../sessions/types.js";
 import type { Store } from "../store/store.js";
@@ -110,6 +111,8 @@ export interface EventContext {
   readonly sessions?: EventSessions;
   /** `EventLoopOptions.github`, when the loop was given it: the client a handler reads GitHub through (the `review_pr` launch's fresh comment read). */
   readonly github?: GitHubClient;
+  /** `EventLoopOptions.catalogue`, when the loop was given it: the kernel's tool catalogue (the brain's Studio guide lists a session's tools from it). */
+  readonly catalogue?: ToolCatalogue;
 }
 
 /**
@@ -210,6 +213,8 @@ export interface EventLoopOptions {
    * (a due poll then records `connector_missing`).
    */
   readonly github?: GitHubClient;
+  /** Passed to every handler as `EventContext.catalogue`. Default none (the brain's guide then says its tool list is unavailable). */
+  readonly catalogue?: ToolCatalogue;
 }
 
 export interface EventLoopDeps {

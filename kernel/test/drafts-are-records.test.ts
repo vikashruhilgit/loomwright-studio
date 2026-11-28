@@ -2,14 +2,15 @@
 // something that ends in an approval, the agent drafts it straight into the
 // held approval and refines it with an update, never leaving the proposal only
 // in chat text. The sentence lives in three surfaces the model reads: Wright's
-// first-run role template (`ROLE_TEMPLATE`, mirrored verbatim in
-// `docs/architecture/brain.md`, which `brain.test.ts` pins) and the
-// `kernel_agent_create` and `kernel_playbook_create` tool descriptions. This
-// file pins it in all three. Text checks only: no kernel, no session.
+// Studio guide (`wrightGuide`, which the kernel puts in every Wright context;
+// its rules are mirrored verbatim in `docs/architecture/brain.md`, which
+// `brain-guide.test.ts` pins) and the `kernel_agent_create` and
+// `kernel_playbook_create` tool descriptions. This file pins it in all three.
+// Text checks only: no kernel, no session.
 
 import { describe, expect, it } from "vitest";
 import { AGENT_CREATE_TOOL_NAME, AGENT_UPDATE_TOOL_NAME, charterToolsPart } from "../src/agents/charter-tools.js";
-import { ROLE_TEMPLATE } from "../src/brain/templates.js";
+import { wrightGuide } from "../src/brain/guide.js";
 import { PLAYBOOK_TOOL_NAMES, playbookTools } from "../src/playbooks/drafts.js";
 
 const PHRASE = "draft it straight into the held approval";
@@ -22,9 +23,9 @@ function description(tools: readonly { readonly name: string; readonly descripti
 }
 
 describe("drafts are records (AC13)", () => {
-  it("Wright's role template says to draft into the held approval, refine with an update, and never leave a proposal only in chat text", () => {
+  it("Wright's Studio guide says to draft into the held approval, refine with an update, and never leave a proposal only in chat text", () => {
     // Whitespace collapsed, so the pin does not depend on the line wrap.
-    const flat = ROLE_TEMPLATE.replace(/\s+/g, " ");
+    const flat = wrightGuide().replace(/\s+/g, " ");
     expect(flat).toContain("When the owner asks for something that ends in an approval");
     expect(flat).toContain(PHRASE);
     expect(flat).toContain("refine it with an update");
@@ -34,8 +35,9 @@ describe("drafts are records (AC13)", () => {
     expect(flat).toContain(`(${AGENT_UPDATE_TOOL_NAME}, ${PLAYBOOK_TOOL_NAMES[1]})`);
     // It sits under "Who decides", before "Where the owner acts".
     const at = flat.indexOf(PHRASE);
-    expect(at).toBeGreaterThan(flat.indexOf("## Who decides"));
-    expect(at).toBeLessThan(flat.indexOf("## Where the owner acts"));
+    expect(flat.indexOf("### Who decides")).toBeGreaterThan(-1);
+    expect(at).toBeGreaterThan(flat.indexOf("### Who decides"));
+    expect(at).toBeLessThan(flat.indexOf("### Where the owner acts"));
   });
 
   it("kernel_agent_create's description carries the sentence", () => {

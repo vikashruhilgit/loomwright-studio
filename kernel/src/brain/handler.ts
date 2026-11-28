@@ -19,7 +19,8 @@
 //      member, its `never` added to the policy): no model ⇒ row `failed`
 //      (`model_unset`), event done, no session; a `workspace` on the message
 //      not in the settings `workspaces` ⇒ `workspace_not_listed`, the same;
-//   c. the context (`buildContext`, the agent's own memory);
+//   c. the context (`buildContext`, the agent's own memory, and the Studio
+//      guide's tool list from `ctx.catalogue` and the session's allowed tools);
 //   d. `runStepAsync("start-session")`: start a session, or resume the task's
 //      latest session of the agent when it is `interrupted`; the cwd is the
 //      workspace, else the agent's memory folder; the row becomes `running`
@@ -438,8 +439,10 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
       fail(plan.detail);
       return;
     }
+    // The guide's tool list: the loop's catalogue (absent: the guide says the list is unavailable) and this session's allowed tools.
+    const guideOf = { ...(ctx.catalogue === undefined ? {} : { catalogue: ctx.catalogue }), allowedTools: session.policy.allowedTools };
     const contextOf = (extra: Pick<ContextInput, "history" | "resumed">): string =>
-      buildContext({ dataDir, agent, source: row.source, text: row.text, loomwright: loomwright(sessions), now: now(), timeZone: timeZone(), ...extra });
+      buildContext({ dataDir, agent, source: row.source, text: row.text, loomwright: loomwright(sessions), now: now(), timeZone: timeZone(), ...guideOf, ...extra });
     const refs = plan === undefined || plan.references.length === 0 ? {} : { history: plan.references };
     const continuing = plan !== undefined && plan.replay !== undefined;
     const prompt = continuing ? "" : contextOf(refs);

@@ -237,7 +237,7 @@ Loomwright's fix-now is an in-run owner decision offered by `/automate` itself a
 
 (`comment_gone` is the launch's 404, below.) A comment outcome never changes the route, and `PR_ROUTE_REASONS` is unchanged: those are why a route is `reply_only`. A call with no `comment` queues exactly what it did before, with no `comment` key in the payload and no `comment` in the answer. The answer's `command` stays the plain `/loomwright:review-pr <pr url>`.
 
-The answer is `{route, repo, pr, owner_kind, command?, item?, reason?, run?, event?, not_started?, comment?, note}`. The tool's description names the four routes and the three triage outcomes and what the session does for each, and Wright's role template ([brain](brain.md)) lets Wright draft a triage playbook from a sentence; nothing is preinstalled (D3).
+The answer is `{route, repo, pr, owner_kind, command?, item?, reason?, run?, event?, not_started?, comment?, note}`. The tool's description names the four routes and the three triage outcomes and what the session does for each, and Wright's Studio guide ([brain](brain.md#the-studio-guide)) lets Wright draft a triage playbook from a sentence; nothing is preinstalled (D3).
 
 ## Known limits
 
