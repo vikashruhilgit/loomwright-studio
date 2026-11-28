@@ -75,3 +75,8 @@ app/src/screens/approvals/ApprovalsScreen.test.tsx
 ## Owner condition (2026-11-28, binding)
 
 Relayed by the coordinator when wa-f was started: keep the approval with the owner. An agent may only propose a lesson; it never accepts its own lesson or any other. In the build this means: no agent session (Wright or crew) can decide a `kernel_memory_propose` approval, whether its own or another agent's, through any tool, delegation or route; only the owner's decision path applies it; and a test pins that an agent's attempt to decide one is refused and writes nothing. The PR body shows this condition and the test that pins it.
+
+## Owner-accepted deviations (2026-11-28, PR #321)
+
+- **AC5 (the catalogue job):** `kernel_memory_propose` sits under the `general` job, not `ask_for_approval`. With `ask_for_approval`, approval 21's 10-duty charter head drops below the 1,200-character slack that phase 8 item 19a AC1 requires. The owner accepted it because a crew member still gets the tool only through an approved charter that lists it.
+- **AC11 (the api.json Read):** a Read of `<dataDir>/api.json` is not a rail deny, because the rail checks paths only for Write, Edit, NotebookEdit and Bash. The file holds port, host, pid and start time, and the token is in the Keychain. The test pins the `ApiInfo` fields and the Bash `cat` deny instead. The owner accepted this.
