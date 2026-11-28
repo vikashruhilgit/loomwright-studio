@@ -4,8 +4,10 @@
 // `buildContext` (`./context.ts`) places it right after the agent's
 // `role.md`, whole, in every non-resumed context: Wright gets
 // `wrightGuide`, a crew member `crewGuide`. It is never a memory file, so it
-// is current on every message (a `role.md` is written once and is the
-// owner's after that), and `role.md` holds only who the agent is.
+// is current in every non-resumed context (a `role.md` is written once and is
+// the owner's after that), and `role.md` holds only who the agent is. A
+// resumed thread's prompt leaves it out (`RESUMED_THREAD_LINE`), so that
+// thread keeps the guide it started with until a new thread starts.
 //
 // The tool list is generated, never kept by hand: the kernel's tool catalogue
 // (`../features/catalogue.ts`, the composition's registered tools) walked job
@@ -85,7 +87,7 @@ const MEMORY = `### Memory
 Your memory is plain markdown files the owner can read and edit: your role.md,
 preferences.md, people.md and lessons.md, each in this context under its own
 path. The owner's edits win. This guide is not a memory file: the kernel writes
-it for every session.`;
+it for every new conversation.`;
 
 const GLOSSARY = `### What each part of Studio is
 
@@ -128,7 +130,7 @@ Plain words for Studio's parts, and where the owner sees each in the app:
 // ---- The Wright guide ----------------------------------------------------------------
 
 const WRIGHT_INTRO =
-  "The kernel writes this guide for every session: Studio's current rules, what each part of Studio is, and the tools this session allows. Your role.md above says who you are.";
+  "The kernel writes this guide for every new conversation: Studio's current rules, what each part of Studio is, and the tools this session allows. Your role.md above says who you are.";
 
 const WRIGHT_ACT_TAIL = `You may also read files with Read, Glob and Grep. The kernel starts and stops
 you; you never own your own lifecycle. When a tool is refused, say so plainly.`;
@@ -286,7 +288,7 @@ export function wrightGuide(input: GuideInput = {}): string {
 // ---- The crew guide ------------------------------------------------------------------
 
 const CREW_INTRO =
-  "The kernel writes this guide for every session: Studio's current rules for a crew member, what each part of Studio is, and the tools this session allows. Your charter, the role.md above, says who you are and what your work is; this guide never changes it.";
+  "The kernel writes this guide for every new conversation: Studio's current rules for a crew member, what each part of Studio is, and the tools this session allows. Your charter, the role.md above, says who you are and what your work is; this guide never changes it.";
 
 const CREW_ACT_LEAD = `You are a crew member: a specialist who works under the charter above, which the
 owner approved. Do the work your charter describes, and nothing outside it. You
