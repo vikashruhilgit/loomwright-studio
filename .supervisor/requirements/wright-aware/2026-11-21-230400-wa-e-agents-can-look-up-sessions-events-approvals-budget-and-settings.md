@@ -61,3 +61,8 @@ kernel/src/brain/studio-view.ts
 kernel/test/brain-studio-tools.test.ts
 kernel/test/tool-catalogue.test.ts
 kernel/test/feature-seams.test.ts
+
+## Carried from wa-c (PR #317)
+
+The owner routed this wa-c follow-up on 2026-11-28 to the first PR allowed to touch `kernel/src/brain/settings.ts` (this item lists it in Touches):
+- Correct the header comment in `kernel/src/brain/settings.ts`: it still says `wright.json` is "never overwritten", but since wa-c (PR #317) the kernel rewrites an unedited proposed tool list, with a backup and an audit event. `docs/architecture/brain.md` "Known limits" names the stale comment; remove that known-limits line once the comment is fixed.
