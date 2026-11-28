@@ -65,3 +65,5 @@ none
 kernel/src/agents/charter-tools.ts
 kernel/test/agents-charter-tools.test.ts
 docs/architecture/approvals.md
+
+## Status: done_with_escalation — ABANDONED (not a bug, verified on main 1949901e, LP-NO-GO 2026-11-15)

@@ -70,3 +70,5 @@ app/electron/channels.ts
 app/electron/kernel-connection.ts
 app/e2e/settings.spec.ts
 app/e2e/fixtures/settings.ts
+
+## Status: done_with_escalation — ABANDONED (replaced by D42 as built in PR #292 (owner-click switch, no token field, refused while sessions run))

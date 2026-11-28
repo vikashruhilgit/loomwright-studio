@@ -31,3 +31,10 @@ Studio already knew the list. The repo policy's detection (`repo_policies.detect
 - `kernel/test/automate-resume.test.ts`, "a run launch hands the repo's detected required checks to the drain".
 
 **Exit check.** A kernel run on a protected repo whose drain previously ended `required_checks_unavailable` reaches READY, or a real check verdict, with no hand edits.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done_with_escalation
+- **Completed:** 2026-11-28T07:36:30Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/292
+- **Owed:** live check

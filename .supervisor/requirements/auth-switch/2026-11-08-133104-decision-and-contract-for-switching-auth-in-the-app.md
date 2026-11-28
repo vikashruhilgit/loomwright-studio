@@ -75,3 +75,5 @@ kernel/src/gui/settings.ts
 kernel/src/auth/types.ts
 kernel/src/approvals/store.ts
 app/src/api/contract.ts
+
+## Status: done_with_escalation — ABANDONED (replaced by D42 as built in PR #292 (owner-click switch, no token field, refused while sessions run))

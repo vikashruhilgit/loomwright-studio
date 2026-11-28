@@ -80,3 +80,5 @@ kernel/test/auth.test.ts
 kernel/test/gui-settings.test.ts
 kernel/test/approvals.test.ts
 kernel/test/auth-distribution.test.ts
+
+## Status: done_with_escalation — ABANDONED (replaced by D42 as built in PR #292 (owner-click switch, no token field, refused while sessions run))

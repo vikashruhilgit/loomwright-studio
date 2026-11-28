@@ -61,3 +61,10 @@ Each defect was reproduced by a failing test first. The review drain on #294 fou
 - **Keep records no event.** Withdrawing the choice changes `auth.json` but writes no `auth_provider_*` event, so the audit's last auth entry is the deferral.
 - **The pending note's layout squeezed the sentence into the 112px label column.** Fixed in PR #295 (two rows, e2e test that failed first).
 - **The Settings window scrolled past its content.** The workspaces live region (`position: absolute`, no positioned ancestor) grew the document to 1,204px in a 760px window. Fixed by making the shell panes positioned (branch `fix/window-scrolls-past-content`, e2e test that failed first).
+
+<!-- loomwright:requirement-closeout -->
+## Status: done_with_escalation
+- **Completed:** 2026-11-28T07:36:31Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/294
+- **Owed:** live exit check 2
