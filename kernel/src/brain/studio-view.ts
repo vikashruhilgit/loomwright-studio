@@ -181,16 +181,17 @@ async function guarded(name: string, empty: string, max: number, fn: () => Promi
   }
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
+/** Whether `value` is a plain object (not null, not an array). Shared with `./studio-tools.ts`. */
+export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
  * The 200 body of the owner's route `method path`, called in-process with a
  * read-only request. Throws for a missing route, a status other than 200 or
- * a body that is not an object.
+ * a body that is not an object. Shared with `./studio-tools.ts`.
  */
-async function routeBody(routes: readonly ContributedRoute[], path: string, query: Record<string, string>, store: Store, now: Date): Promise<Record<string, unknown>> {
+export async function routeBody(routes: readonly ContributedRoute[], path: string, query: Record<string, string>, store: Store, now: Date): Promise<Record<string, unknown>> {
   const route = routes.find((r) => r.method === "GET" && r.path === path);
   if (route === undefined) throw new Error(`no GET ${path} route`);
   const req: ContributedRouteRequest = { params: {}, query, body: undefined, store, now: () => now };
@@ -203,8 +204,8 @@ async function routeBody(routes: readonly ContributedRoute[], path: string, quer
   return res.body;
 }
 
-/** `body[field]` as an array of objects; throws when it is not an array. */
-function arrayOf(body: Record<string, unknown>, field: string, path: string): Record<string, unknown>[] {
+/** `body[field]` as an array of objects; throws when it is not an array. Shared with `./studio-tools.ts`. */
+export function arrayOf(body: Record<string, unknown>, field: string, path: string): Record<string, unknown>[] {
   const value = body[field];
   if (!Array.isArray(value)) throw new Error(`GET ${path} answered no ${field} list`);
   return value.filter(isObject);

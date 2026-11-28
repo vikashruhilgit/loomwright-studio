@@ -10,9 +10,13 @@
 // says `"model": null`, and a Wright message is refused (`model_unset`, naming
 // the file and the field) until the owner sets one; the owner opens this file
 // to do it, and sees the proposed tool policy there. The file is created once,
-// with exclusive create (`wx`), and never overwritten: a malformed file is a
-// refusal naming it, never a rewrite. `effort` is recorded for the owner but
-// not applied (the session manager has no effort option).
+// with exclusive create (`wx`), and the owner's edits win: a malformed file is
+// a refusal naming it, never a rewrite. The one kernel rewrite is wa-c's
+// audited upgrade of an unedited proposed tool list
+// (`../agents/past-tool-lists.ts`): only a `"proposed"` list that is exactly a
+// list the kernel once proposed, with a backup beside the file and a
+// `wright_tool_policy_upgraded` audit event. `effort` is recorded for the
+// owner but not applied (the session manager has no effort option).
 //
 // `readWrightSettings` is the reader shared by `POST /ask`, the message
 // handler and the playbook dry runs and fires, so all refuse the same files
@@ -65,6 +69,13 @@ export const PROPOSED_ALLOWED_TOOLS: readonly string[] = Object.freeze([
   "Read",
   "Glob",
   "Grep",
+  // wa-e: the six read-only Studio lookups (job `look_up_studio`). The list before them is the last of `PAST_PROPOSED_TOOL_LISTS`.
+  "mcp__kernel__kernel_session_list",
+  "mcp__kernel__kernel_session_get",
+  "mcp__kernel__kernel_event_list",
+  "mcp__kernel__kernel_approval_list",
+  "mcp__kernel__kernel_budget_usage",
+  "mcp__kernel__kernel_settings_get",
 ]);
 
 /** The file written on a fresh data dir: no model (the owner picks one), the proposed tool policy. */

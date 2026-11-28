@@ -115,6 +115,36 @@ describe("the catalogue covers every registered tool (AC1, AC6)", () => {
     expect(CATALOGUE.tools.find((t) => t.name === "kernel_github_pr_comments")?.job).toBe("read_pr");
   });
 
+  it("wa-e AC8: the six Studio lookups are under look_up_studio (\"Look up Studio details\"), each with its own purpose line naming what it reads, and a duty naming the job grants exactly them", () => {
+    expect(TOOL_JOBS.look_up_studio).toBe("Look up Studio details");
+    expect(TOOL_JOB_IDS.slice(-2)).toEqual(["look_up_studio", "general"]);
+    const job = CATALOGUE.jobs.find((j) => j.id === "look_up_studio");
+    expect(job?.label).toBe("Look up Studio details");
+    expect(job?.tools.map((t) => [t.name, t.purpose])).toEqual([
+      ["kernel_session_list", "List sessions newest first, each with its agent, status, model, start and end, tokens and title (read only)."],
+      [
+        "kernel_session_get",
+        "Read one session: how it ended (its status, end time, its last SDK result and the kernel's last status change with any error text) and its most recent output rows (read only).",
+      ],
+      ["kernel_event_list", "List events from Studio's event log newest first, filtered by kind, agent and time (read only)."],
+      [
+        "kernel_approval_list",
+        "List the approvals waiting for the owner and the recently decided ones, each with its requesting agent, action, status, times and payload; it cannot decide one (read only).",
+      ],
+      ["kernel_budget_usage", "Read each agent's token and session use today against its limits, and the account's cap windows (read only)."],
+      [
+        "kernel_settings_get",
+        "Read Studio's current settings: each agent's model and tool policy, the workspaces, the connectors that are on and the auth provider chosen, never a credential (read only).",
+      ],
+    ]);
+    expect(new Set(job?.tools.map((t) => t.purpose)).size).toBe(6);
+    expect(allowedToolsForJobs(CATALOGUE, ["look_up_studio"])).toEqual(job?.tools.map((t) => `mcp__kernel__${t.name}`));
+    const lines = catalogueText(CATALOGUE).split("\n");
+    const at = lines.indexOf('Job look_up_studio "Look up Studio details":');
+    expect(at).toBeGreaterThan(4);
+    expect(lines.slice(at + 1, at + 7).map((l) => l.split(":")[0])).toEqual(job?.tools.map((t) => `- ${t.name}`));
+  });
+
   it("AC6: a tool with no feature job (the phase 1 six, a contributed tool without one) is under general, never dropped", () => {
     const phase1Only = buildToolCatalogue([]);
     expect(phase1Only.tools.map((t) => [t.name, t.job])).toEqual(PHASE1_TOOL_NAMES.map((n) => [n, GENERAL_JOB]));

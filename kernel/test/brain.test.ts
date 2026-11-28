@@ -318,12 +318,12 @@ async function tickBrain(store: Store, sessions: EventSessions | undefined, now 
 // ---- The contribution --------------------------------------------------------------
 
 describe("the brain contribution", () => {
-  it("ships the message handler, POST /ask, GET /messages/:id, GET /messages, studio ask and studio messages, and nothing else", () => {
+  it("ships the six Studio lookup tools (wa-e), the message handler, POST /ask, GET /messages/:id, GET /messages, studio ask and studio messages, and nothing else", () => {
     expect(SHIPPED_CONTRIBUTIONS).toContain(brainContribution);
     expect(Object.isFrozen(brainContribution)).toBe(true);
-    expect(Object.keys(brainContribution)).toEqual(["name", "routes", "subcommands", "handlers"]);
+    expect(Object.keys(brainContribution)).toEqual(["name", "tools", "routes", "subcommands", "handlers"]);
     const merged = mergeContributions([brainContribution], PHASE1_RESERVED);
-    expect(merged.tools).toEqual([]);
+    expect(merged.tools.map((t) => t.name)).toEqual(["kernel_session_list", "kernel_session_get", "kernel_event_list", "kernel_approval_list", "kernel_budget_usage", "kernel_settings_get"]);
     expect(merged.routes.map((r) => `${r.owner} ${r.method} ${r.path}`)).toEqual(["brain POST /ask", "brain GET /messages/:id", "brain GET /messages"]);
     expect(merged.subcommands.map((s) => [s.name, s.help])).toEqual([
       ["ask", ASK_HELP],
