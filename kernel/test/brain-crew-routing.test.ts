@@ -324,8 +324,8 @@ describe("a message for an active crew member runs its own session (AC1)", () =>
     expect(headings).toEqual(["## Shared notes: memory/shared/README.md", "## Shared notes: memory/shared/a-notes.md", "## Shared notes: memory/shared/b-team.md"]);
     expect(prompt).toContain("The team ships on Fridays.");
     expect(prompt).not.toContain("not markdown");
-    // Shared notes and the owner's ask are not wrapped (the Studio guide only explains the wrapper); nothing of Wright's memory is in it.
-    expect(prompt).not.toContain("<untrusted-data source=");
+    // Shared notes and the owner's ask are not wrapped (the Studio guide only explains the wrapper; the one wrapper is the Studio section's); nothing of Wright's memory is in it.
+    expect(prompt.match(/<untrusted-data source=[^>]*>/g)).toEqual(['<untrusted-data source="studio">']);
     expect(prompt).toContain("## Message from the owner\n\nwhat ships today?");
     expect(prompt).not.toContain("memory/wright");
     expect(prompt).not.toContain(ROLE_TEMPLATE.split("\n")[0] as string);

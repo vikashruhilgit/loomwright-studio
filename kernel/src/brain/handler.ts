@@ -19,8 +19,10 @@
 //      member, its `never` added to the policy): no model ⇒ row `failed`
 //      (`model_unset`), event done, no session; a `workspace` on the message
 //      not in the settings `workspaces` ⇒ `workspace_not_listed`, the same;
-//   c. the context (`buildContext`, the agent's own memory, and the Studio
-//      guide's tool list from `ctx.catalogue` and the session's allowed tools);
+//   c. the context (`buildContext`, the agent's own memory, the Studio
+//      guide's tool list from `ctx.catalogue` and the session's allowed tools,
+//      and the "Studio right now" section `studioView` reads once, at one
+//      `now()`, with the agent's model and tool-policy status from step b);
 //   d. `runStepAsync("start-session")`: start a session, or resume the task's
 //      latest session of the agent when it is `interrupted`; the cwd is the
 //      workspace, else the agent's memory folder; the row becomes `running`
@@ -76,7 +78,7 @@
 //
 // Imports only types from the loop and the session manager (never the
 // manager itself or the Agent SDK: the `studio` CLI loads this module); its
-// runtime imports beyond its siblings are `node:*`, the playbook runs, the
+// runtime imports beyond its siblings (`./studio-view.js` among them) are `node:*`, the playbook runs, the
 // automate feature's launch (`../automate/launch.js`), the
 // agents feature's SDK-free leaves (registry, settings, charter files,
 // memory), `../loop/queue.js` and `../loop/steps.js`.
@@ -102,6 +104,8 @@ import { cutChars, ensureMemoryFiles, wrightMemoryDir } from "./memory.js";
 import { FINAL_MESSAGE_STATUSES, ensureBrainMessage, messageFieldsOf, messageSourceOf, updateBrainMessage } from "./messages.js";
 import type { BrainMessageRow, BrainMessageStatus } from "./messages.js";
 import { readWrightSettings } from "./settings.js";
+import { studioView, wrightSelf } from "./studio-view.js";
+import type { StudioSelf } from "./studio-view.js";
 import {
   approvalContinuation,
   continuationPlan,
@@ -246,6 +250,8 @@ interface AgentSession {
   readonly memoryCwd: string;
   /** The settings `workspaces` (none for Wright). */
   readonly workspaces: readonly string[];
+  /** The model and tool-policy status the Studio section shows, from this step's own read. */
+  readonly self: StudioSelf;
 }
 
 /**
@@ -340,6 +346,7 @@ function crewSession(store: Store, agent: string, fail: (detail: string) => void
     policy: { ...s.policy, ...(s.never ? { never: s.never } : {}) },
     memoryCwd: agentMemoryDir(dataDir, agent),
     workspaces: s.workspaces ?? [],
+    self: { model: s.model, toolPolicy: s.policyStatus },
   };
 }
 
@@ -407,7 +414,7 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
         return;
       }
       const { model, permissionMode, policy } = settings.settings;
-      session = { model, permissionMode, policy, memoryCwd: wrightMemoryDir(dataDir), workspaces: [] };
+      session = { model, permissionMode, policy, memoryCwd: wrightMemoryDir(dataDir), workspaces: [], self: wrightSelf(dataDir, model) };
     } else {
       // A crew member: routed only when registered and `active`; its own files and settings (steps a and b).
       const crew = crewSession(store, agent, fail);
@@ -441,8 +448,10 @@ export function brainMessageHandler(deps: BrainHandlerDeps = {}): EventHandler {
     }
     // The guide's tool list: the loop's catalogue (absent: the guide says the list is unavailable) and this session's allowed tools.
     const guideOf = { ...(ctx.catalogue === undefined ? {} : { catalogue: ctx.catalogue }), allowedTools: session.policy.allowedTools };
+    // Studio right now: read once, at one instant, and given to every prompt below (a fresh start, a resume, a replay).
+    const studio = await studioView(store, agent, { now: now(), timeZone: timeZone(), self: session.self });
     const contextOf = (extra: Pick<ContextInput, "history" | "resumed">): string =>
-      buildContext({ dataDir, agent, source: row.source, text: row.text, loomwright: loomwright(sessions), now: now(), timeZone: timeZone(), ...guideOf, ...extra });
+      buildContext({ dataDir, agent, source: row.source, text: row.text, loomwright: loomwright(sessions), now: now(), timeZone: timeZone(), ...guideOf, studio, ...extra });
     const refs = plan === undefined || plan.references.length === 0 ? {} : { history: plan.references };
     const continuing = plan !== undefined && plan.replay !== undefined;
     const prompt = continuing ? "" : contextOf(refs);
