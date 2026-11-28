@@ -16,7 +16,7 @@ import { limitOf, positiveIntegerOf } from "./query.js";
 import type { GuiPart } from "./types.js";
 
 const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
+export const MAX_LIMIT = 200;
 
 interface TriggerEntryRow {
   readonly id: number;

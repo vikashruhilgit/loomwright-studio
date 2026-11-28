@@ -63,10 +63,10 @@ import { listAgents } from "../agents/registry.js";
 import { proposedToolsMissing, readWrightToolPolicy } from "../agents/past-tool-lists.js";
 import { WITHDRAWN_BY } from "../approvals/replace.js";
 import { listApprovals } from "../approvals/store.js";
-import { sessionOutputRoutes } from "../console/output.js";
+import { MAX_SESSIONS_LIMIT as SESSIONS_LIMIT, sessionOutputRoutes } from "../console/output.js";
 import type { ContributedRoute, ContributedRouteRequest } from "../features/contribution.js";
 import { budgetAuditRoutes } from "../gui/budget-audit.js";
-import { schedulesRoutes } from "../gui/schedules.js";
+import { MAX_LIMIT as SCHEDULE_LIMIT, schedulesRoutes } from "../gui/schedules.js";
 import { listPlaybooks } from "../playbooks/store.js";
 import type { Store } from "../store/store.js";
 import { formatZoned } from "../triggers/cron.js";
@@ -212,11 +212,6 @@ function arrayOf(body: Record<string, unknown>, field: string, path: string): Re
 
 const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : fallback);
 const limitText = (v: unknown): string => (typeof v === "number" ? String(v) : "no limit");
-
-/** The schedule route's own limit: the most entries it answers. */
-const SCHEDULE_LIMIT = 200;
-/** The sessions route's own limit. */
-const SESSIONS_LIMIT = 500;
 
 interface Scope {
   readonly agent: string;
