@@ -1,6 +1,7 @@
 # wa-a — The kernel builds each agent's Studio guide, and role.md holds only who the agent is
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/316
 
 **As the** owner talking to Wright and my crew,
 **I want** the manual that explains Studio and how to act in it to come from the kernel on every message, with `role.md` holding only the agent's persona,
@@ -64,3 +65,9 @@ kernel/src/features/catalogue.ts
 kernel/test/brain.test.ts
 kernel/test/brain-crew-routing.test.ts
 docs/architecture/brain.md
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T09:27:57Z
+- **Brief:** .supervisor/jobs/done/2026-11-28-wa-a-kernel-built-studio-guide.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/316
