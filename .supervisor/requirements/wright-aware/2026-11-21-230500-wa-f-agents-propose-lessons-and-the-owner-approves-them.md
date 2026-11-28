@@ -1,6 +1,7 @@
 # wa-f — Agents propose lessons, and the owner approves them before they are written
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/321
 
 **As the** owner,
 **I want** Wright and my crew to propose what they learned (a lesson from a mistake, a preference I stated, a fact about someone I work with) as an approval I decide, with the kernel writing it to their memory files,
@@ -80,3 +81,9 @@ Relayed by the coordinator when wa-f was started: keep the approval with the own
 
 - **AC5 (the catalogue job):** `kernel_memory_propose` sits under the `general` job, not `ask_for_approval`. With `ask_for_approval`, approval 21's 10-duty charter head drops below the 1,200-character slack that phase 8 item 19a AC1 requires. The owner accepted it because a crew member still gets the tool only through an approved charter that lists it.
 - **AC11 (the api.json Read):** a Read of `<dataDir>/api.json` is not a rail deny, because the rail checks paths only for Write, Edit, NotebookEdit and Bash. The file holds port, host, pid and start time, and the token is in the Keychain. The test pins the `ApiInfo` fields and the Bash `cat` deny instead. The owner accepted this.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T17:17:40Z
+- **Brief:** .supervisor/jobs/done/2026-11-28-wa-f-memory-proposals.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/321
