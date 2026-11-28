@@ -69,13 +69,15 @@ export const PROPOSED_ALLOWED_TOOLS: readonly string[] = Object.freeze([
   "Read",
   "Glob",
   "Grep",
-  // wa-e: the six read-only Studio lookups (job `look_up_studio`). The list before them is the last of `PAST_PROPOSED_TOOL_LISTS`.
+  // wa-e: the six read-only Studio lookups (job `look_up_studio`). The 25-tool list before them is a past list.
   "mcp__kernel__kernel_session_list",
   "mcp__kernel__kernel_session_get",
   "mcp__kernel__kernel_event_list",
   "mcp__kernel__kernel_approval_list",
   "mcp__kernel__kernel_budget_usage",
   "mcp__kernel__kernel_settings_get",
+  // wa-f: the always-held memory proposal (job `general`). The 31-tool list before it is the last of `PAST_PROPOSED_TOOL_LISTS`.
+  "mcp__kernel__kernel_memory_propose",
 ]);
 
 /** The file written on a fresh data dir: no model (the owner picks one), the proposed tool policy. */

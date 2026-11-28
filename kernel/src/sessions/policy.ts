@@ -29,6 +29,8 @@ export type ToolDecisionReason =
   | "protected_kernel_path"
   /** `gh pr merge` (or a merge through `gh api`): denied whatever the policy, never an approval. */
   | "merge_blocked"
+  /** `studio approve …` or `studio deny …`: an agent session deciding an approval. Denied whatever the policy, never an approval (wa-f). */
+  | "approval_decision_blocked"
   /** A Bash command longer than `MAX_RAIL_COMMAND_LENGTH`, or naming more path text than `MAX_RAIL_PATH_TEXT`: the rail does not read it, so it is denied. */
   | "bash_command_too_large"
   /**
@@ -614,7 +616,7 @@ export type ApprovalPayload =
  * differently from what `shellWords` sees (`UNREADABLE_BASH_CHARS`), and
  * `bash_command_too_large` past its fixed size bounds.
  */
-export type RailDenyReason = "protected_kernel_path" | "merge_blocked" | "bash_shell_metacharacter" | "bash_command_too_large";
+export type RailDenyReason = "protected_kernel_path" | "merge_blocked" | "approval_decision_blocked" | "bash_shell_metacharacter" | "bash_command_too_large";
 
 export type ToolCallClass =
   | { readonly kind: "ordinary" }
@@ -704,6 +706,9 @@ export const PROTECTED_DATA_DIRS: readonly string[] = ["config", "app"];
  *   held in EVERY session whose policy allows it, not only the run (no charter
  *   grants it today). Whether the owner's chosen answer reaches the session is
  *   unverified (probe p15 did not exercise it); holding it claims nothing more.
+ * - `mcp__kernel__kernel_memory_propose`: an entry for the agent's own
+ *   lessons, preferences or people file persists and shapes every later
+ *   context (wa-f), so the owner sees each one; the kernel writes it on `once`.
  */
 export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
   "mcp__kernel__kernel_playbook_enable",
@@ -711,6 +716,7 @@ export const ALWAYS_HELD_TOOLS: readonly string[] = Object.freeze([
   "mcp__kernel__kernel_agent_update",
   "mcp__kernel__kernel_merge_approval_request",
   "AskUserQuestion",
+  "mcp__kernel__kernel_memory_propose",
 ]);
 
 /**
@@ -1022,6 +1028,8 @@ const API_MERGE_MUTATION = /mergePullRequest|enablePullRequestAutoMerge|enqueueP
  *    naming the GraphQL `mergePullRequest` / `enablePullRequestAutoMerge` /
  *    `enqueuePullRequest` mutation, or sending a GraphQL query whose text the
  *    rail cannot read (`-F field=@file`, `--input`).
+ * 2b. `approval_decision_blocked` (wa-f): the `studio` CLI deciding an approval
+ *    (`decidesApproval`: `studio approve …`, `studio deny …`, bare or by path).
  * 3. `outward`: git with any later word `push` (or another word in
  *    `GIT_OUTWARD`, or `submit` after `p4`), or defining an alias or
  *    autocorrect (`GIT_ALIAS_CONFIG`, `--config-env`);
@@ -1087,6 +1095,7 @@ export function classifyToolCall(toolName: string, toolInput: unknown, ctx: Rail
     const payload: ApprovalPayload = { tool: "Bash", command, cwd: payloadCwd };
     const forms = commandForms(words);
     if (forms[0] === "merge") return { kind: "deny", reason: "merge_blocked" };
+    if (decidesApproval(words)) return { kind: "deny", reason: "approval_decision_blocked" };
     // An admitted Loomwright script (item 23a): its own path word is not an outward target. Only `bash <path>`
     // with `<path>` exactly an admitted path, as `shellWords` reads it; every other word is still read.
     // 23f: a read-only program's literal path under the session's own install is not an outward target either.
@@ -1528,6 +1537,24 @@ export function programCouldBe(command: string, name: string): boolean {
     if (program !== undefined) break;
   }
   return program !== undefined && wordCouldBe(basename(program), name);
+}
+
+/**
+ * Whether a Bash command's words are the `studio` CLI deciding an approval
+ * (wa-f): its program word, brace-expanded, is `studio` (bare, or any path
+ * ending in `/studio`; case-folded, as a glob) and the next non-empty word
+ * could be `approve` or `deny`, the only decision forms `approvals/cli.ts`
+ * registers (the CLI takes its subcommand first, with no global flag before
+ * it). Read as `commandForms` reads `gh`: `studio {approve,x} 1 once` and a
+ * quoted split are caught. The CLI reads the API token itself, unseen by the
+ * rail, so the rail denies it in every session whatever its Bash prefixes:
+ * only the owner decides an approval. `studio approvals revoke` only revokes a
+ * standing grant and is left as it is. Pure.
+ */
+function decidesApproval(words: readonly string[]): boolean {
+  const [program, sub] = words.flatMap(braceExpand).filter((w) => w !== "");
+  if (program === undefined || sub === undefined || !wordCouldBe(basename(program), "studio")) return false;
+  return wordCouldBe(sub, "approve") || wordCouldBe(sub, "deny");
 }
 
 // ---- Command forms ----

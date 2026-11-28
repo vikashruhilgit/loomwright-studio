@@ -68,11 +68,16 @@ export const APPROVAL_AUDIT_KINDS = ["approval_requested", "approval_decided", "
  * kernel creates or changes the crew member on the owner's `once`. A
  * composition without their applier records `apply_refused: no_applier` and
  * does nothing.
+ *
+ * `kernel_memory_propose` is applied by the brain feature (wa-f,
+ * `../brain/memory-propose.ts`): the kernel appends the agent's proposed entry,
+ * dated, to its own memory file on the owner's `once`.
  */
 export const KERNEL_APPLIED_ACTIONS = [
   "mcp__kernel__kernel_playbook_enable",
   "mcp__kernel__kernel_agent_create",
   "mcp__kernel__kernel_agent_update",
+  "mcp__kernel__kernel_memory_propose",
 ] as const;
 
 /**

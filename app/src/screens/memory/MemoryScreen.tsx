@@ -16,7 +16,8 @@
 //   file view that is not being edited reads its file again when the feed says memory changed;
 //   an editor never does.
 // - Live: a `memory_updated` or `session_status` event reads the tree again. The kernel records
-//   `memory_updated` for the owner's own writes only: an agent's write shows when a session
+//   `memory_updated` for the owner's own writes and for a memory proposal the kernel applied on
+//   the owner's Allow once (wa-f, `by: "kernel"`); an agent's own write shows when a session
 //   ends (`session_status`) or on the next read, and a save over it is refused by the hash.
 // - The kernel going away: the screen keeps its last data (the title-bar count line reads "last known"), Edit,
 //   Save and the conflict's actions are off, the draft stays, and it never falls back to the empty state. The

@@ -17,6 +17,9 @@
 //   (`MergeApprovalCard`) above the payload well, and offers only Allow once
 //   and Deny: no Always button, the ⇧A command is disabled for it, and
 //   `decide()` refuses `always` for it before any request.
+// - A memory proposal (`kernel_memory_propose`, wa-f) is drawn by `MemoryProposalCard`
+//   (the file, the entry, the evidence as untrusted text) and, like a merge, offers
+//   only Allow once and Deny.
 // - A held charter create or update whose display has the kernel's plain block
 //   (the granted kernel tools by job) is drawn by `CharterDisplay`: that block
 //   first, the raw lines beneath in "Kernel tool names, as enforced". Any
@@ -68,6 +71,7 @@ import { TrackerPanel, trackerFix } from "../chat/CharterCard";
 import { CharterDisplay } from "./CharterDisplay";
 import { nextOwnerGrant, trackerLine } from "./charterBlocks";
 import { MergeApprovalCard } from "./MergeApprovalCard";
+import { MEMORY_ALWAYS_REFUSED, MemoryProposalCard, isMemoryProposal, memoryProposalOf } from "./MemoryProposalCard";
 import { payloadText, printable } from "./printable";
 import { IN_CHAT, MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, approvalSubject, charterDisplayParts, isCharterApproval, isMergeApproval, mergeApprovalOf } from "./subject";
 import "./approvals.css";
@@ -357,6 +361,11 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
         setNotice(approval.id, { tone: "attention", text: MERGE_ALWAYS_REFUSED });
         return;
       }
+      // A memory entry is asked every time too (wa-f: an always-held tool).
+      if (decision === "always" && isMemoryProposal(approval)) {
+        setNotice(approval.id, { tone: "attention", text: MEMORY_ALWAYS_REFUSED });
+        return;
+      }
       if (decision === "always") {
         // The one refusal the app can tell before asking: nothing is sent.
         const refused = alwaysRefusalFor(approval);
@@ -471,7 +480,7 @@ function ApprovalsInbox({ api, registry }: { readonly api: StudioBridge; readonl
         keywords: ["approve", "always", "grant"],
         enabled: () => {
           const { selected: current, canDecide: can } = latest.current;
-          return can && current !== undefined && alwaysRefusalFor(current) === undefined && !isMergeApproval(current);
+          return can && current !== undefined && alwaysRefusalFor(current) === undefined && !isMergeApproval(current) && !isMemoryProposal(current);
         },
         run: run("always"),
       },
@@ -799,10 +808,13 @@ function ApprovalDetail({ api, focusLost, approval: a, sessions, playbooks, mess
   const willLine = kernelWillLine(a);
   const link = approvalLink(a, playbooks);
   const merge = mergeApprovalOf(a);
+  const memory = memoryProposalOf(a);
+  // A merge or a memory proposal is asked every time: no Always button (wa-f adds the memory proposal).
+  const noAlways = isMergeApproval(a) || isMemoryProposal(a);
   // A held charter's display in plain words first; `undefined` (any other display, or one with no plain block) keeps the `<pre>`.
   const charter = a.display !== undefined && isCharterApproval(a) ? charterDisplayParts(a.display) : undefined;
   // A merge approval has no Always button, so no reason for one being off.
-  const alwaysRefused = isMergeApproval(a) ? undefined : alwaysRefusalFor(a);
+  const alwaysRefused = noAlways ? undefined : alwaysRefusalFor(a);
   const pending = a.status === "pending";
   const sectionRef = useRef<HTMLElement>(null);
   const outcomeRef = useRef<HTMLDivElement>(null);
@@ -862,6 +874,7 @@ function ApprovalDetail({ api, focusLost, approval: a, sessions, playbooks, mess
       )}
 
       {merge === undefined ? null : <MergeApprovalCard merge={merge} />}
+      {memory === undefined ? null : <MemoryProposalCard proposal={memory} />}
 
       {a.display === undefined ? null : charter !== undefined ? (
         // Keyed by approval, so the details' open state never carries over to another approval. A pending one carries
@@ -921,7 +934,7 @@ function ApprovalDetail({ api, focusLost, approval: a, sessions, playbooks, mess
             <Button variant="primary" kbd="A" aria-keyshortcuts="A" loading={busyOn("once")} disabled={off("once")} onClick={() => onDecide("once")}>
               Allow once
             </Button>
-            {!isMergeApproval(a) ? (
+            {!noAlways ? (
               <Button
                 variant="secondary"
                 kbd="⇧A"

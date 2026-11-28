@@ -199,7 +199,7 @@ function crew(): { wright: number; mason: number; rhea: number } {
 describe("the six tools ride on the brain contribution", () => {
   it("are kernel_session_list, kernel_session_get, kernel_event_list, kernel_approval_list, kernel_budget_usage and kernel_settings_get, all job look_up_studio, none a phase 1 name", () => {
     expect(studioTools.map((t) => t.name)).toEqual([...STUDIO_TOOL_NAMES]);
-    expect(brainContribution.tools?.map((t) => t.name)).toEqual([...STUDIO_TOOL_NAMES]);
+    expect(brainContribution.tools?.map((t) => t.name)).toEqual([...STUDIO_TOOL_NAMES, "kernel_memory_propose"]);
     for (const t of studioTools) {
       expect(t.job, t.name).toBe("look_up_studio");
       expect(t.applyOnApproval, t.name).toBeUndefined();
@@ -695,17 +695,19 @@ describe("nothing is written (AC13)", () => {
 
 describe("the proposed Wright tool list (AC9)", () => {
   const SIX = STUDIO_TOOL_NAMES.map((n) => `mcp__kernel__${n}`);
+  /** wa-f appended one more after the six (the 31-tool list is now the last past list). */
+  const WA_F = "mcp__kernel__kernel_memory_propose";
 
-  it("holds all six mcp__kernel__ names, appended after Grep; the 25-tool list before them stays the last past list", () => {
+  it("holds all six mcp__kernel__ names, appended after Grep (then wa-f's memory proposal); the 25-tool list before them stays a past list", () => {
     for (const name of SIX) expect(PROPOSED_ALLOWED_TOOLS).toContain(name);
-    expect(PROPOSED_ALLOWED_TOOLS.slice(PROPOSED_ALLOWED_TOOLS.indexOf("Grep") + 1)).toEqual(SIX);
-    const last = PAST_PROPOSED_TOOL_LISTS.at(-1) as readonly string[];
+    expect(PROPOSED_ALLOWED_TOOLS.slice(PROPOSED_ALLOWED_TOOLS.indexOf("Grep") + 1)).toEqual([...SIX, WA_F]);
+    const last = PAST_PROPOSED_TOOL_LISTS.at(-2) as readonly string[];
     expect(last).toHaveLength(25);
-    expect(PROPOSED_ALLOWED_TOOLS.filter((t) => !last.includes(t))).toEqual(SIX);
+    expect(PROPOSED_ALLOWED_TOOLS.filter((t) => !last.includes(t))).toEqual([...SIX, WA_F]);
   });
 
   it("an unedited 25-tool proposed wright.json under a registered audit sink gets the six through wa-c's upgrade", () => {
-    const last = PAST_PROPOSED_TOOL_LISTS.at(-1) as readonly string[];
+    const last = PAST_PROPOSED_TOOL_LISTS.at(-2) as readonly string[];
     settingsFile("wright", { model: MODEL, effort: null, permission_mode: "default", tool_policy: { status: "proposed", allowedTools: [...last], allowedBashPrefixes: [] } });
     unregister = registerProposedToolsAudit(dataDir, {
       inTransaction: () => store.inTransaction,
@@ -718,6 +720,6 @@ describe("the proposed Wright tool list (AC9)", () => {
     for (const name of SIX) expect(written.tool_policy.allowedTools).toContain(name);
     const upgraded = store.prepare<[], string>("SELECT payload_json FROM events WHERE kind = 'wright_tool_policy_upgraded'").pluck().all();
     expect(upgraded).toHaveLength(1);
-    expect((JSON.parse(upgraded[0] as string) as { added: string[] }).added).toEqual(SIX);
+    expect((JSON.parse(upgraded[0] as string) as { added: string[] }).added).toEqual([...SIX, WA_F]);
   });
 });
