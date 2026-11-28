@@ -17,14 +17,21 @@
 // itself) still can: the check is not atomic against it (documented in
 // `docs/architecture/brain.md`, "Honest limits"). An agent's own memory write records no event.
 //
+// `GET /memory` marks Wright's `role.md` with `old_manual: true` (wa-b) when it is not the
+// current `ROLE_TEMPLATE` but still carries a heading of the old manual (`carriesOldManual`,
+// `../brain/past-templates.ts`): the file the kernel would not replace because the owner
+// edited it. The mark's read is bounded and never through a link, and it writes nothing.
+//
 // The `studio` CLI loads this module, so it imports only types, the feature seam and helpers
 // that load no SDK: never the Agent SDK, the session manager or `kernel.ts`
 // (`kernel/test/feature-seams.test.ts` pins the registry's module graph).
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isValidAgentId } from "../agents/types.js";
 import { memoryDir } from "../brain/memory.js";
+import { MAX_ROLE_UPGRADE_BYTES, carriesOldManual } from "../brain/past-templates.js";
+import { ROLE_TEMPLATE } from "../brain/templates.js";
 import type { ContributedRoute, ContributedRouteRequest, ContributedRouteResponse } from "../features/contribution.js";
 import { NO_REF, appendEvent } from "../loop/internal.js";
 import { writeFileAtomic } from "../tools/handoff.js";
@@ -41,6 +48,8 @@ interface FileEntry {
   readonly path: string;
   readonly size: number;
   readonly modified: string;
+  /** Only on `wright/role.md`, and only when true (`oldManualOf`): absent on every other entry, so their shape is unchanged. */
+  readonly old_manual?: true;
 }
 
 interface AgentFiles {
@@ -51,6 +60,41 @@ interface AgentFiles {
 const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Whether Wright's `role.md` at `path` should carry `old_manual: true`: its text is not the
+ * current `ROLE_TEMPLATE` and has a heading of the old manual as a line. Reads at most
+ * `MAX_ROLE_UPGRADE_BYTES` (past that bound only the whole lines read are checked), opened
+ * with `O_NOFOLLOW | O_NONBLOCK` and refused unless `fstat` says a regular file: never through
+ * a link, never blocking on a FIFO, never a write. Any error is no mark.
+ */
+function oldManualOf(path: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return false;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return false;
+    const buf = Buffer.alloc(MAX_ROLE_UPGRADE_BYTES + 1);
+    let size = 0;
+    while (size < buf.length) {
+      const n = readSync(fd, buf, size, buf.length - size, null);
+      if (n === 0) break;
+      size += n;
+    }
+    let text = buf.subarray(0, Math.min(size, MAX_ROLE_UPGRADE_BYTES)).toString("utf8");
+    // Cut at the bound: the last line read may be a part of a longer line, so it is not checked.
+    if (size > MAX_ROLE_UPGRADE_BYTES) text = text.slice(0, text.lastIndexOf("\n") + 1);
+    else if (text === ROLE_TEMPLATE) return false;
+    return carriesOldManual(text);
+  } catch {
+    return false;
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /** `memory/<folder>`'s regular `*.md` files directly in it (a link or a subfolder is never listed); a folder that cannot be read lists none. */
 function listFiles(root: string, folder: string): FileEntry[] {
@@ -65,8 +109,12 @@ function listFiles(root: string, folder: string): FileEntry[] {
     if (!entry.isFile()) continue;
     if (!entry.name.endsWith(".md")) continue;
     try {
-      const stat = lstatSync(join(root, folder, entry.name));
-      files.push({ path: `${folder}/${entry.name}`, size: stat.size, modified: stat.mtime.toISOString() });
+      const path = join(root, folder, entry.name);
+      const stat = lstatSync(path);
+      const listed: FileEntry = { path: `${folder}/${entry.name}`, size: stat.size, modified: stat.mtime.toISOString() };
+      // wa-b: Wright's `role.md` only; a crew member's `role.md` is its approved charter and is never marked.
+      const marked = folder === "wright" && entry.name === "role.md" && stat.isFile() && oldManualOf(path);
+      files.push(marked ? { ...listed, old_manual: true } : listed);
     } catch {
       // Gone between the listing and the stat: not listed.
     }
