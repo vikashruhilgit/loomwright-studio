@@ -59,3 +59,8 @@ kernel/test/gui-memory.test.ts
 app/src/screens/memory/MemoryScreen.tsx
 app/src/screens/memory/model.ts
 app/src/screens/memory/MemoryScreen.test.tsx
+
+## Carried from wa-a (PR #316)
+
+The owner routed these wa-a follow-ups to this item on 2026-11-28 (review findings the drain dismissed as known limits). This item's plan covers them, or says why it cannot:
+- A crew member's charter role.md still carries its own untrusted-text and memory sections, which now repeat what crewGuide says. Recorded in docs/architecture/brain.md "Known limits" by wa-a (PR #316); crew charter prose was left unchanged there on purpose.

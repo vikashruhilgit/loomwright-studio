@@ -58,3 +58,8 @@ kernel/src/brain/context.ts
 kernel/src/brain/handler.ts
 kernel/test/brain-studio-view.test.ts
 docs/architecture/brain.md
+
+## Carried from wa-a (PR #316)
+
+The owner routed these wa-a follow-ups to this item on 2026-11-28 (review findings the drain dismissed as known limits). This item's plan covers them, or says why it cannot:
+- Part of this (with wa-c): playbookPrompt and crewPlaybookPrompt are not wired to the tool catalogue: a playbook session's guide says its tool list is unavailable, and a crew playbook session gets no guide. Recorded in docs/architecture/brain.md "Known limits" by wa-a (PR #316).

@@ -58,3 +58,8 @@ kernel/test/agents-settings-upgrade.test.ts
 app/src/screens/settings/SettingsScreen.tsx
 app/src/screens/settings/model.ts
 app/src/screens/settings/SettingsScreen.test.tsx
+
+## Carried from wa-a (PR #316)
+
+The owner routed these wa-a follow-ups to this item on 2026-11-28 (review findings the drain dismissed as known limits). This item's plan covers them, or says why it cannot:
+- Part of this (with wa-d): playbookPrompt and crewPlaybookPrompt are not wired to the tool catalogue: a playbook session's guide says its tool list is unavailable, and a crew playbook session gets no guide. Recorded in docs/architecture/brain.md "Known limits" by wa-a (PR #316).
