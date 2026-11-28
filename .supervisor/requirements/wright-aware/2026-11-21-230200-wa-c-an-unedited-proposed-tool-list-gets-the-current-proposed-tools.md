@@ -1,5 +1,7 @@
 # wa-c — An unedited proposed tool list gets the current proposed tools
 
+## Status: ready
+
 **As the** owner,
 **I want** Wright's tool list, while it is still the kernel's unedited proposal, to follow the current proposal when the kernel adds tools, and a list I changed to be left alone with the new tools shown to me,
 **so that** new abilities (the Studio read tools, lesson proposals) reach my existing Wright without the kernel ever overriding a tool policy I set.

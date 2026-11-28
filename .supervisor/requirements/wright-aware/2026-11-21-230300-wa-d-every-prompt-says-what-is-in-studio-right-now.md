@@ -1,5 +1,7 @@
 # wa-d — Every prompt says what is in Studio right now, including recent mistakes
 
+## Status: ready
+
 **As the** owner,
 **I want** each agent's prompt to carry a short, current summary of Studio (what is running, waiting and scheduled, and what went wrong recently),
 **so that** Wright answers "what's going on?" from facts, notices waiting approvals and limits, and does not repeat a mistake it made earlier today.

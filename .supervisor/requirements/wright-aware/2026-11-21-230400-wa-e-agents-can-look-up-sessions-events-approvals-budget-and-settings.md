@@ -1,5 +1,7 @@
 # wa-e — Agents can look up sessions, events, approvals, budget and settings
 
+## Status: ready
+
 **As the** owner,
 **I want** Wright (and a crew member, within its own items) to have read-only kernel tools for the details behind the Studio summary,
 **so that** when I ask "why did last night's run fail?" or "what's waiting for me?" it can look, instead of guessing or telling me to open a screen.

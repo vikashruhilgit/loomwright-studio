@@ -1,5 +1,7 @@
 # wa-f — Agents propose lessons, and the owner approves them before they are written
 
+## Status: ready
+
 **As the** owner,
 **I want** Wright and my crew to propose what they learned (a lesson from a mistake, a preference I stated, a fact about someone I work with) as an approval I decide, with the kernel writing it to their memory files,
 **so that** they get better over time, and nothing becomes a standing instruction without my yes.

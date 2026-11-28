@@ -1,5 +1,7 @@
 # wa-a — The kernel builds each agent's Studio guide, and role.md holds only who the agent is
 
+## Status: ready
+
 **As the** owner talking to Wright and my crew,
 **I want** the manual that explains Studio and how to act in it to come from the kernel on every message, with `role.md` holding only the agent's persona,
 **so that** every agent always has the current, complete rules (never a stale or cut-off copy) and understands what sessions, chat threads, crew, playbooks, triggers, schedules, events, approvals, settings and budgets are.

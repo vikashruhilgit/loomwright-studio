@@ -1,5 +1,7 @@
 # wa-b — An unedited old role.md becomes the persona file; an edited one is flagged
 
+## Status: ready
+
 **As the** owner who installed Studio before wa-a,
 **I want** a `role.md` that is still an untouched copy of an old template to be replaced by the new persona file, and a `role.md` I edited to be left alone and flagged,
 **so that** my Wright stops carrying a stale duplicate manual without the kernel ever overwriting my own words.

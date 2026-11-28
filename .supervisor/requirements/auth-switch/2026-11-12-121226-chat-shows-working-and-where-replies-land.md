@@ -1,5 +1,7 @@
 # Chat 1 — Chat shows when Wright is working, with a clear working mark, and where an Ask or change reply lands
 
+## Status: ready
+
 **As** the owner of Loomwright Studio,
 **I want** the chat to show plainly when Wright is working, even while an approval waits on me, and to take me to Wright's answer after I use a card's Ask or change,
 **so that** I never wonder whether my message was received or where the reply went.
