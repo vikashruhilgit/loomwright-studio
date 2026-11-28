@@ -1,6 +1,7 @@
 # wa-d — Every prompt says what is in Studio right now, including recent mistakes
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/319
 
 **As the** owner,
 **I want** each agent's prompt to carry a short, current summary of Studio (what is running, waiting and scheduled, and what went wrong recently),
@@ -63,3 +64,9 @@ docs/architecture/brain.md
 
 The owner routed these wa-a follow-ups to this item on 2026-11-28 (review findings the drain dismissed as known limits). This item's plan covers them, or says why it cannot:
 - Part of this (with wa-c): playbookPrompt and crewPlaybookPrompt are not wired to the tool catalogue: a playbook session's guide says its tool list is unavailable, and a crew playbook session gets no guide. Recorded in docs/architecture/brain.md "Known limits" by wa-a (PR #316).
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T13:57:30Z
+- **Brief:** .supervisor/jobs/done/2026-11-28-wa-d-studio-right-now.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/319
