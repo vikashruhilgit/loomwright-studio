@@ -1,11 +1,18 @@
 // Phase 7 item 08: the `gui` feature's `settings` part. `GET /settings` against a
 // real store, through a real API server. Never the SDK, a model or a real
 // Keychain: the provider is a stub whose token value is a known string.
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PAST_PROPOSED_TOOL_LISTS, registerProposedToolsAudit } from "../src/agents/past-tool-lists.js";
 import { startApiServer } from "../src/api/index.js";
 import type { ApiServer } from "../src/api/index.js";
 import type { AuthProvider } from "../src/auth/types.js";
 import { recordTokenCreated } from "../src/auth/metadata.js";
+import { PROPOSED_ALLOWED_TOOLS, wrightSettingsPath } from "../src/brain/settings.js";
+import { buildToolCatalogue } from "../src/features/catalogue.js";
+import type { ToolCatalogue } from "../src/features/catalogue.js";
+import { LOOMWRIGHT_COMMAND_NEEDS } from "../src/features/job-needs.js";
 import { PHASE1_RESERVED, SHIPPED_CONTRIBUTIONS, mergeContributions } from "../src/features/index.js";
 import type { ContributedRouteRequest, StatusView } from "../src/features/contribution.js";
 import { GUI_PARTS, settingsPart, settingsRoutes } from "../src/gui/index.js";
@@ -13,6 +20,7 @@ import { notifierKindOf } from "../src/gui/settings.js";
 import type { LoomwrightAdapterStatus } from "../src/loomwright/active-install.js";
 import { loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
+import { NO_REF, appendEvent } from "../src/loop/internal.js";
 import { stubProvider, unexpectedAbandon } from "./session-fakes.js";
 
 const TOKEN = "0123456789abcdef".repeat(4);
@@ -43,9 +51,10 @@ interface Composition {
   readonly providers?: readonly AuthProvider[];
   /** `null`: the manager has no `loomwrightStatus` (no reader). */
   readonly reader?: (() => LoomwrightAdapterStatus) | null;
+  readonly catalogue?: ToolCatalogue;
 }
 
-async function serve({ providers = [secretProvider()], reader = () => OK_INSTALL }: Composition = {}): Promise<ApiServer> {
+async function serve({ providers = [secretProvider()], reader = () => OK_INSTALL, catalogue }: Composition = {}): Promise<ApiServer> {
   server = await startApiServer(
     {
       store: env.store,
@@ -54,6 +63,7 @@ async function serve({ providers = [secretProvider()], reader = () => OK_INSTALL
       authProviders: providers,
       token: TOKEN,
       routes: mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).routes,
+      ...(catalogue === undefined ? {} : { toolCatalogue: catalogue }),
     },
     { now: () => env.now() },
   );
@@ -93,7 +103,7 @@ describe("GET /settings", () => {
     recordTokenCreated(env.store, "stub-provider", "owner@example.test", "2026-09-01T00:00:00.000Z", env.now());
     const res = await get(await serve());
     expect(res.status).toBe(200);
-    expect(Object.keys(res.body).sort()).toEqual(["data_dir", "loomwright", "notifier", "pending_provider", "provider", "provider_source", "providers"]);
+    expect(Object.keys(res.body).sort()).toEqual(["data_dir", "loomwright", "notifier", "pending_provider", "provider", "provider_source", "providers", "wright_tools"]);
     expect(Object.keys(res.body.provider).sort()).toEqual(["account", "health", "id", "token_created_at"]);
     expect(res.body.provider).toEqual({ id: "stub-provider", account: "owner@example.test", health: { status: "ok" }, token_created_at: "2026-09-01T00:00:00.000Z" });
     expect(res.body.data_dir).toBe(env.store.dataDir);
@@ -171,6 +181,104 @@ describe("GET /settings", () => {
     expect(res.status).toBe(200);
     expect((res.body as any).provider).toEqual({ id: "first", account: null, health: { status: "missing" }, token_created_at: null });
     expect(seen).toEqual([env.now()]);
+  });
+});
+
+describe("GET /settings wright_tools (wa-c)", () => {
+  const catalogue = (): ToolCatalogue => buildToolCatalogue(mergeContributions(SHIPPED_CONTRIBUTIONS, PHASE1_RESERVED).tools, LOOMWRIGHT_COMMAND_NEEDS);
+  const file = (): string => wrightSettingsPath(env.store.dataDir);
+  const writeWright = (status: string | undefined, allowedTools: readonly string[]): Buffer => {
+    mkdirSync(join(env.store.dataDir, "config", "agents"), { recursive: true });
+    const policy = { ...(status === undefined ? {} : { status }), allowedTools: [...allowedTools], allowedBashPrefixes: [] };
+    writeFileSync(file(), `${JSON.stringify({ model: null, effort: null, permission_mode: "default", tool_policy: policy }, null, 2)}\n`);
+    return readFileSync(file());
+  };
+
+  it("wright_tools.missing names the catalogue job and purpose of each missing proposed tool; GET /settings writes nothing", async () => {
+    const cat = catalogue();
+    const list15 = PAST_PROPOSED_TOOL_LISTS[0] as readonly string[];
+    // A registered sink, as a running kernel has: the route still never upgrades (it reads the file raw).
+    const unregister = registerProposedToolsAudit(env.store.dataDir, {
+      inTransaction: () => env.store.inTransaction,
+      transaction: (fn) => env.store.transaction(fn),
+      record: (kind, payload) => appendEvent(env.store, kind, NO_REF, payload, env.now().toISOString()),
+    });
+    try {
+      const old = writeWright("proposed", list15);
+      const res = await get(await serve({ catalogue: cat }));
+      expect(res.status).toBe(200);
+      const expected = PROPOSED_ALLOWED_TOOLS.filter((t) => !list15.includes(t));
+      expect(expected.length).toBeGreaterThan(0);
+      expect(res.body.wright_tools.status).toBe("proposed");
+      expect(Object.keys(res.body.wright_tools).sort()).toEqual(["missing", "status", "upgrade_pending"]);
+      // A proposed status and an unedited past list: the file the upgrade rewrites, so the screen says so.
+      expect(res.body.wright_tools.upgrade_pending).toBe(true);
+      expect(res.body.wright_tools.missing.map((m: { name: string }) => m.name)).toEqual(expected);
+      for (const m of res.body.wright_tools.missing) {
+        expect(Object.keys(m).sort()).toEqual(["job", "name", "purpose"]);
+        const tool = cat.tools.find((t) => `mcp__kernel__${t.name}` === m.name);
+        expect(tool, m.name).toBeDefined();
+        expect(m.job).toBe(cat.jobs.find((j) => j.id === tool?.job)?.label);
+        expect(m.purpose).toBe(tool?.purpose);
+        expect(typeof m.job === "string" && typeof m.purpose === "string" && m.purpose !== "").toBe(true);
+      }
+      expect(readFileSync(file()).equals(old)).toBe(true);
+      expect(readdirSync(join(env.store.dataDir, "config", "agents"))).toEqual(["wright.json"]);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("an absent wright.json is null and stays absent", async () => {
+    const res = await get(await serve({ catalogue: catalogue() }));
+    expect(res.status).toBe(200);
+    expect(res.body.wright_tools).toBeNull();
+    expect(existsSync(file())).toBe(false);
+  });
+
+  it("a tool the catalogue does not list (Read) has a null job and purpose, and an owner's status is reported as it is", async () => {
+    writeWright("owner", ["mcp__kernel__kernel_task_list"]);
+    const res = await get(await serve({ catalogue: catalogue() }));
+    const missing = res.body.wright_tools.missing as { name: string; job: string | null; purpose: string | null }[];
+    expect(res.body.wright_tools.status).toBe("owner");
+    expect(missing.map((m) => m.name)).toEqual(PROPOSED_ALLOWED_TOOLS.filter((t) => t !== "mcp__kernel__kernel_task_list"));
+    for (const name of ["Read", "Glob", "Grep"]) expect(missing.find((m) => m.name === name)).toEqual({ name, job: null, purpose: null });
+  });
+
+  it("the current list has nothing missing; an unset status is null; with no catalogue, job and purpose are null", async () => {
+    writeWright(undefined, PROPOSED_ALLOWED_TOOLS);
+    expect((await get(await serve())).body.wright_tools).toEqual({ status: null, missing: [], upgrade_pending: false });
+    await server?.close();
+    writeWright("proposed", ["Read"]);
+    const res = await get(await serve());
+    expect(res.body.wright_tools.missing.every((m: { job: unknown; purpose: unknown }) => m.job === null && m.purpose === null)).toBe(true);
+  });
+
+  it("upgrade_pending is true only for a proposed status over an unedited past proposed list", async () => {
+    const list21 = PAST_PROPOSED_TOOL_LISTS[1] as readonly string[];
+    const cases: [string, string | undefined, readonly string[], boolean][] = [
+      ["proposed, a past list reordered with a duplicate", "proposed", [...list21].reverse().concat(list21[0] as string), true],
+      ["proposed, a past list with one tool removed (edited)", "proposed", list21.slice(1), false],
+      ["proposed, a past list with one tool added (edited)", "proposed", [...list21, "Bash"], false],
+      ["proposed, the current list (nothing to add)", "proposed", PROPOSED_ALLOWED_TOOLS, false],
+      ["an owner's status over a past list", "owner", list21, false],
+      ["no status over a past list", undefined, list21, false],
+    ];
+    for (const [what, status, list, pending] of cases) {
+      writeWright(status, list);
+      const res = await get(await serve());
+      expect(res.body.wright_tools.upgrade_pending, what).toBe(pending);
+      await server?.close();
+    }
+  });
+
+  it("an unreadable wright.json is null, never a 503", async () => {
+    mkdirSync(join(env.store.dataDir, "config", "agents"), { recursive: true });
+    writeFileSync(file(), "{not json");
+    const res = await get(await serve());
+    expect(res.status).toBe(200);
+    expect(res.body.wright_tools).toBeNull();
+    expect(readFileSync(file(), "utf8")).toBe("{not json");
   });
 });
 

@@ -99,6 +99,21 @@ function percentOf(value: unknown): string | undefined {
 
 const NO_DESCRIPTION = "no description yet";
 
+/** What failed, for each step a Wright tool-list upgrade can fail at (`ProposedToolsUpgradeStep` in `kernel/src/agents/past-tool-lists.ts`). */
+const UPGRADE_STEPS: Readonly<Record<string, string>> = {
+  size: "the new file would pass the size limit",
+  backup: "writing the backup failed",
+  write: "writing the new file failed",
+  rename: "replacing the file failed",
+  record: "recording the change failed",
+};
+
+/** The last segment of a path as inert text (a backup sits beside its file, so its name is enough), or `undefined`. */
+function fileName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return plain(value.slice(value.lastIndexOf("/") + 1));
+}
+
 /** The table: one entry per kind the kernel writes. */
 export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
   admission_refused: (p, r) => {
@@ -449,6 +464,20 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
   wakeup_scheduled: (p, r) => {
     const g = reader(p);
     return `Wake-up${withText(g("wakeup_id"), " #")} is due ${timeOf(fields(p).due_at, r) ?? "later"}${withText(g("reason"), ": ")}.`;
+  },
+  // wa-c: the kernel brought an unedited proposed tool list up to its current proposal (`upgradeProposedTools`): `{file, backup, added}`.
+  wright_tool_policy_upgraded: (p) => {
+    const f = fields(p);
+    const count = Array.isArray(f.added) ? f.added.length : undefined;
+    const tools = count === undefined ? "the proposed tools it lacked" : `${count} proposed ${count === 1 ? "tool" : "tools"}`;
+    return `The kernel added ${tools} to Wright's tool list${withText(listed(f.added), ": ")}. The list was one the kernel proposed and nobody changed; a backup of the old file was kept${paren(fileName(f.backup))}.`;
+  },
+  // wa-c: the upgrade failed at a step and left the old file as it was: `{file, step, code}`.
+  wright_tool_policy_upgrade_failed: (p) => {
+    const g = reader(p);
+    const step = g("step");
+    const what = step === undefined ? "a step failed" : Object.hasOwn(UPGRADE_STEPS, step) ? UPGRADE_STEPS[step] : `the ${words(step) ?? step} step failed`;
+    return `The kernel could not update Wright's tool list: ${what}${paren(g("code"))}. The file was left as it was, so Wright keeps its old list.`;
   },
 };
 

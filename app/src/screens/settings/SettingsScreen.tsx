@@ -5,6 +5,9 @@
 // (`./ThreadsSection.tsx`, `docs/design/mockups/chat-threads.html`): each agent's size hint, read-only. Phase 8 item 18c
 // adds Workspaces below it (`./WorkspacesSection.tsx`, `docs/design/mockups/charter-card.html`): the kernel's saved repo
 // folders, with Add folder… (the bridge's folder picker, not a text input) and remove with Undo, disabled while offline.
+// wa-c adds "Wright's tools" between Kernel and This app (`WrightToolsSection`, words in `./tool-policy.ts`): the proposed
+// tools Wright's `config/agents/wright.json` list lacks, read-only, with the file named as plain text (no link, no Copy)
+// unless the kernel will add them itself (`upgrade_pending`).
 //
 // Data. `GET /settings` is read here, on mount and again when an `auth_*` or `loomwright_*`
 // event arrives on the live feed (`./model.ts` lists the kinds; throttled to one read per
@@ -47,6 +50,7 @@ import {
 } from "./model";
 import { Skeleton, Switch, WarnGlyph } from "./parts";
 import { ThreadsSection } from "./ThreadsSection";
+import { MISSING_TOOLS_HEADING, WRIGHT_SETTINGS_FILE, type WrightToolsView, missingToolWords, toolPolicyStatusText, wrightToolsSummary } from "./tool-policy";
 import { useSettingsRead, usePreferences } from "./useSettings";
 import { WorkspacesSection } from "./WorkspacesSection";
 import "./settings.css";
@@ -185,6 +189,7 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
             <Skeleton testId={`${IDS.loading}-kernel`} what="the kernel" rows={1} />
           </section>
         ) : null}
+        {view?.wrightTools === undefined || view.wrightTools === null ? null : <WrightToolsSection tools={view.wrightTools} />}
 
         <section className="settings-blk" aria-labelledby="settings-h-app" data-testid={IDS.app}>
           <div className="settings-sech">
@@ -258,5 +263,62 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
         <WorkspacesSection api={api} offline={offline} />
       </div>
     </div>
+  );
+}
+
+/**
+ * wa-c's "Wright's tools": the file's tool policy status, a sentence, and, only when the list lacks a proposed tool, a
+ * list of each in plain words (its purpose line and job label, or its name when the catalogue has no entry) with the
+ * file to add it in, unless the kernel will add them itself (`upgradePending`). Every value is already inert
+ * (`wrightToolsOf`) and renders as a React text child.
+ */
+export function WrightToolsSection({ tools }: { readonly tools: WrightToolsView }) {
+  return (
+    <section className="settings-blk" aria-labelledby="settings-h-wright-tools" data-testid={IDS.wrightTools}>
+      <div className="settings-sech">
+        <h2 className="settings-label" id="settings-h-wright-tools">
+          Wright's tools
+        </h2>
+        <span className="settings-cap" data-testid={IDS.wrightToolsStatus}>
+          {toolPolicyStatusText(tools.status)}
+        </span>
+      </div>
+      <p className="settings-text" data-testid={IDS.wrightToolsSummary}>
+        {wrightToolsSummary(tools)}
+      </p>
+      {tools.missing.length === 0 ? null : (
+        <>
+          <h3 className="settings-title" id="settings-h-wright-tools-missing" data-testid={IDS.wrightToolsListHead}>
+            {MISSING_TOOLS_HEADING}
+          </h3>
+          <ul className="settings-box" aria-labelledby="settings-h-wright-tools-missing" data-testid={IDS.wrightToolsList}>
+            {tools.missing.map((tool, i) => {
+              const words = missingToolWords(tool);
+              return (
+                <li key={`${i}-${tool.name}`} data-testid={IDS.wrightToolsItem}>
+                  <span className="settings-ttext">
+                    <b>{words.line}</b>
+                    {words.job === undefined && words.name === undefined ? null : (
+                      <span className="settings-cap">
+                        {words.job ?? null}
+                        {words.job !== undefined && words.name !== undefined ? " · " : null}
+                        {words.name === undefined ? null : <span className="settings-mono">{words.name}</span>}
+                      </span>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {/* The kernel adds them itself when the upgrade is pending (the summary says so): no file to edit then. */}
+          {tools.upgradePending ? null : (
+            <p className="settings-cap" data-testid={IDS.wrightToolsFile}>
+              Studio doesn't change the list. To give Wright one of these, add its name to <span className="settings-mono">allowedTools</span> in{" "}
+              <span className="settings-mono">{WRIGHT_SETTINGS_FILE}</span> in the kernel's data folder.
+            </p>
+          )}
+        </>
+      )}
+    </section>
   );
 }

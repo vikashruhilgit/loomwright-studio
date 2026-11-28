@@ -7,6 +7,7 @@
 // are merged once, before the store opens.
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { registerProposedToolsAudit } from "./agents/past-tool-lists.js";
 import { WRIGHT_ID, readAgentSettings } from "./agents/settings.js";
 import type { AgentLimits } from "./agents/settings.js";
 import { ensureApiToken } from "./api/token.js";
@@ -33,6 +34,7 @@ import { mcpProxyTools } from "./integrations/mcp/tools.js";
 import type { McpToolGrants } from "./integrations/mcp/tools.js";
 import { toolsForConnectors } from "./integrations/tool-filter.js";
 import type { ConnectorKind, GitHubClient } from "./integrations/types.js";
+import { NO_REF, appendEvent } from "./loop/internal.js";
 import { EventLoop } from "./loop/loop.js";
 import type { EventHandlers, EventLoopDeps } from "./loop/types.js";
 import type { SessionTokenMint } from "./sessions/github-session-auth.js";
@@ -417,6 +419,13 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
   await assertKernelToolsList(contributions.tools);
 
   const store = (deps.openStore ?? ((dir: string) => new Store({ dataDir: dir })))(dataDir);
+  // wa-c: Wright's settings reads here may upgrade an unedited proposed tool list, audited over this store (none without it),
+  // and only at a top-level read (a read inside an open transaction, admission's or the meter's, leaves the file alone).
+  const unregisterProposedToolsAudit = registerProposedToolsAudit(dataDir, {
+    inTransaction: () => store.inTransaction,
+    transaction: (fn) => store.transaction(fn),
+    record: (kind, payload) => appendEvent(store, kind, NO_REF, payload, now().toISOString()),
+  });
   let sessions: SessionManager | undefined;
   let loop: EventLoop | undefined;
   let api: ApiServer | undefined;
@@ -437,6 +446,8 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     if (loop !== undefined) await step(() => (loop as EventLoop).stop());
     if (sessions !== undefined) await step(() => (sessions as SessionManager).stopAll({ mode: "shutdown" }));
     await step(() => removeApiInfoIfOurs(apiInfoPath, pid));
+    // Before the store closes, so no sink outlives its store.
+    await step(() => unregisterProposedToolsAudit());
     await step(() => store.close());
     if (failures.length > 0) throw failures[0];
   };

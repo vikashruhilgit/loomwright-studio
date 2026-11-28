@@ -3,7 +3,7 @@
 // is set up and sets no policy. Every gui route is an owner route that needs the
 // API token: none sets `unauthenticated`. The route is read-only: nothing is written.
 //
-//   GET /settings                {provider, providers, provider_source, pending_provider, data_dir, notifier, loomwright}
+//   GET /settings                {provider, providers, provider_source, pending_provider, data_dir, notifier, loomwright, wright_tools}
 //   PUT /settings/auth-provider  {provider}  the owner's choice of provider (D42)
 //   PUT /settings/api-key        {key}       store the owner's API key in the Keychain (D42)
 //
@@ -25,6 +25,19 @@
 //   - `notifier`: `chooseNotifier()`'s choice, as `terminal-notifier`
 //     (`click`), `osascript` (`plain`) or `none`.
 //   - `loomwright`: the adapter's state (`status_threw` when its reader threw).
+//   - `wright_tools`: `{status, missing: [{name, job, purpose}], upgrade_pending}` from Wright's
+//     `config/agents/wright.json`, read raw (`readWrightToolPolicy`: never
+//     through `readAgentSettings`, which creates the file and may upgrade it):
+//     `status` is its `tool_policy.status` (null when unset) and `missing` the
+//     current proposed tools its list lacks (`proposedToolsMissing`), each with
+//     its catalogue job label and purpose line (both null for a tool the
+//     catalogue does not list, `Read` for one, or with no catalogue).
+//     `upgrade_pending` is true only when `status` is `"proposed"` and the list
+//     is, as a set, a past proposed list (`isUpgradableToolPolicy`, the
+//     upgrade's own condition): the file the kernel's upgrade rewrites at its
+//     next top-level read of Wright's settings, so the owner has nothing to
+//     edit. False for any other file. `null` when the file is absent or is not
+//     a readable settings object, never a 503.
 // A missing piece is a refusal, never a throw: `503 {"error":"settings_unavailable","reason":...}`
 // with reason `no_status_view` (the request carries no `StatusView`),
 // `no_auth_provider` or `no_loomwright_reader`.
@@ -34,6 +47,8 @@ import { readAuthChoice, writeAuthChoice } from "../auth/choice.js";
 import { WRITE_ARG } from "../auth/keychain.js";
 import { readProviderMetadata } from "../auth/metadata.js";
 import { isWholeApiKey } from "../auth/token-shape.js";
+import { isUpgradableToolPolicy, proposedToolsMissing, readWrightToolPolicy } from "../agents/past-tool-lists.js";
+import { KERNEL_TOOL_PREFIX, TOOL_JOBS, catalogueTool } from "../features/catalogue.js";
 import { chooseNotifier } from "../notifications/notifier.js";
 import type { NotifierChoice } from "../notifications/notifier.js";
 import type { GuiPart } from "./types.js";
@@ -96,8 +111,28 @@ async function settings(req: ContributedRouteRequest): Promise<ContributedRouteR
       data_dir: req.store.dataDir,
       notifier: notifierKindOf(chooseNotifier()),
       loomwright,
+      wright_tools: wrightTools(req),
     },
   };
+}
+
+/** One current proposed tool Wright's list lacks, in plain words from the catalogue (`null` when it lists none). */
+export interface MissingProposedTool {
+  readonly name: string;
+  readonly job: string | null;
+  readonly purpose: string | null;
+}
+
+/** `GET /settings`' `wright_tools`: read only, never creating or upgrading the file. Built field by field. */
+function wrightTools(req: ContributedRouteRequest): { status: string | null; missing: MissingProposedTool[]; upgrade_pending: boolean } | null {
+  const policy = readWrightToolPolicy(req.store.dataDir);
+  if (policy === null) return null;
+  const catalogue = req.catalogue;
+  const missing = proposedToolsMissing(policy.allowedTools).map((name): MissingProposedTool => {
+    const tool = catalogue === undefined || !name.startsWith(KERNEL_TOOL_PREFIX) ? undefined : catalogueTool(catalogue, name.slice(KERNEL_TOOL_PREFIX.length));
+    return { name, job: tool === undefined ? null : TOOL_JOBS[tool.job], purpose: tool === undefined ? null : tool.purpose };
+  });
+  return { status: policy.status, missing, upgrade_pending: isUpgradableToolPolicy(policy) };
 }
 
 function pendingProvider(req: ContributedRouteRequest, inUse: string): string | null {

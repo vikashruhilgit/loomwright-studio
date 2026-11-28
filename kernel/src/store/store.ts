@@ -114,6 +114,11 @@ export class Store {
     return this.#db.pragma(source, options);
   }
 
+  /** Whether a transaction is open on this connection (a `transaction` call nested in it is a savepoint). */
+  get inTransaction(): boolean {
+    return this.#db.inTransaction;
+  }
+
   /** Run `fn` in one transaction: it commits when `fn` returns and rolls back if it throws. */
   transaction<T>(fn: () => T): T {
     return this.#db.transaction(fn)();

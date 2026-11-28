@@ -25,11 +25,13 @@
 // workspace or a `never` category. Wright's file is created once, with
 // exclusive create (`wx`), when absent; a crew member's file is never
 // created here (its absence is `settings_missing`). A malformed file is a
-// refusal naming it and the field, never a rewrite.
+// refusal naming it and the field, never a rewrite. The one kernel rewrite (wa-c): a valid
+// Wright file whose `proposed` list is exactly one the kernel once proposed gets the current
+// one, backed up and audited, while a kernel's audit sink is registered (`./past-tool-lists.ts`).
 //
 // Imports only zod, `node:*`, `../protected-paths.ts`, the leaf
 // `../sessions/policy.ts` (for `NEVER_CATEGORIES`), the types-and-lists
-// `../integrations/types.ts` (for `CONNECTOR_KINDS`), plus `../brain/settings.ts`
+// `../integrations/types.ts` (for `CONNECTOR_KINDS`), `./past-tool-lists.ts`, plus `../brain/settings.ts`
 // for Wright's first-run text and the size limit (a cycle used only at call
 // time: neither module reads the other's bindings at load). Never the Agent SDK, the session
 // manager or `kernel.ts` (the `studio` CLI loads this module).
@@ -39,6 +41,7 @@ import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { MAX_SETTINGS_BYTES, defaultWrightSettingsJson } from "../brain/settings.js";
 import { CONNECTOR_KINDS } from "../integrations/types.js";
+import { upgradeProposedTools } from "./past-tool-lists.js";
 import type { ConnectorKind } from "../integrations/types.js";
 import { isInsidePath, isProtectedPath, protectedLocationsText } from "../protected-paths.js";
 import { NEVER_CATEGORIES } from "../sessions/policy.js";
@@ -387,11 +390,13 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
   const invalid = (field: string, what: string): AgentSettingsRefusal => ({ ok: false, error: "settings_invalid", file, field, message: `${file}: ${what}` });
 
   let raw: string;
+  let base: Buffer;
   try {
     // Checked before reading, so a huge file is never loaded whole; and after, for one that grew meanwhile.
     if (statSync(file).size > MAX_SETTINGS_BYTES) return invalid("the file", `over ${MAX_SETTINGS_BYTES} bytes`);
     const buf = readFileSync(file);
     if (buf.length > MAX_SETTINGS_BYTES) return invalid("the file", `over ${MAX_SETTINGS_BYTES} bytes`);
+    base = buf;
     raw = buf.toString("utf8");
   } catch (err) {
     if (!isWright && hasCode(err, "ENOENT")) {
@@ -448,6 +453,8 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
       if (problem !== undefined) return invalid(`workspaces.${i}`, `workspaces.${i}: ${problem}`);
     }
   }
+  // Only Wright's, only after every refusal above, and before the model check (a file with no model is upgraded too).
+  const allowedTools = (isWright ? upgradeProposedTools(dataDir, file, base, json) : undefined) ?? s.tool_policy.allowedTools;
   if (typeof s.model !== "string" || s.model.trim() === "") {
     return {
       ok: false,
@@ -466,7 +473,7 @@ export function readAgentSettings(dataDir: string, id: string, options: ReadAgen
       model: s.model.trim(),
       effort: s.effort ?? null,
       permissionMode: s.permission_mode,
-      policy: { allowedTools: [...s.tool_policy.allowedTools], allowedBashPrefixes: [...s.tool_policy.allowedBashPrefixes] },
+      policy: { allowedTools: [...allowedTools], allowedBashPrefixes: [...s.tool_policy.allowedBashPrefixes] },
       policyStatus: s.tool_policy.status ?? null,
       ...(s.never !== undefined ? { never: Object.freeze([...s.never]) } : {}),
       ...(s.limits !== undefined ? { limits: Object.freeze({ ...s.limits }) } : {}),
