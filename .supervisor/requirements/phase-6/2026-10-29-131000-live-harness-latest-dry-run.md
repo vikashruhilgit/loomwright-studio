@@ -33,3 +33,9 @@ Stage 3 reported `fail` against run 9 for the rest of the run. The cause is `che
 - [ ] Stage 3 passes on a store whose first dry run is `needs_github` and whose later dry run, of the enabled version, lists both PRs and reviewed one.
 - [ ] Stage 3 still fails when the enabled version's latest dry run is incomplete.
 - [ ] `cd kernel && npm test` passes.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T07:32:07Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/163

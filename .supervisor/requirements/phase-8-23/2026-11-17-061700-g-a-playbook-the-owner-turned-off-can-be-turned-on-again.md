@@ -11,3 +11,10 @@
 So an owner-off playbook is permanently off; the only way back is a new playbook (new id, so its dedupe history is lost), with a draft, dry run, enable, live switch, second dry run and second enable.
 
 **Ask.** One owner route turns an owner-off playbook back on (for example: the owner's own switch sends the enable with the version's last dry run, or Wright may request the enable and the owner's approval clears the owner-off mark), never an agent alone.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done_with_escalation
+- **Completed:** 2026-11-28T07:31:55Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/289
+- **Owed:** a recorded live check of an owner-off playbook turned on through the owner's once-approval; an owner-off playbook with no dry run still cannot come back

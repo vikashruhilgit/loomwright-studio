@@ -23,3 +23,9 @@ A grep over `commands/{autonomous,launch-pad,supervisor}.md`, their skills and d
 - Cause: this fix put the driver in `LOOMWRIGHT_DENIED_SUBCOMMANDS`, whose check refused any word holding a quote or a brace, and every answer is JSON. The test used `--result ok` and so missed it.
 - Fix: `asksDeniedSubcommand` reads words exactly as bash passes them (`shellWords`). A quoted denied name, a glob or a brace is still refused. The live calls are pinned in `kernel/test/sessions-policy.test.ts`. Reinstalled as pid 29948, not yet verified live.
 - Also seen, not fixed: the session's debugging `grep -n -e "--result" <install>/scripts/supervisor-next-step.sh` was refused as `settings_write` (the rail reads any Bash command naming `~/.claude/` as one; p8-22's never list forbids it). It is not on the flow's path, so it is a 23m/rail finding.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T07:31:58Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/291

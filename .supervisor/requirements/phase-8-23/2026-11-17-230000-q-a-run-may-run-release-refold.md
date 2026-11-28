@@ -17,3 +17,10 @@
 
 **Not yet verified live.**
 Still unverified (2026-11-18). Resumed sessions 226–228 never reached FINALIZE, so `release-refold.sh` was never called (23r).
+
+<!-- loomwright:requirement-closeout -->
+## Status: done_with_escalation
+- **Completed:** 2026-11-28T07:32:06Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/291
+- **Owed:** live check: a run reaches FINALIZE and release-refold.sh is admitted with no bump script (no live run has reached FINALIZE)

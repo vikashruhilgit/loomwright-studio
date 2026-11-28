@@ -9,3 +9,5 @@
 **Why it matters.** `gate-auto.sh` is the deterministic seat for `auto`-tier gates: it reads the catalog and the run file and prints one `answer`/`ask` line. Denying it moves the answer from a script to the model, which is the opposite of the kernel's "an LLM never owns its own lifecycle" direction. Item 23m listed `gate-auto.sh` only under `--parallel` lanes; this run shows the inline phases call it too.
 
 **Ask.** Read `gate-auto.sh` (`decide`, `list`; which files it writes) and admit the read-and-answer subcommands for the ticket run if they only touch the run's own run file and `.supervisor/`; otherwise give it a kernel-owned path. Verify on the next live run that `LP-SAVE` is answered by the script.
+
+## Status: done_with_escalation — ABANDONED (replaced by 25c, gate-auto.sh decide, record and list admitted, PR #304)

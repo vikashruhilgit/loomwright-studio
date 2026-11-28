@@ -9,3 +9,10 @@
 - The one-time first-run-file Write exception (`loomwright_run_file_created`, PR #286) was never taken: the session follows Loomwright's skill, which says never to write the run file yourself, and nothing tells it the kernel allows that one Write.
 
 **Owner decision needed (options):** (a) Loomwright's `runfile-write` takes its content from a file path argument (`--from <file>`), and the run policy admits it; (b) the kernel's run prompt tells the session that its first run file is written with Write, once, in safe mode; (c) the kernel creates the run file from the backlog before the session starts. Loomwright is the owner's own plugin, so (a) is a Loomwright change.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done_with_escalation
+- **Completed:** 2026-11-28T07:31:51Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/289
+- **Owed:** the SDK default-systemPrompt probe in OPEN_QUESTIONS (item 23e, NEEDS VERIFICATION); the first run-file Write itself was seen live in session 249

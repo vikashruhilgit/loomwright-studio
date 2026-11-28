@@ -23,3 +23,10 @@
 - Tests: `kernel/test/automate-resume.test.ts`, "a dead holder's run lock (D46)", which uses the session 215 values. The lock fixture now writes `ts` in epoch seconds, as 17.38.0 does.
 
 **Not yet verified live.**
+
+<!-- loomwright:requirement-closeout -->
+## Status: done_with_escalation
+- **Completed:** 2026-11-28T07:32:01Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/291
+- **Owed:** live check: a kernel session's dead run lock is released through run-lock.sh before the next launch, and a foreign lock shows Can resume at

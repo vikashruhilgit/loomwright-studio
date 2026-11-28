@@ -9,3 +9,9 @@ Also seen in the same walk: the two launch events (348, 349) were refused `agent
 **Ask.** A kernel-launched run finds the `gh` (and `git`) the owner uses, by a mechanism the kernel owns and the owner can see, not by inheriting whatever `PATH` launchd gives. Open: how (a `PATH` recorded at `service install` from the installer's resolved `gh`/`git`, or the kernel resolving each by absolute path at launch and prepending only those directories to the session's `PATH`). Then resume the parked run `automate-2026-11-17-001`.
 
 **Fix (2026-11-17, branch `fix/service-path-gh-git`, uncommitted).** `studio service install` resolves `gh` and `git` through the installing shell's `PATH` and writes a plist `PATH` of only the dirs they were found in (installer order), then launchd's default (`resolveServiceToolPath`, `kernel/src/service/launchd.ts`). Install's success line names where each was found; a missing one is a warning. Kernel suite green (4883). Not yet installed live.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T07:31:56Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/291

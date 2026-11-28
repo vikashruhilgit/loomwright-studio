@@ -32,3 +32,9 @@ The session stopped (45,649 tokens) with no run file, no PR. The harness summary
 
 ## Not verified
 - Whether any other admitted script argument (a run file under the checkout) trips a different rail label; AC3's driver calls cover the first steps only.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T07:31:48Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/288

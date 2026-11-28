@@ -20,3 +20,9 @@
 **Not yet verified live.** `automate-2026-11-17-001` itself needs a separate recovery: its run file says no PR, while Supervisor checkpoint `auto-2026-11-17-resume` is still at publish.
 
 **Verified live (2026-11-18).** Run session 227 was held at `git push -u origin feature/cheer-sh` (approval 57) and ended its turn. The owner approved 57 once at 01:58:44Z. The kernel queued event 800 (`automate_run.kind: continue`, `of: resume`, `session: 227`) and started session 228 1.4 s later on the same SDK session (`4b6dcb5e…`), with no Resume. The rail allowed the push as `approval_granted`. (The run itself had left Loomwright's flow by then; see 23r.)
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T07:32:03Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/291

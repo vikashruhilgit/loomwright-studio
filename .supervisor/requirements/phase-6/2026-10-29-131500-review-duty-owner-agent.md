@@ -32,3 +32,9 @@ The owner chose B after the first live run. Root cause found while fixing it: th
 
 - [ ] The decision is recorded in `docs/DECISIONS.md` or in this item.
 - [ ] The runbook's sentence leads, in the deterministic test, to the chosen owner agent with a GitHub grant the owner set.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T07:32:09Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/164

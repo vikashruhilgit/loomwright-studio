@@ -72,3 +72,5 @@ kernel/src/playbooks/drafts.ts
 kernel/test/playbooks-crew.test.ts
 docs/architecture/playbooks.md
 docs/evidence/phase-8-21d-draft-for-an-off-member.md
+
+## Status: done_with_escalation — ABANDONED (replaced by phase-8-22/2026-11-14-120200-d, stamped done, PR #282)

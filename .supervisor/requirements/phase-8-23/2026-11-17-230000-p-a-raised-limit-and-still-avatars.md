@@ -24,3 +24,10 @@
 - Owner's call: the working outline dashes (`run` on `.st`/`.ln`) stay still. One working avatar's dashes alone cost about 34% (about 10% stepped).
 - Result: 4 animations at 7% (was 38%); with 2 working avatars added, 14% and 0 main-thread paints.
 - Test: `Avatar.test.tsx` "every transform animation targets an HTML layer". It fails on an in-SVG transform animation or any non-transform/opacity keyframe, checked with both.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done_with_escalation
+- **Completed:** 2026-11-28T07:32:04Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/291
+- **Owed:** live check: raising a playbook token_limit wakes an event parked playbook_daily_limit (tests only; the avatar half was measured live)

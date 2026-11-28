@@ -137,3 +137,9 @@ docs/OPEN_QUESTIONS.md
 ## Depends on
 
 none
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T07:31:47Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/250

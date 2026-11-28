@@ -15,3 +15,9 @@ The run is stuck and invisible, and nothing in Studio can continue it. Loomwrigh
 **Ask.** A run whose file says `running` while no lock holder is alive and no kernel run session for its checkout is live is shown as stranded on the Parked run card and is resumable through the same Resume (`--resume <run_id>`). A run with a live lock holder or a live kernel session stays `run_live`.
 
 **Fix (branch `fix/service-path-gh-git`, uncommitted).** `pausedRuns` lists a `running` run with no live lock holder as `stranded: true`; `resumeWouldDoubleDrain` blocks only on a live holder or another `running` run; the Parked run card badges it `stranded`. Tests in `kernel/test/automate-resume.test.ts`. Not yet verified live.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T07:31:59Z
+- **Brief:** unknown
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/291

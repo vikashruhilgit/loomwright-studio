@@ -92,3 +92,10 @@ Recorded 2026-11-01 in the phase 7 re-run findings product-owner session (AskUse
 ## Touches
 app/src/screens/playbooks
 app/e2e/playbooks.spec.ts
+
+<!-- loomwright:requirement-closeout -->
+## Status: done_with_escalation
+- **Completed:** 2026-11-28T07:31:45Z
+- **Brief:** .supervisor/jobs/done/2026-11-02-playbooks-detail-short-model-schedules-link-chips-and-icons.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/211
+- **Owed:** AC6 met by a link: PR #211 body links the evidence README that names each screenshot against its mockup view, not screenshots in the body; phase 7 live polish gate later passed (PR #215)

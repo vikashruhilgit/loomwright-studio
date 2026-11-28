@@ -78,3 +78,5 @@ Recorded 2026-11-01 in the phase 7 findings product-owner session (AskUserQuesti
 docs/evidence/phase-7-exit-runbook.md
 docs/ROADMAP.md
 docs/OPEN_QUESTIONS.md
+
+## Status: done_with_escalation — ABANDONED (replaced by the phase 7 exit live run that passed on 2026-11-02, PR #215)

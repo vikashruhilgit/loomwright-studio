@@ -21,3 +21,5 @@
 3. A per-playbook grant the owner sets: the commands this playbook's runs may execute, shown on the playbook and approved like any grant.
 
 **Exit check.** A kernel-started ticket run makes a script executable, runs it, and commits it; the Supervisor publishes a PR; a command outside the chosen rule is still denied and recorded.
+
+## Status: done_with_escalation — ABANDONED (replaced by 25d, a run may run the repo's declared checks, PR #307)
