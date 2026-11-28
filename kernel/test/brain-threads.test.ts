@@ -222,6 +222,21 @@ function queueCount(store: Store): number {
   return store.prepare<[], number>("SELECT count(*) FROM event_queue").pluck().get() as number;
 }
 
+/**
+ * The prompt's own "## Studio right now" section (read from the store at that moment, so cut out of the prompt and
+ * given back to `buildContext`; everything else stays pinned byte for byte). It starts with the heading and holds the
+ * `Taken at:` line.
+ */
+function studioOf(prompt: string | undefined): string {
+  const text = prompt ?? "";
+  const start = text.indexOf("## Studio right now\n");
+  expect(start, text).toBeGreaterThan(-1);
+  const section = text.slice(start, text.indexOf("\n## Now\n", start));
+  expect(section.startsWith("## Studio right now\n\n")).toBe(true);
+  expect(section).toContain("\nTaken at: 2026-11-09 10:00 +00:00 (UTC)\n");
+  return section;
+}
+
 /** The text after the owner's heading (the last one: the message is the prompt's last section): the owner's words only. */
 function ownerPart(prompt: string): string {
   const at = prompt.lastIndexOf("## Message from the owner\n\n");
@@ -275,7 +290,7 @@ describe("a message with no continues or references (AC2)", () => {
     expect(store.prepare("SELECT count(*) FROM brain_threads").pluck().get()).toBe(0);
     expect(s.starts).toHaveLength(1);
     expect(Object.keys(s.starts[0] as object)).not.toContain("continueFrom");
-    expect(s.starts[0]?.prompt).toBe(buildContext({ dataDir, agent: "wright", source: "ask", text: "hello", loomwright: UNAVAILABLE, now: NOW, timeZone: "UTC" }));
+    expect(s.starts[0]?.prompt).toBe(buildContext({ dataDir, agent: "wright", source: "ask", text: "hello", loomwright: UNAVAILABLE, now: NOW, timeZone: "UTC", studio: studioOf(s.starts[0]?.prompt) }));
     expect(getMessageThread(store, row.id)).toBeUndefined();
   });
 });
@@ -373,7 +388,7 @@ describe("a reply resumes its thread's session (AC1)", () => {
     await tick(store, s.sessions);
     expect(s.starts).toHaveLength(2);
     expect(s.starts[1]?.continueFrom).toBe(row1.session_id);
-    expect(s.starts[1]?.prompt).toBe(buildContext({ dataDir, agent: "wright", source: "ask", text: "second", loomwright: UNAVAILABLE, now: NOW, timeZone: "UTC", resumed: true }));
+    expect(s.starts[1]?.prompt).toBe(buildContext({ dataDir, agent: "wright", source: "ask", text: "second", loomwright: UNAVAILABLE, now: NOW, timeZone: "UTC", resumed: true, studio: studioOf(s.starts[1]?.prompt) }));
     expect(s.resumes).toEqual([]);
   });
 

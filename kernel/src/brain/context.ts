@@ -2,15 +2,20 @@
 // each message: role.md, then the kernel's Studio guide (`./guide.ts`: the
 // rules, the glossary and the session's tool list; Wright's guide, or the crew
 // guide right after a crew member's charter), then preferences, people and
-// lessons, the Loomwright manifest summary, the current local time with its
-// IANA zone, then the message. Wright's are `memory/wright/*`. A crew member's
+// lessons, the Loomwright manifest summary, the kernel's "Studio right now"
+// section when the caller gives one (`studio`: built from the store by
+// `./studio-view.ts`, already wrapped as data), the current local time with
+// its IANA zone, then the message. Wright's are `memory/wright/*`. A crew member's
 // are `memory/<id>/*`, then every `memory/shared/*.md` (regular files, in name
 // order), each headed "Shared notes" and not wrapped (the owner's notes);
 // Wright's context has no shared notes. Bounded: each memory file is cut at
 // `MAX_MEMORY_FILE_CHARS`, the message at `MAX_MESSAGE_CHARS`, and the whole
 // context at `MAX_CONTEXT_CHARS`; every cut is stated in the context itself.
 // The guide is kernel text, never read from a file and never cut: its length
-// is taken out of the fill budget before any memory section is placed.
+// is taken out of the fill budget before any memory section is placed. The
+// Studio section follows the same rule (its own limit is
+// `MAX_STUDIO_VIEW_CHARS`, kept by its builder), and is kept in a resumed
+// thread too: it is read fresh for every message.
 //
 // A message that continues a thread or carries thread references
 // (`./threads.ts`) adds history sections before the message: each already
@@ -55,11 +60,11 @@ export const MAX_MESSAGE_CHARS = 8_000;
 export const MAX_MANIFEST_CHARS = 4_000;
 /**
  * The whole context's limit, in characters. Room for the larger guide limit,
- * the message, the thread history (with its wrappers), the four memory files,
- * the manifest summary, the note reserve and the headings
- * (`kernel/test/brain-guide.test.ts` pins the sum).
+ * the Studio section's limit, the message, the thread history (with its
+ * wrappers), the four memory files, the manifest summary, the note reserve
+ * and the headings (`kernel/test/brain-guide.test.ts` pins the sum).
  */
-export const MAX_CONTEXT_CHARS = 82_000;
+export const MAX_CONTEXT_CHARS = 88_000;
 
 /** Kept free for the truncation notes when the whole-context limit cuts the memory sections. */
 export const NOTE_RESERVE = 1_000;
@@ -131,6 +136,12 @@ export interface ContextInput {
   readonly catalogue?: ToolCatalogue;
   /** The session's `policy.allowedTools`: the guide lists the catalogue tools it allows. Absent: none. */
   readonly allowedTools?: readonly string[];
+  /**
+   * The rendered "Studio right now" section (`studioView`, `./studio-view.ts`),
+   * placed right before `## Now`, kept whole, also in a resumed thread. Absent:
+   * no section (the context is exactly what it was before it existed).
+   */
+  readonly studio?: string;
 }
 
 /** The line a resumed thread's prompt starts with, in place of the memory, guide and Loomwright sections. */
@@ -251,7 +262,10 @@ function guideSection(agent: string, input: ContextInput): Section {
  * (and, for a crew member, shared notes) and Loomwright sections fill the
  * rest in order, and the first one that does not fit is cut (the ones after
  * it dropped), each with a note naming it. The guide is rendered right after
- * `role.md` (the first memory section). A resumed thread has no guide.
+ * `role.md` (the first memory section). A resumed thread has no guide. The
+ * Studio section (`studio`), when given, is kept whole the same way (its
+ * length comes out of the budget first) and sits right before `## Now`, in a
+ * resumed thread too.
  */
 export function buildContext(input: ContextInput): string {
   const agent = input.agent ?? "wright";
@@ -266,9 +280,11 @@ export function buildContext(input: ContextInput): string {
   const history: Section[] = (input.history ?? []).map((h) => ({ heading: h.heading, body: h.body, name: h.heading }));
   const message = messageSection(input.source, input.text);
 
+  // Kept whole like the guide, and in a resumed thread too (read fresh for every message).
+  const studio = input.studio ?? "";
   const tail = [time, ...history, message].map(render).join("\n");
-  // The guide's length (and its separator) comes out of the budget before any memory section is placed.
-  const budget = MAX_CONTEXT_CHARS - tail.length - NOTE_RESERVE - (guide === "" ? 0 : guide.length + 1);
+  // The guide's and the Studio section's lengths (and their separators) come out of the budget before any memory section is placed.
+  const budget = MAX_CONTEXT_CHARS - tail.length - NOTE_RESERVE - (guide === "" ? 0 : guide.length + 1) - (studio === "" ? 0 : studio.length + 1);
   const head: string[] = [];
   const notes: string[] = [];
   let used = 0;
@@ -296,5 +312,5 @@ export function buildContext(input: ContextInput): string {
   // The guide right after role.md (the first fill section), or first when even role.md was dropped.
   if (guide !== "") head.splice(head.length === 0 ? 0 : 1, 0, guide);
   const noteText = notes.length === 0 ? "" : `${notes.join("\n")}\n`;
-  return [head.join("\n"), noteText, tail].filter((p) => p !== "").join("\n");
+  return [head.join("\n"), noteText, studio, tail].filter((p) => p !== "").join("\n");
 }

@@ -844,7 +844,7 @@ describe("crewPlaybookPrompt", () => {
     expect(large.length).toBeLessThanOrEqual(MAX_CONTEXT_CHARS);
     expect(large).toContain("i".repeat(MAX_CONTEXT_CHARS - 20_000));
     expect(large).toContain("… truncated: memory/mason/role.md, 1016 chars cut (file limit 8000)");
-    expect(large).toMatch(/… truncated: memory\/mason\/lessons\.md, \d+ chars cut \(context limit 82000\)/);
+    expect(large).toMatch(/… truncated: memory\/mason\/lessons\.md, \d+ chars cut \(context limit 88000\)/);
     expect(large.endsWith("## Now\n\nLocal time: 2026-10-14 09:00 +00:00 (UTC)\n\nPlaybook notes run now by the owner.\n")).toBe(true);
   });
 

@@ -50,7 +50,10 @@
 //      since, or a same-key run ended `done` meanwhile (an item's: one
 //      `poll_item_skipped`, in the step), stores `{session_id: null, skip}`; h. the prompt (`playbookPrompt` for
 //      Wright, `crewPlaybookPrompt` for a crew member: its own memory files,
-//      never Wright's); i. the session, as the owning agent, cwd its memory
+//      never Wright's; each with the agent's Studio guide, its tool list from
+//      `ctx.catalogue` and the session's allowed tools, and the agent's own
+//      "Studio right now" section, awaited here so both builders stay
+//      synchronous); i. the session, as the owning agent, cwd its memory
 //      folder, with `sessions.playbook` and `playbook_version`, stored as
 //      `{session_id}`. An admission refusal is rethrown from inside the step
 //      (released, not done) so the loop parks the event;
@@ -65,8 +68,10 @@
 // The `studio` CLI loads this module (through `./index.ts`, and through the
 // brain's handler): besides `node:` builtins it imports only
 // `../api/kill-switch.js`, `../features/contribution.js` types, `../loop/queue.js`, the triggers
-// feature's `cron.js`, the brain's `context.js`, `memory.js` and `settings.js`
-// (never `../brain/index.js` or `handler.js`: no runtime cycle), the agents
+// feature's `cron.js`, the brain's `context.js`, `memory.js`, `settings.js`,
+// `guide.js` and `studio-view.js` (whose graph is the three read-route
+// modules, the approvals, playbook and trigger stores and the agents leaves:
+// SDK-free) (never `../brain/index.js` or `handler.js`: no runtime cycle), the agents
 // feature's leaf modules (`../agents/registry.js`, `settings.js`,
 // `memory.js`, `types.js`: never its index), `../notifications/record.js`
 // and this feature's files (`./items.js`, `./store.js`, `./types.js`); never
@@ -78,8 +83,11 @@ import { isValidAgentId } from "../agents/types.js";
 import { isKillSwitchEngaged } from "../api/kill-switch.js";
 import { MAX_CONTEXT_CHARS, MAX_MEMORY_FILE_CHARS, buildContext, defuseWrapperTags, localTimeLine } from "../brain/context.js";
 import type { LoomwrightSummary } from "../brain/context.js";
+import { GUIDE_HEADING, studioGuide } from "../brain/guide.js";
 import { cutChars, ensureMemoryFiles, readMemoryFile, wrightMemoryDir } from "../brain/memory.js";
 import { readWrightSettings } from "../brain/settings.js";
+import { studioView, wrightSelf } from "../brain/studio-view.js";
+import type { ToolCatalogue } from "../features/catalogue.js";
 import type { CliApiClient, CliSubcommandOutput, ContributedRoute, ContributedRouteRequest } from "../features/contribution.js";
 import { isPositiveId, messageOf } from "../loop/internal.js";
 import { enqueueEvent } from "../loop/queue.js";
@@ -494,13 +502,20 @@ export interface PlaybookPromptInput {
   readonly loomwright: LoomwrightSummary;
   readonly now: Date;
   readonly timeZone: string;
+  /** The kernel's tool catalogue, for the guide's tool list. Absent: the guide says the list is unavailable. */
+  readonly catalogue?: ToolCatalogue;
+  /** The session's `policy.allowedTools`: the guide lists the catalogue tools it allows. Absent: none. */
+  readonly allowedTools?: readonly string[];
+  /** The agent's rendered "Studio right now" section (`studioView`), kept whole before `## Now`. Absent: none. */
+  readonly studio?: string;
 }
 
 /**
  * The prompt a playbook session starts with: the playbook's heading and its
  * intent (the owner approved this exact version when enabling it; any edit
  * returns it to draft), then the item block when the run is an item's (the
- * item wrapped as data from its ref), then Wright's context (`buildContext`)
+ * item wrapped as data from its ref), then Wright's context (`buildContext`,
+ * with the catalogue, the session's allowed tools and the Studio section)
  * whose message is a kernel-built line, wrapped as data like any message that
  * is not the owner's.
  */
@@ -509,7 +524,18 @@ export function playbookPrompt(input: PlaybookPromptInput): string {
   const instruction = `Run this playbook. Its intent is your instruction for this session:\n\n${defuseWrapperTags(input.intent)}\n\n`;
   const item = input.item == null ? "" : itemPromptBlock(input.item);
   const text = `Playbook ${input.slug} ${input.kind === "fire" ? `fired for ${input.scheduledAt}` : "run now by the owner"}.`;
-  return `${heading}${instruction}${item}${buildContext({ dataDir: input.dataDir, source: `playbook:${input.id}`, text, loomwright: input.loomwright, now: input.now, timeZone: input.timeZone })}`;
+  const context = buildContext({
+    dataDir: input.dataDir,
+    source: `playbook:${input.id}`,
+    text,
+    loomwright: input.loomwright,
+    now: input.now,
+    timeZone: input.timeZone,
+    ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }),
+    ...(input.allowedTools === undefined ? {} : { allowedTools: input.allowedTools }),
+    ...(input.studio === undefined ? {} : { studio: input.studio }),
+  });
+  return `${heading}${instruction}${item}${context}`;
 }
 
 /** A crew member's own memory files, in the order its playbook prompt shows them. */
@@ -530,12 +556,15 @@ function crewCutNote(name: string, n: number, atLeast: boolean, why: string): st
  * and instruction as `playbookPrompt` (the intent, wrapper tags defused) and,
  * for an item's run, the same item block, then the member's OWN memory files (`memory/<agent>/role.md`, `preferences.md`,
  * `people.md`, `lessons.md`, each cut at `MAX_MEMORY_FILE_CHARS`; a missing or
- * unreadable one is noted), then `## Now` with the local time and the
+ * unreadable one is noted) with the crew Studio guide right after `role.md`
+ * (`studioGuide(<member>, {catalogue, allowedTools})`, as `buildContext` places
+ * it), then the member's own "Studio right now" section when given (`studio`),
+ * then `## Now` with the local time and the
  * kernel-built line (`Playbook <slug> fired for <scheduled_at>.` or `… run now
  * by the owner.`: kernel text, so not wrapped). It never calls `buildContext`
  * and never reads `memory/wright`: Wright's memory is not the member's. At most
- * `MAX_CONTEXT_CHARS` characters: the heading, instruction, item block, time
- * and line are always kept; the memory sections fill the rest in order, and the first one
+ * `MAX_CONTEXT_CHARS` characters: the heading, instruction, item block, guide,
+ * Studio section, time and line are always kept; the memory sections fill the rest in order, and the first one
  * that does not fit is cut (the ones after it dropped), each with a note.
  * Throws `TypeError` for an id that is not a crew member's (never reached:
  * the run checks the agent is registered first).
@@ -556,7 +585,10 @@ export function crewPlaybookPrompt(input: CrewPlaybookPromptInput): string {
     return { name, body };
   });
   const render = (name: string, body: string): string => `## ${name}\n\n${body}\n`;
-  const budget = MAX_CONTEXT_CHARS - heading.length - instruction.length - item.length - tail.length - CREW_NOTE_RESERVE;
+  // Kernel text kept whole, as `buildContext` keeps it: the guide (right after role.md) and the Studio section (before `## Now`).
+  const guide = render(GUIDE_HEADING, studioGuide(input.agent, { ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }), ...(input.allowedTools === undefined ? {} : { allowedTools: input.allowedTools }) }));
+  const studio = input.studio ?? "";
+  const budget = MAX_CONTEXT_CHARS - heading.length - instruction.length - item.length - tail.length - CREW_NOTE_RESERVE - guide.length - 1 - (studio === "" ? 0 : studio.length + 1);
   const kept: string[] = [];
   const notes: string[] = [];
   let used = 0;
@@ -579,8 +611,10 @@ export function crewPlaybookPrompt(input: CrewPlaybookPromptInput): string {
       notes.push(crewCutNote(section.name, section.body.length, false, `context limit ${MAX_CONTEXT_CHARS}`));
     }
   }
+  // The guide right after role.md (the first section), or first when even role.md was dropped.
+  kept.splice(kept.length === 0 ? 0 : 1, 0, guide);
   const noteText = notes.length === 0 ? "" : `${notes.join("\n")}\n`;
-  return `${heading}${instruction}${item}${[kept.join("\n"), noteText, tail].filter((p) => p !== "").join("\n")}`;
+  return `${heading}${instruction}${item}${[kept.join("\n"), noteText, studio, tail].filter((p) => p !== "").join("\n")}`;
 }
 
 /** What the brain's handler passes through: its clock, zone and Loomwright reader. */
@@ -671,7 +705,9 @@ async function startCrewSession(ctx: EventContext, deps: PlaybookRunDeps, c: Cre
   if (sessions === undefined) return { started: { session_id: null, fail: "no_session_manager" } };
   const skip = lateSkip(store, e, c.runId, c.dedupeKey, deps.now());
   if (skip !== undefined) return { started: { session_id: null, skip } };
-  // h. The prompt: the member's own memory, never Wright's.
+  // h. The prompt: the member's own memory, never Wright's; its crew guide and its own Studio section.
+  const s = settings.settings;
+  const studio = await studioView(store, e.agent, { now: deps.now(), timeZone: deps.timeZone(), self: { model: c.model, toolPolicy: s.policyStatus } });
   const prompt = crewPlaybookPrompt({
     dataDir,
     agent: e.agent,
@@ -684,9 +720,11 @@ async function startCrewSession(ctx: EventContext, deps: PlaybookRunDeps, c: Cre
     item: e.item,
     now: deps.now(),
     timeZone: deps.timeZone(),
+    ...(ctx.catalogue === undefined ? {} : { catalogue: ctx.catalogue }),
+    allowedTools: s.policy.allowedTools,
+    studio,
   });
   // i. The session, as the member.
-  const s = settings.settings;
   const handle = await sessions.startSession({
     agent: e.agent,
     prompt,
@@ -749,7 +787,8 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
       // the live row is read again, and a skip is stored so a replay skips too.
       const skip = lateSkip(store, e, runId, dedupeKey, deps.now());
       if (skip !== undefined) return { session_id: null, skip };
-      // h. The prompt.
+      // h. The prompt: Wright's context with the session's tool list and Wright's Studio section.
+      const studio = await studioView(store, "wright", { now: deps.now(), timeZone: deps.timeZone(), self: wrightSelf(dataDir, model) });
       const prompt = playbookPrompt({
         dataDir,
         id: e.playbook,
@@ -762,6 +801,9 @@ export async function handlePlaybookMessage(ctx: EventContext, deps: PlaybookRun
         loomwright: deps.loomwright(sessions),
         now: deps.now(),
         timeZone: deps.timeZone(),
+        ...(ctx.catalogue === undefined ? {} : { catalogue: ctx.catalogue }),
+        allowedTools: settings.settings.policy.allowedTools,
+        studio,
       });
       // i. The session.
       const { permissionMode, policy } = settings.settings;

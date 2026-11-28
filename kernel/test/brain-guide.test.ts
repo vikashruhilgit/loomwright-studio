@@ -21,6 +21,7 @@ import {
   wrightGuide,
 } from "../src/brain/guide.js";
 import { brainMessageHandler, defaultWrightSettingsJson, ensureMemoryFiles, wrightSettingsPath } from "../src/brain/index.js";
+import { MAX_STUDIO_VIEW_CHARS } from "../src/brain/studio-view.js";
 import { MAX_THREAD_HISTORY_TOTAL_CHARS, MAX_THREAD_REFERENCES } from "../src/brain/threads.js";
 import { DISPLAY_CATALOGUE_UNAVAILABLE, KERNEL_TOOL_PREFIX, buildToolCatalogue } from "../src/features/catalogue.js";
 import type { ToolCatalogue } from "../src/features/catalogue.js";
@@ -224,9 +225,16 @@ describe("the guide is bounded and never cut (AC5)", () => {
     expect(c.length).toBeGreaterThan(rendered(crewGuide()).length);
   });
 
-  it("MAX_CONTEXT_CHARS leaves the memory files their room beside the larger guide, the message, the history, the manifest and the notes", () => {
+  it("MAX_CONTEXT_CHARS leaves the memory files their room beside the larger guide, the Studio section, the message, the history, the manifest and the notes", () => {
     const room =
-      Math.max(MAX_WRIGHT_GUIDE_CHARS, MAX_CREW_GUIDE_CHARS) + MAX_MESSAGE_CHARS + MAX_THREAD_HISTORY_TOTAL_CHARS * 1.25 + 4 * MAX_MEMORY_FILE_CHARS + MAX_MANIFEST_CHARS + NOTE_RESERVE + 1_000;
+      Math.max(MAX_WRIGHT_GUIDE_CHARS, MAX_CREW_GUIDE_CHARS) +
+      MAX_STUDIO_VIEW_CHARS +
+      MAX_MESSAGE_CHARS +
+      MAX_THREAD_HISTORY_TOTAL_CHARS * 1.25 +
+      4 * MAX_MEMORY_FILE_CHARS +
+      MAX_MANIFEST_CHARS +
+      NOTE_RESERVE +
+      1_000;
     expect(room).toBeLessThanOrEqual(MAX_CONTEXT_CHARS);
   });
 
