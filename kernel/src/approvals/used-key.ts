@@ -1,9 +1,11 @@
 // The idempotency-key rule shared by the always-held, kernel-applied tools
 // (`kernel_agent_create`, `kernel_agent_update`, `kernel_memory_propose`): a
 // key this session already used for the same tool is refused before the hold
-// (`idempotency_key_used`), so a retried call never files a second approval of
-// one request, and a second Allow once never applies it twice. A new key asks
-// the owner again.
+// (`idempotency_key_used`), so a retried call in the same session never files
+// a second approval of one request, and so is never applied twice. A new key
+// asks the owner again. The check is per session (`requesting_session`): the
+// same key from another session, such as the continued session an approval's
+// decision starts, is not caught and is held as a new approval.
 //
 // This module imports only a type, so the `studio` CLI can load every feature
 // that uses it without the Agent SDK (`kernel/test/feature-seams.test.ts`).

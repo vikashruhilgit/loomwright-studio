@@ -16,8 +16,12 @@
 // - `beforeHold` (narrow only; reads the store and the file): the agent is the
 //   session's, never the tool input, and must be Wright or a valid crew id;
 //   an `idempotency_key` an earlier approval of this session used for this
-//   tool is refused (`idempotency_key_used`, the charter tools' rule), so a
-//   retried call never asks twice and a second Allow once never appends twice;
+//   tool is refused (`idempotency_key_used`, the charter tools' rule). The
+//   check is per session (`requesting_session`): a retry in the same session
+//   never asks twice, so that session's request is never allowed and appended
+//   twice; a repeat from another session (such as the continued session a
+//   decision starts) is not caught, is held as a new approval, and appends
+//   again if the owner allows it (docs/architecture/brain.md, honest limits);
 //   `file` must be exactly one of `MEMORY_PROPOSAL_FILES` (an agent proposes
 //   only to its own three files: never `role.md`, another agent's folder,
 //   `shared/` or a path); the entry and the evidence must be plain text; the
