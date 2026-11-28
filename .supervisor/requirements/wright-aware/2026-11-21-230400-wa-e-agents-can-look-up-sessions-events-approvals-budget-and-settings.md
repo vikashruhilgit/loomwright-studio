@@ -1,6 +1,7 @@
 # wa-e — Agents can look up sessions, events, approvals, budget and settings
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/320
 
 **As the** owner,
 **I want** Wright (and a crew member, within its own items) to have read-only kernel tools for the details behind the Studio summary,
@@ -66,3 +67,9 @@ kernel/test/feature-seams.test.ts
 
 The owner routed this wa-c follow-up on 2026-11-28 to the first PR allowed to touch `kernel/src/brain/settings.ts` (this item lists it in Touches):
 - Correct the header comment in `kernel/src/brain/settings.ts`: it still says `wright.json` is "never overwritten", but since wa-c (PR #317) the kernel rewrites an unedited proposed tool list, with a backup and an audit event. `docs/architecture/brain.md` "Known limits" names the stale comment; remove that known-limits line once the comment is fixed.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T15:22:59Z
+- **Brief:** .supervisor/jobs/done/2026-11-28-wa-e-studio-lookup-tools.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/320
