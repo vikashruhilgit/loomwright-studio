@@ -14,6 +14,7 @@ export const KERNEL_APPLIED_ACTIONS = {
   mcp__kernel__kernel_playbook_enable: "The kernel enables this playbook when you allow it.",
   mcp__kernel__kernel_agent_create: "The kernel creates this crew member when you allow it.",
   mcp__kernel__kernel_agent_update: "The kernel changes this crew member's charter when you allow it.",
+  mcp__kernel__kernel_memory_propose: "The kernel adds this entry, dated, to the agent's memory file when you allow it.",
 } as const satisfies Readonly<Record<string, string>>;
 
 /**

@@ -1408,3 +1408,32 @@ describe("the charter card (phase 8 item 18d)", () => {
     expect(screen.queryByRole("textbox", { name: "Ask or change" })).toBeNull();
   });
 });
+
+// ---- wa-f: a memory proposal --------------------------------------------------------------------
+
+describe("a memory proposal (wa-f) mounts its card and offers Allow once and Deny only", () => {
+  /** A held `kernel_memory_propose` from a crew member's playbook session (so the app's own playbook check would allow Always). */
+  const memoryApproval = (id: number): Approval =>
+    approval(id, {
+      requesting_agent: "mason",
+      action: "kernel_memory_propose",
+      payload: { tool: "mcp__kernel__kernel_memory_propose", input: { file: "lessons", entry: "Ask before retrying.", evidence: "session 4 <b>refused</b>", idempotency_key: "k" }, cwd: "/" },
+    });
+
+  it("draws the card above the payload, with no 'Always for this playbook' button; Shift+A sends nothing", async () => {
+    const memory = memoryApproval(1);
+    expect(alwaysRefusalFor(memory)).toBeUndefined();
+    const { fake, registry } = await mount({ approvals: [memory] });
+    expect(screen.getByTestId("memory-card")).toBeTruthy();
+    expect(screen.getByTestId("memory-path").textContent).toBe("memory/mason/lessons.md");
+    expect(screen.getByRole("button", { name: /^Allow once/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Deny/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Always/ })).toBeNull();
+    expect(screen.queryByTestId("always-reason")).toBeNull();
+    expect(registry.get(APPROVAL_COMMANDS.approveAlways)?.enabled?.()).toBe(false);
+    press("A", { shiftKey: true });
+    await act(async () => undefined);
+    expect(fake.requests.filter((r) => r.req.method === "POST")).toEqual([]);
+    expect(screen.getByTestId("approval-notice").textContent).toMatch(/^A memory entry is asked every time/);
+  });
+});

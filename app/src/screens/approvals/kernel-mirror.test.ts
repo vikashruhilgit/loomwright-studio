@@ -38,7 +38,7 @@ function approval(overrides: Partial<Approval> = {}): Approval {
 }
 
 describe("the kernel mirror", () => {
-  it("KERNEL_APPLIED_ACTIONS names exactly the kernel's three tools", () => {
+  it("KERNEL_APPLIED_ACTIONS names exactly the kernel's four tools", () => {
     const block = /export const KERNEL_APPLIED_ACTIONS = \[([\s\S]*?)\] as const;/.exec(approvalsStore)?.[1];
     expect(block, "kernel/src/approvals/store.ts declares KERNEL_APPLIED_ACTIONS").toBeDefined();
     const kernelNames = [...(block ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
@@ -46,6 +46,7 @@ describe("the kernel mirror", () => {
       "mcp__kernel__kernel_playbook_enable",
       "mcp__kernel__kernel_agent_create",
       "mcp__kernel__kernel_agent_update",
+      "mcp__kernel__kernel_memory_propose",
     ]);
     expect(Object.keys(KERNEL_APPLIED_ACTIONS).sort()).toEqual([...kernelNames].sort());
   });
