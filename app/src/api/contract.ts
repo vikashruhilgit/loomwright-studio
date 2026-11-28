@@ -1532,6 +1532,17 @@ export interface SettingsResponse {
   readonly notifier: NotifierKind;
   /** The Loomwright install the adapter resolved, or why it did not. */
   readonly loomwright: LoomwrightAdapterStatus;
+  /**
+   * wa-c. Wright's tool policy as `config/agents/wright.json` holds it, read raw (the route never creates or upgrades
+   * the file): `status` is its `tool_policy.status` (`null` when unset) and `missing` the tools of the kernel's current
+   * proposal its list lacks, each with its catalogue job label and purpose line (both `null` for a tool the catalogue
+   * does not list, `Read` for one). `null` when the file is absent or is not a readable settings object; absent from
+   * an older kernel.
+   */
+  readonly wright_tools?: {
+    readonly status: string | null;
+    readonly missing: readonly { readonly name: string; readonly job: string | null; readonly purpose: string | null }[];
+  } | null;
 }
 
 /** `PUT /settings/auth-provider` (D42): the provider the owner chooses for every session. */

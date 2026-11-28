@@ -63,7 +63,23 @@ describe("parseSettings: the contract's known fields, nothing else", () => {
       dataDir: "/Users/o/.loomwright-studio",
       notifier: "osascript",
       loomwright: { ok: true, installPath: "/Users/o/.claude/plugins/loomwright" },
+      // wa-c: absent from an older kernel, so no "Wright's tools" block.
+      wrightTools: null,
     });
+  });
+
+  it("wa-c: reads wright_tools field by field; a malformed one is null and the rest of the reply still reads", () => {
+    const missing = [{ name: "kernel_studio_status", job: "Manage the crew", purpose: "Reads what is in Studio now.", extra: "x" }, { name: "Read", job: null, purpose: null }];
+    expect(parseSettings(body({ wright_tools: { status: "proposed", missing } }))?.wrightTools).toEqual({
+      status: "proposed",
+      missing: [{ name: "kernel_studio_status", job: "Manage the crew", purpose: "Reads what is in Studio now." }, { name: "Read", job: null, purpose: null }],
+    });
+    expect(parseSettings(body({ wright_tools: null }))?.wrightTools).toBeNull();
+    for (const bad of ["junk", 7, [], { status: 7, missing: [] }, { status: "owner" }, { status: "owner", missing: "Read" }]) {
+      const reply = viewReply({ kind: "ok", status: 200, body: body({ wright_tools: bad }) as never });
+      expect(reply.kind, JSON.stringify(bad)).toBe("ok");
+      expect(reply.kind === "ok" ? reply.body.wrightTools : "not ok", JSON.stringify(bad)).toBeNull();
+    }
   });
 
   it("reads D42's provider list and source, leaving out an entry that is not the contract's shape", () => {

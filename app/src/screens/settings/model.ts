@@ -14,11 +14,12 @@
 // What lives here: the test ids, the held view and its parse, the health's words and
 // tone, the token's life (365 days, as `TOKEN_LIFETIME_DAYS` in
 // `kernel/src/auth/subscription-token.ts`), the band, the login item's honest note, the
-// feed events that make the screen read again, and Threads' size-hint reader and words (`hintOf`, `hintWords`).
+// feed events that make the screen read again, and Threads' size-hint reader and words (`hintOf`, `hintWords`); wa-c's "Wright's tools" parse and words live in `./tool-policy.ts`.
 import type { AppPreferences, SettingsResponse } from "../../api/contract";
 import { printable } from "../approvals/printable";
 import type { Reply } from "../schedules/model";
 import { countText } from "../../components/format";
+import { WRIGHT_TOOLS_TEST_IDS, type WrightToolsView, isRecord, wrightToolsOf } from "./tool-policy";
 
 /** The ids the unit tests and the e2e spec target. */
 export const SETTINGS_TEST_IDS = {
@@ -85,6 +86,7 @@ export const SETTINGS_TEST_IDS = {
   apiKeyInput: "settings-api-key-input",
   apiKeySave: "settings-api-key-save",
   apiKeyNote: "settings-api-key-note",
+  ...WRIGHT_TOOLS_TEST_IDS,
 } as const;
 
 /** The Keychain item the subscription token is kept in (`SUBSCRIPTION_KEYCHAIN_SERVICE` in the kernel). A name, never a value. */
@@ -132,6 +134,7 @@ export interface SettingsView {
   /** `terminal-notifier`, `osascript` or `none`; a word this build does not know is kept as inert text. */
   readonly notifier: string;
   readonly loomwright: { readonly ok: true; readonly installPath: string } | { readonly ok: false; readonly reason: string };
+  readonly wrightTools?: WrightToolsView | null; // wa-c: `parseSettings` sets it, `null` for absent, null or malformed
 }
 
 /** Kernel text as inert, single-line text. */
@@ -139,8 +142,8 @@ export function safe(text: string): string {
   return printable(text);
 }
 
-/** Whether `value` is a plain JSON object (not null, not an array). */
-export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** Whether `value` is a plain JSON object (not null, not an array); defined in `./tool-policy.ts`, which cannot import this module. */
+export { isRecord } from "./tool-policy";
 
 function healthOf(raw: unknown): HealthState | undefined {
   if (!isRecord(raw) || typeof raw.status !== "string") return undefined;
@@ -217,6 +220,7 @@ export function parseSettings(body: unknown): SettingsView | undefined {
       loomwright.status === "ok" && typeof loomwright.install_path === "string"
         ? { ok: true, installPath: safe(loomwright.install_path) }
         : { ok: false, reason: typeof loomwright.reason === "string" ? safe(loomwright.reason) : "unknown" },
+    wrightTools: wrightToolsOf(body.wright_tools),
   };
 }
 
