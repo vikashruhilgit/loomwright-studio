@@ -1,6 +1,7 @@
 # wa-c — An unedited proposed tool list gets the current proposed tools
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/317
 
 **As the** owner,
 **I want** Wright's tool list, while it is still the kernel's unedited proposal, to follow the current proposal when the kernel adds tools, and a list I changed to be left alone with the new tools shown to me,
@@ -63,3 +64,9 @@ app/src/screens/settings/SettingsScreen.test.tsx
 
 The owner routed these wa-a follow-ups to this item on 2026-11-28 (review findings the drain dismissed as known limits). This item's plan covers them, or says why it cannot:
 - Part of this (with wa-d): playbookPrompt and crewPlaybookPrompt are not wired to the tool catalogue: a playbook session's guide says its tool list is unavailable, and a crew playbook session gets no guide. Recorded in docs/architecture/brain.md "Known limits" by wa-a (PR #316).
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T11:18:18Z
+- **Brief:** .supervisor/jobs/done/2026-11-28-wa-c-unedited-proposed-tool-list-upgrade.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/317
