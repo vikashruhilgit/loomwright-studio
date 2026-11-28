@@ -1163,20 +1163,25 @@ function parsedSettings(bytes: Buffer | null): unknown {
 /**
  * Wright first, then every registered member (active and off) in id order.
  * Wright's settings are read only when `wright.json` exists (a list never
- * creates it), and it has no `sha256`: nothing changes Wright's file through
- * a tool. A member's file is read once: `sha256` and `settings` from the same
- * bytes, `settings_error` from the settings reader.
+ * creates it), and it has no `sha256`: no tool writes Wright's file. The
+ * settings reader may itself rewrite it once (wa-c: an unedited proposed tool
+ * list gets the current one, `./past-tool-lists.ts`), so Wright's displayed
+ * `settings` come from the bytes read after the reader ran. A member's file
+ * is read once: `sha256` and `settings` from the same bytes, `settings_error`
+ * from the settings reader.
  */
 export function charterList(store: Store): { agents: CharterListEntry[] } {
   const dataDir = store.dataDir;
-  const wrightFile = listBytes(agentSettingsPath(dataDir, WRIGHT_ID));
-  const wrightRead = wrightFile.present ? readAgentSettings(dataDir, WRIGHT_ID) : undefined;
+  const wrightPath = agentSettingsPath(dataDir, WRIGHT_ID);
+  const wrightRead = listBytes(wrightPath).present ? readAgentSettings(dataDir, WRIGHT_ID) : undefined;
+  // After the reader, which may have upgraded the file: the answer shows the list Wright now runs with.
+  const wrightBytes = wrightRead === undefined ? null : listBytes(wrightPath).bytes;
   const wright: CharterListEntry = {
     id: WRIGHT_ID,
     display_name: "Wright",
     avatar: { shape: "whale", hue: "accent" },
     status: "active",
-    settings: parsedSettings(wrightFile.bytes),
+    settings: parsedSettings(wrightBytes),
     settings_error: wrightRead === undefined || wrightRead.ok ? null : wrightRead.error,
   };
   const members = listAgents(store).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));

@@ -199,6 +199,7 @@ describe("GET /settings wright_tools (wa-c)", () => {
     const list15 = PAST_PROPOSED_TOOL_LISTS[0] as readonly string[];
     // A registered sink, as a running kernel has: the route still never upgrades (it reads the file raw).
     const unregister = registerProposedToolsAudit(env.store.dataDir, {
+      inTransaction: () => env.store.inTransaction,
       transaction: (fn) => env.store.transaction(fn),
       record: (kind, payload) => appendEvent(env.store, kind, NO_REF, payload, env.now().toISOString()),
     });

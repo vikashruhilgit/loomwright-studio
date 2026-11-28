@@ -21,6 +21,7 @@ import {
   registerProposedToolsAudit,
 } from "../src/agents/past-tool-lists.js";
 import type { ProposedToolsAuditSink } from "../src/agents/past-tool-lists.js";
+import { charterList } from "../src/agents/charter-tools.js";
 import { agentSettingsPath, readAgentSettings } from "../src/agents/settings.js";
 import { PROPOSED_ALLOWED_TOOLS, defaultWrightSettingsJson, readWrightSettings, wrightSettingsPath } from "../src/brain/settings.js";
 import { startKernel } from "../src/kernel.js";
@@ -29,15 +30,17 @@ import { events, loopEnv } from "./loop-helpers.js";
 import type { LoopEnv } from "./loop-helpers.js";
 import { fakeSessions, makePluginDir, stubProvider } from "./session-fakes.js";
 
-/** The injected file system failure: the next matching call throws an error with `code`. */
-const fault = vi.hoisted(() => ({ current: undefined as { op: "writeFileSync" | "renameSync"; match: (path: string) => boolean; code: string } | undefined }));
+/** The injected file system failure: the next matching call throws an error with `code` (every matching call while `lasting`). */
+const fault = vi.hoisted(() => ({
+  current: undefined as { op: "writeFileSync" | "renameSync"; match: (path: string) => boolean; code: string; lasting?: boolean } | undefined,
+}));
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const failing = (op: "writeFileSync" | "renameSync", path: unknown): void => {
     const f = fault.current;
     if (f !== undefined && f.op === op && f.match(String(path))) {
-      fault.current = undefined;
+      if (f.lasting !== true) fault.current = undefined;
       throw Object.assign(new Error(`injected ${f.code}`), { code: f.code });
     }
   };
@@ -75,6 +78,7 @@ afterEach(() => {
 /** The sink `startKernel` registers, over the test's store. */
 function storeSink(): ProposedToolsAuditSink {
   return {
+    inTransaction: () => env.store.inTransaction,
     transaction: (fn) => env.store.transaction(fn),
     record: (kind, payload) => appendEvent(env.store, kind, NO_REF, payload, env.now().toISOString()),
   };
@@ -342,13 +346,14 @@ describe("AC7: a failed step keeps the old file", () => {
     expect(read.ok && read.settings.policy.allowedTools).toEqual([...LIST_15]);
     expect(readFileSync(file()).equals(old)).toBe(true);
     expect(agentsDir().filter((n) => n.endsWith(".tmp"))).toEqual([]);
-    // The backup of the old bytes stays when the backup itself was made.
-    expect(backups()).toHaveLength(step === "backup" ? 0 : 1);
+    // No backup is left: the file itself still holds the old bytes (only an owner's edit keeps one, AC7b).
+    expect(backups()).toEqual([]);
     expect(upgradeEvents().map((e) => [e.kind, e.payload])).toEqual([["wright_tool_policy_upgrade_failed", { file: file(), step, code }]]);
   });
 
   it("a sink that throws is swallowed and the read returns", () => {
     register({
+      inTransaction: () => env.store.inTransaction,
       transaction: (fn) => env.store.transaction(fn),
       record: () => {
         throw new Error("the store is closed");
@@ -365,6 +370,7 @@ describe("AC7: a failed step keeps the old file", () => {
   it("a COMMIT that fails after the rename still records the upgrade (the file holds the new list) and returns the new list", () => {
     const sink = storeSink();
     register({
+      inTransaction: sink.inTransaction,
       // The rename ran inside `fn`; the transaction then fails as a failed COMMIT would (its event rolled back).
       transaction: (fn) => {
         env.store.transaction(() => {
@@ -385,6 +391,7 @@ describe("AC7: a failed step keeps the old file", () => {
 
   it("a sink whose transaction throws is swallowed the same way", () => {
     register({
+      inTransaction: () => false,
       transaction: () => {
         throw new Error("database is locked");
       },
@@ -399,11 +406,119 @@ describe("AC7: a failed step keeps the old file", () => {
   });
 });
 
+describe("AC7c: a lasting failure is recorded once, never retried on every read", () => {
+  it("two reads under a lasting rename failure record one event and leave no backup", () => {
+    register();
+    const old = writeWright(proposed(LIST_15));
+    fault.current = { op: "renameSync", match: (p) => p.endsWith("wright.json"), code: "EPERM", lasting: true };
+    for (let i = 0; i < 2; i++) {
+      const read = readWrightSettings(env.dataDir);
+      expect(read.ok && read.settings.policy.allowedTools, `read ${i}`).toEqual([...LIST_15]);
+    }
+    expect(readFileSync(file()).equals(old)).toBe(true);
+    expect(agentsDir()).toEqual(["wright.json"]);
+    expect(upgradeEvents().map((e) => [e.kind, e.payload])).toEqual([["wright_tool_policy_upgrade_failed", { file: file(), step: "rename", code: "EPERM" }]]);
+  });
+
+  it("the failure is forgotten when the bytes change or the sink is registered again, never across data dirs", () => {
+    register();
+    writeWright(proposed(LIST_15));
+    fault.current = { op: "renameSync", match: (p) => p.endsWith("wright.json"), code: "EPERM" };
+    readAgentSettings(env.dataDir, "wright");
+    // The failure is gone, but the same bytes are not tried again under this registration.
+    const again = readAgentSettings(env.dataDir, "wright");
+    expect(again.ok && again.settings.policy.allowedTools).toEqual([...LIST_15]);
+    expect(upgradeEvents().map((e) => e.kind)).toEqual(["wright_tool_policy_upgrade_failed"]);
+    // Another data dir with the same bytes is its own registration and upgrades.
+    const other = mkdtempSync(join(tmpdir(), "studio-upgrade-other-"));
+    try {
+      const otherEvents: string[] = [];
+      const unregisterOther = registerProposedToolsAudit(other, { inTransaction: () => false, transaction: (fn) => fn(), record: (kind) => void otherEvents.push(kind) });
+      try {
+        mkdirSync(join(other, "config", "agents"), { recursive: true });
+        writeFileSync(wrightSettingsPath(other), readFileSync(file()));
+        const read = readAgentSettings(other, "wright");
+        expect(read.ok && read.settings.policy.allowedTools).toEqual([...PROPOSED_ALLOWED_TOOLS]);
+        expect(otherEvents).toEqual(["wright_tool_policy_upgraded"]);
+      } finally {
+        unregisterOther();
+      }
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+    // A new registration (a kernel restart) tries again.
+    unregister?.();
+    register();
+    const read = readAgentSettings(env.dataDir, "wright");
+    expect(read.ok && read.settings.policy.allowedTools).toEqual([...PROPOSED_ALLOWED_TOOLS]);
+    expect(upgradeEvents().map((e) => e.kind)).toEqual(["wright_tool_policy_upgrade_failed", "wright_tool_policy_upgraded"]);
+  });
+
+  it("changed bytes (another past list) are tried again under the same registration", () => {
+    register();
+    writeWright(proposed(LIST_15));
+    fault.current = { op: "renameSync", match: (p) => p.endsWith("wright.json"), code: "EPERM" };
+    readAgentSettings(env.dataDir, "wright");
+    writeWright(proposed(LIST_21));
+    const read = readAgentSettings(env.dataDir, "wright");
+    expect(read.ok && read.settings.policy.allowedTools).toEqual([...PROPOSED_ALLOWED_TOOLS]);
+    expect(upgradeEvents().map((e) => e.kind)).toEqual(["wright_tool_policy_upgrade_failed", "wright_tool_policy_upgraded"]);
+  });
+});
+
+describe("AC7d: only a top-level read upgrades (never inside an open store transaction)", () => {
+  it("a read inside an outer transaction that rolls back leaves the file unchanged; a later top-level read upgrades with its event", () => {
+    register();
+    const old = writeWright(proposed(LIST_15));
+    expect(() =>
+      env.store.transaction(() => {
+        const inner = readAgentSettings(env.dataDir, "wright");
+        expect(inner.ok && inner.settings.policy.allowedTools).toEqual([...LIST_15]);
+        throw new Error("the outer work fails");
+      }),
+    ).toThrow("the outer work fails");
+    expect(readFileSync(file()).equals(old)).toBe(true);
+    expect(agentsDir()).toEqual(["wright.json"]);
+    expect(upgradeEvents()).toEqual([]);
+    const read = readAgentSettings(env.dataDir, "wright");
+    expect(read.ok && read.settings.policy.allowedTools).toEqual([...PROPOSED_ALLOWED_TOOLS]);
+    expect(backups()).toHaveLength(1);
+    expect(upgradeEvents().map((e) => e.kind)).toEqual(["wright_tool_policy_upgraded"]);
+  });
+
+  it("a sink whose inTransaction throws upgrades nothing and records nothing (fail closed)", () => {
+    const sink = storeSink();
+    register({
+      ...sink,
+      inTransaction: () => {
+        throw new Error("the store is closed");
+      },
+    });
+    const old = writeWright(proposed(LIST_15));
+    const read = readAgentSettings(env.dataDir, "wright");
+    expect(read.ok && read.settings.policy.allowedTools).toEqual([...LIST_15]);
+    expect(readFileSync(file()).equals(old)).toBe(true);
+    expect(upgradeEvents()).toEqual([]);
+  });
+});
+
+describe("kernel_agent_list shows the list Wright runs with", () => {
+  it("on the read that upgrades, Wright's displayed settings hold the current list", () => {
+    register();
+    writeWright(proposed(LIST_15));
+    const wright = charterList(env.store).agents[0] as { id: string; settings: { tool_policy: { allowedTools: string[] } } };
+    expect(wright.id).toBe("wright");
+    expect(wright.settings.tool_policy.allowedTools).toEqual([...PROPOSED_ALLOWED_TOOLS]);
+    expect(upgradeEvents().map((e) => e.kind)).toEqual(["wright_tool_policy_upgraded"]);
+  });
+});
+
 describe("AC7b: an owner's edit during the upgrade wins", () => {
   it("an owner's edit between the read and the rename wins", () => {
     const edited = `${JSON.stringify({ ...proposed(LIST_15), tool_policy: { status: "owner", allowedTools: ["Read"], allowedBashPrefixes: [] } }, null, 2)}\n`;
     const sink = storeSink();
     register({
+      inTransaction: sink.inTransaction,
       transaction: (fn) => {
         // The owner saves the file after the upgrade's read, before its re-read.
         writeFileSync(file(), edited);

@@ -419,8 +419,10 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
   await assertKernelToolsList(contributions.tools);
 
   const store = (deps.openStore ?? ((dir: string) => new Store({ dataDir: dir })))(dataDir);
-  // wa-c: Wright's settings reads here may upgrade an unedited proposed tool list, audited over this store (none without it).
+  // wa-c: Wright's settings reads here may upgrade an unedited proposed tool list, audited over this store (none without it),
+  // and only at a top-level read (a read inside an open transaction, admission's or the meter's, leaves the file alone).
   const unregisterProposedToolsAudit = registerProposedToolsAudit(dataDir, {
+    inTransaction: () => store.inTransaction,
     transaction: (fn) => store.transaction(fn),
     record: (kind, payload) => appendEvent(store, kind, NO_REF, payload, now().toISOString()),
   });
