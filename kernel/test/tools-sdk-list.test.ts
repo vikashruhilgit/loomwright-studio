@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { CHARTER_PERMISSION_MODES } from "../src/agents/charter-files.js";
 import { AVATAR_HUES, AVATAR_SHAPES } from "../src/agents/types.js";
+import { APPROVAL_STATUS_FILTERS, SESSION_STATUS_FILTERS } from "../src/brain/studio-tools.js";
 import { FIX_COMMENT_KINDS } from "../src/automate/owner-comment.js";
 import { MERGE_APPROVAL_CI_CLAIMS } from "../src/automate/runner.js";
 import { startFailureExit } from "../src/daemon-exit.js";
@@ -139,6 +140,31 @@ const CLOSED_VALUE_SETS: Readonly<Record<string, readonly ClosedValueSet[]>> = {
     { path: "comment.kind", enum: FIX_COMMENT_KINDS },
     { path: "comment.id", positiveInteger: true },
   ],
+  // wa-e's Studio lookups: their status filters are closed sets, and every count and cursor is a positive integer.
+  kernel_session_list: [
+    { path: "status", enum: SESSION_STATUS_FILTERS },
+    { path: "limit", positiveInteger: true },
+    { path: "before", positiveInteger: true },
+    { path: "after", positiveInteger: true },
+  ],
+  kernel_session_get: [
+    { path: "session_id", positiveInteger: true },
+    { path: "limit", positiveInteger: true },
+    { path: "before", positiveInteger: true },
+  ],
+  kernel_event_list: [
+    { path: "limit", positiveInteger: true },
+    { path: "before", positiveInteger: true },
+    { path: "after", positiveInteger: true },
+  ],
+  kernel_approval_list: [
+    { path: "status", enum: APPROVAL_STATUS_FILTERS },
+    { path: "limit", positiveInteger: true },
+    { path: "before", positiveInteger: true },
+    { path: "after", positiveInteger: true },
+  ],
+  kernel_budget_usage: [],
+  kernel_settings_get: [],
 };
 
 type Json = Record<string, unknown>;
@@ -206,9 +232,9 @@ afterEach(() => {
 });
 
 describe("the shipped kernel tools list through the Agent SDK", () => {
-  it("(a) every name of kernelToolNames is listed (35 in all), each with an object input schema", async () => {
+  it("(a) every name of kernelToolNames is listed (41 in all), each with an object input schema", async () => {
     const expected = kernelToolNames(SHIPPED);
-    expect(expected).toHaveLength(35);
+    expect(expected).toHaveLength(41);
     const listed = await listKernelTools(SHIPPED);
     expect(listed.map((t) => t.name).sort()).toEqual([...expected].sort());
     for (const t of listed) expect((t.inputSchema as { type?: unknown }).type, t.name).toBe("object");
@@ -229,9 +255,22 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     const listed = await listKernelTools(SHIPPED);
     const problems = listed.flatMap((t) => (CLOSED_VALUE_SETS[t.name] ?? []).map((set) => closedSetProblem(t.inputSchema, set)).filter((p) => p !== undefined).map((p) => `${t.name}: ${p}`));
     expect(problems).toEqual([]);
-    // The table is not vacuous: the eight tools with closed sets are each checked.
+    // The table is not vacuous: the twelve tools with closed sets are each checked.
     expect(Object.entries(CLOSED_VALUE_SETS).filter(([, sets]) => sets.length > 0).map(([name]) => name).sort()).toEqual(
-      ["kernel_agent_create", "kernel_agent_update", "kernel_github_pr_diff", "kernel_merge_approval_request", "kernel_playbook_create", "kernel_playbook_update", "kernel_pr_route", "kernel_trigger_register"],
+      [
+        "kernel_agent_create",
+        "kernel_agent_update",
+        "kernel_approval_list",
+        "kernel_event_list",
+        "kernel_github_pr_diff",
+        "kernel_merge_approval_request",
+        "kernel_playbook_create",
+        "kernel_playbook_update",
+        "kernel_pr_route",
+        "kernel_session_get",
+        "kernel_session_list",
+        "kernel_trigger_register",
+      ],
     );
   });
 
@@ -260,8 +299,8 @@ describe("the shipped kernel tools list through the Agent SDK", () => {
     expect(() => LISTING_CTX.store.dataDir).toThrow("tool listing only");
     expect(() => LISTING_CTX.sessions.getSession(1)).toThrow("tool listing only");
     expect(() => LISTING_CTX.sessions.stopSession(1)).toThrow("tool listing only");
-    expect(kernelToolDefinitions(LISTING_CTX, SHIPPED)).toHaveLength(35);
-    await expect(listKernelTools(SHIPPED)).resolves.toHaveLength(35);
+    expect(kernelToolDefinitions(LISTING_CTX, SHIPPED)).toHaveLength(41);
+    await expect(listKernelTools(SHIPPED)).resolves.toHaveLength(41);
   });
 });
 

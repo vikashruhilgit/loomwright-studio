@@ -19,12 +19,18 @@
 // `../api/kill-switch.js`, the agents feature's leaves (`../agents/registry.js`,
 // `../agents/settings.js`, `../agents/charter-files.js`, `../agents/memory.js`,
 // `../agents/types.js`), the playbook runs, the Loomwright adapter's pure modules
-// and the triggers feature's `cron.js` (time formatting); none of them loads the
-// session manager or the SDK.
+// and the triggers feature's `cron.js` (time formatting), and, for the six
+// Studio lookup tools (`./studio-tools.ts`, wa-e), the readers and route
+// modules they read through (`../approvals/store.js`, `../console/events.js`,
+// `../console/workspaces.js`, `../gui/budget-audit.js`,
+// `../integrations/github/routes.js`, `../playbooks/store.js`,
+// `../auth/choice.js`, `../loop/internal.js`); none of them loads the session
+// manager or the SDK.
 import type { FeatureContribution } from "../features/contribution.js";
 import { askSubcommand, messagesSubcommand } from "./cli.js";
 import { brainMessageHandler } from "./handler.js";
 import { brainRoutes } from "./routes.js";
+import { studioTools } from "./studio-tools.js";
 
 export {
   ASK_HELP,
@@ -79,9 +85,19 @@ export {
 } from "./settings.js";
 export type { WrightSettings, WrightSettingsRefusal, WrightSettingsResult } from "./settings.js";
 export { LESSONS_TEMPLATE, PEOPLE_TEMPLATE, PREFERENCES_TEMPLATE, ROLE_TEMPLATE, SHARED_README_TEMPLATE } from "./templates.js";
+export {
+  DEFAULT_LOOKUP_LIMIT,
+  MAX_LOOKUP_LIMIT,
+  MAX_LOOKUP_TEXT_CHARS,
+  STUDIO_TOOL_NAMES,
+  STUDIO_TOOLS_SOURCE,
+  studioTools,
+} from "./studio-tools.js";
+export type { LookupAnswer, LookupRefusal } from "./studio-tools.js";
 
 export const brainContribution: FeatureContribution = Object.freeze({
   name: "brain",
+  tools: Object.freeze([...studioTools]),
   routes: brainRoutes,
   subcommands: Object.freeze([askSubcommand(), messagesSubcommand()]),
   handlers: Object.freeze({ message: brainMessageHandler() }),

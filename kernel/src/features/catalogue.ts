@@ -110,6 +110,8 @@ export const TOOL_JOB_DEFINITIONS = Object.freeze({
   message_agents: Object.freeze({ label: "Message another agent", needs: needs() }),
   ask_for_approval: Object.freeze({ label: "Ask the owner to approve an action", needs: needs() }),
   notify_owner: Object.freeze({ label: "Notify the owner", needs: needs() }),
+  // wa-e: the six read-only Studio lookups (`../brain/studio-tools.ts`), a narrower grant than `general`.
+  look_up_studio: Object.freeze({ label: "Look up Studio details", needs: needs() }),
   general: Object.freeze({ label: "General", needs: needs() }),
 } as const satisfies Record<string, ToolJobDefinition>);
 

@@ -462,7 +462,11 @@ describe("AC4 + AC7: a gap is named, closed through kernel_agent_update, and gat
     cleanups.push(short);
     const merge = CATALOGUE.tools.filter((t) => t.job === "ask_for_merge").map((t) => `${K}${t.name}`);
     // Every other kernel tool of the catalogue: before the fix, the job lines alone put this update over the cut.
-    const rest = CATALOGUE.tools.map((t) => `${K}${t.name}`).filter((t) => !merge.includes(t));
+    // Not wa-e's six Studio lookups (look_up_studio): with them every tool is listed twice past MAX_APPROVAL_DISPLAY,
+    // which the update refuses by design ("ask for less at once"); this case pins the 30+ tool display, not the cut.
+    const lookups = CATALOGUE.tools.filter((t) => t.job === "look_up_studio").map((t) => `${K}${t.name}`);
+    expect(lookups).toHaveLength(6);
+    const rest = CATALOGUE.tools.map((t) => `${K}${t.name}`).filter((t) => !merge.includes(t) && !lookups.includes(t));
     expect(rest.length).toBeGreaterThanOrEqual(30);
     addMember(rest, "mason", [short]);
     const { fit } = await draft("Merge when ready", ["ask_for_merge"]);
