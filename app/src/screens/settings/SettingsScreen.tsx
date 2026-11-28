@@ -6,7 +6,8 @@
 // adds Workspaces below it (`./WorkspacesSection.tsx`, `docs/design/mockups/charter-card.html`): the kernel's saved repo
 // folders, with Add folder… (the bridge's folder picker, not a text input) and remove with Undo, disabled while offline.
 // wa-c adds "Wright's tools" between Kernel and This app (`WrightToolsSection`, words in `./tool-policy.ts`): the proposed
-// tools Wright's `config/agents/wright.json` list lacks, read-only, with the file named as plain text (no link, no Copy).
+// tools Wright's `config/agents/wright.json` list lacks, read-only, with the file named as plain text (no link, no Copy)
+// unless the kernel will add them itself (`upgrade_pending`).
 //
 // Data. `GET /settings` is read here, on mount and again when an `auth_*` or `loomwright_*`
 // event arrives on the live feed (`./model.ts` lists the kinds; throttled to one read per
@@ -268,7 +269,8 @@ export function SettingsScreen({ api, registry = commandRegistry }: SettingsScre
 /**
  * wa-c's "Wright's tools": the file's tool policy status, a sentence, and, only when the list lacks a proposed tool, a
  * list of each in plain words (its purpose line and job label, or its name when the catalogue has no entry) with the
- * file to add it in. Every value is already inert (`wrightToolsOf`) and renders as a React text child.
+ * file to add it in, unless the kernel will add them itself (`upgradePending`). Every value is already inert
+ * (`wrightToolsOf`) and renders as a React text child.
  */
 export function WrightToolsSection({ tools }: { readonly tools: WrightToolsView }) {
   return (
@@ -308,10 +310,13 @@ export function WrightToolsSection({ tools }: { readonly tools: WrightToolsView 
               );
             })}
           </ul>
-          <p className="settings-cap" data-testid={IDS.wrightToolsFile}>
-            Studio doesn't change the list. To give Wright one of these, add its name to <span className="settings-mono">allowedTools</span> in{" "}
-            <span className="settings-mono">{WRIGHT_SETTINGS_FILE}</span> in the kernel's data folder.
-          </p>
+          {/* The kernel adds them itself when the upgrade is pending (the summary says so): no file to edit then. */}
+          {tools.upgradePending ? null : (
+            <p className="settings-cap" data-testid={IDS.wrightToolsFile}>
+              Studio doesn't change the list. To give Wright one of these, add its name to <span className="settings-mono">allowedTools</span> in{" "}
+              <span className="settings-mono">{WRIGHT_SETTINGS_FILE}</span> in the kernel's data folder.
+            </p>
+          )}
         </>
       )}
     </section>

@@ -210,6 +210,9 @@ describe("GET /settings wright_tools (wa-c)", () => {
       const expected = PROPOSED_ALLOWED_TOOLS.filter((t) => !list15.includes(t));
       expect(expected.length).toBeGreaterThan(0);
       expect(res.body.wright_tools.status).toBe("proposed");
+      expect(Object.keys(res.body.wright_tools).sort()).toEqual(["missing", "status", "upgrade_pending"]);
+      // A proposed status and an unedited past list: the file the upgrade rewrites, so the screen says so.
+      expect(res.body.wright_tools.upgrade_pending).toBe(true);
       expect(res.body.wright_tools.missing.map((m: { name: string }) => m.name)).toEqual(expected);
       for (const m of res.body.wright_tools.missing) {
         expect(Object.keys(m).sort()).toEqual(["job", "name", "purpose"]);
@@ -244,11 +247,29 @@ describe("GET /settings wright_tools (wa-c)", () => {
 
   it("the current list has nothing missing; an unset status is null; with no catalogue, job and purpose are null", async () => {
     writeWright(undefined, PROPOSED_ALLOWED_TOOLS);
-    expect((await get(await serve())).body.wright_tools).toEqual({ status: null, missing: [] });
+    expect((await get(await serve())).body.wright_tools).toEqual({ status: null, missing: [], upgrade_pending: false });
     await server?.close();
     writeWright("proposed", ["Read"]);
     const res = await get(await serve());
     expect(res.body.wright_tools.missing.every((m: { job: unknown; purpose: unknown }) => m.job === null && m.purpose === null)).toBe(true);
+  });
+
+  it("upgrade_pending is true only for a proposed status over an unedited past proposed list", async () => {
+    const list21 = PAST_PROPOSED_TOOL_LISTS[1] as readonly string[];
+    const cases: [string, string | undefined, readonly string[], boolean][] = [
+      ["proposed, a past list reordered with a duplicate", "proposed", [...list21].reverse().concat(list21[0] as string), true],
+      ["proposed, a past list with one tool removed (edited)", "proposed", list21.slice(1), false],
+      ["proposed, a past list with one tool added (edited)", "proposed", [...list21, "Bash"], false],
+      ["proposed, the current list (nothing to add)", "proposed", PROPOSED_ALLOWED_TOOLS, false],
+      ["an owner's status over a past list", "owner", list21, false],
+      ["no status over a past list", undefined, list21, false],
+    ];
+    for (const [what, status, list, pending] of cases) {
+      writeWright(status, list);
+      const res = await get(await serve());
+      expect(res.body.wright_tools.upgrade_pending, what).toBe(pending);
+      await server?.close();
+    }
   });
 
   it("an unreadable wright.json is null, never a 503", async () => {

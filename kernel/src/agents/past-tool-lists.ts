@@ -36,8 +36,9 @@
 // keeps the new file with no event (the backup of the old bytes stays).
 //
 // `GET /settings` reads the file raw through `readWrightToolPolicy` (never
-// creating it, never upgrading it) and names the proposed tools the list lacks
-// through `proposedToolsMissing`.
+// creating it, never upgrading it), names the proposed tools the list lacks
+// through `proposedToolsMissing`, and reports whether the upgrade will rewrite
+// it through `isUpgradableToolPolicy` (the upgrade's own condition).
 //
 // Imports only `node:*` and `../brain/settings.js`. That module imports
 // `./settings.js`, which imports this one: a cycle that is safe only at call
@@ -151,6 +152,15 @@ function sameSet(a: readonly string[], b: readonly string[]): boolean {
 export function isPastProposedList(allowedTools: readonly string[]): boolean {
   if (sameSet(allowedTools, PROPOSED_ALLOWED_TOOLS)) return false;
   return PAST_PROPOSED_TOOL_LISTS.some((past) => sameSet(allowedTools, past));
+}
+
+/**
+ * Whether `policy` is the one file the upgrade rewrites: `status` `"proposed"`
+ * and a list that is, as a set, a past proposed list (`isPastProposedList`).
+ * The upgrade and `GET /settings`' `upgrade_pending` both decide by it. Pure.
+ */
+export function isUpgradableToolPolicy(policy: WrightToolPolicy): boolean {
+  return policy.status === "proposed" && isPastProposedList(policy.allowedTools);
 }
 
 /** The current proposed tools `allowedTools` lacks, in `PROPOSED_ALLOWED_TOOLS` order. Pure. */
@@ -312,7 +322,7 @@ export function upgradeProposedTools(dataDir: string, file: string, base: Buffer
   if (registration === undefined) return undefined;
   const { sink, failed } = registration;
   const policy = toolPolicyOf(json);
-  if (policy === null || policy.status !== "proposed" || !isPastProposedList(policy.allowedTools)) return undefined;
+  if (policy === null || !isUpgradableToolPolicy(policy)) return undefined;
   // Inside an outer transaction the event would roll back with it while the rename stays: wait for a top-level read.
   if (inOuterTransaction(sink)) return undefined;
   const digest = createHash("sha256").update(base).digest("hex");

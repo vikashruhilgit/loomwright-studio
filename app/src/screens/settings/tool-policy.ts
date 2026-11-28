@@ -4,9 +4,10 @@
 //
 // The kernel reads Wright's `config/agents/wright.json` raw and names the tools of its current proposal that the file's
 // list lacks, each with its catalogue job label and purpose line (`kernel/src/gui/settings.ts`). The kernel rewrites
-// that list itself only while it is still, as a set, one the kernel once proposed (`tool_policy.status` `proposed`);
-// a list the owner changed is never written, so the block names what it lacks and the file to add it in. Studio
-// changes nothing here (mechanism only, invariant 1).
+// that list itself only while it is still, as a set, one the kernel once proposed (`tool_policy.status` `proposed`),
+// and says so with `upgrade_pending`: then the block says the kernel adds the missing tools itself and names no file
+// to edit. A list the owner changed is never written, so then the block names what it lacks and the file to add it
+// in. Studio changes nothing here (mechanism only, invariant 1).
 //
 // Every string the kernel sent is untrusted data (invariant 3): it passes through `printable`, nothing here builds
 // markup, and the screen renders each value as a React text child. A `wright_tools` that is not the contract's shape
@@ -35,10 +36,14 @@ export interface MissingToolView {
   readonly purpose: string | null;
 }
 
-/** What the screen holds of `wright_tools`: the file's `tool_policy.status` (`null` when unset) and the tools its list lacks. */
+/**
+ * What the screen holds of `wright_tools`: the file's `tool_policy.status` (`null` when unset), the tools its list
+ * lacks, and whether the kernel will add them itself (`upgrade_pending`; false unless the kernel sent exactly `true`).
+ */
 export interface WrightToolsView {
   readonly status: string | null;
   readonly missing: readonly MissingToolView[];
+  readonly upgradePending: boolean;
 }
 
 /** Whether `value` is a plain JSON object (not null, not an array). Re-exported by `./model.ts`, its home before wa-c. */
@@ -50,7 +55,9 @@ const textOrNull = (value: unknown): string | null => (typeof value === "string"
 /**
  * The view of `wright_tools`, built field by field. `null` when it is absent (an older kernel), `null` (no readable
  * file), or not the contract's shape (not an object, a `status` that is neither a string nor null, a `missing` that
- * is not a list). An entry with no string `name` is left out. Pure; never throws.
+ * is not a list). An entry with no string `name` is left out. `upgradePending` is true only for a literal `true`: an
+ * absent (an older kernel), null or malformed `upgrade_pending` is false, so the screen falls back to naming the file
+ * to edit rather than promising a change the kernel may not make. Pure; never throws.
  */
 export function wrightToolsOf(raw: unknown): WrightToolsView | null {
   if (!isRecord(raw) || !Array.isArray(raw.missing)) return null;
@@ -61,7 +68,7 @@ export function wrightToolsOf(raw: unknown): WrightToolsView | null {
     missing.push({ name: printable(entry.name), job: textOrNull(entry.job), purpose: textOrNull(entry.purpose) });
   }
   // A blank status says no more than an unset one, so it reads "not set" rather than an empty "Tool policy: ".
-  return { status: textOrNull(raw.status), missing };
+  return { status: textOrNull(raw.status), missing, upgradePending: raw.upgrade_pending === true };
 }
 
 /** One missing tool's line: what it does in plain words, its job, and its name when the line is not already the name. */
@@ -86,11 +93,16 @@ export function toolPolicyStatusText(status: string | null): string {
   return `Tool policy: ${status}`;
 }
 
-/** The sentence above the list (or in its place when the list is empty). */
+/**
+ * The sentence above the list (or in its place when the list is empty). With `upgradePending` the kernel will rewrite
+ * the file itself, so it says so; otherwise the list is the owner's and the file note below names where to add a tool.
+ */
 export function wrightToolsSummary(view: WrightToolsView): string {
   const n = view.missing.length;
   if (n === 0) return "Wright's tool list has every tool the kernel proposes.";
-  return `Wright's tool list lacks ${countText(n)} ${n === 1 ? "tool" : "tools"} the kernel proposes. The kernel updates the list itself only while it is still one the kernel proposed and nobody changed.`;
+  const lacks = `Wright's tool list lacks ${countText(n)} ${n === 1 ? "tool" : "tools"} the kernel proposes.`;
+  if (!view.upgradePending) return lacks;
+  return `${lacks} Nobody changed the list the kernel proposed, so the kernel adds ${n === 1 ? "it" : "them"} itself the next time it reads Wright's settings, such as at Wright's next message.`;
 }
 
 /** The list's heading, drawn only when the list has an entry. */

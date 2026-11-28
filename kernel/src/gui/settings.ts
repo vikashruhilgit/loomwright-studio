@@ -25,14 +25,19 @@
 //   - `notifier`: `chooseNotifier()`'s choice, as `terminal-notifier`
 //     (`click`), `osascript` (`plain`) or `none`.
 //   - `loomwright`: the adapter's state (`status_threw` when its reader threw).
-//   - `wright_tools`: `{status, missing: [{name, job, purpose}]}` from Wright's
+//   - `wright_tools`: `{status, missing: [{name, job, purpose}], upgrade_pending}` from Wright's
 //     `config/agents/wright.json`, read raw (`readWrightToolPolicy`: never
 //     through `readAgentSettings`, which creates the file and may upgrade it):
 //     `status` is its `tool_policy.status` (null when unset) and `missing` the
 //     current proposed tools its list lacks (`proposedToolsMissing`), each with
 //     its catalogue job label and purpose line (both null for a tool the
-//     catalogue does not list, `Read` for one, or with no catalogue). `null`
-//     when the file is absent or is not a readable settings object, never a 503.
+//     catalogue does not list, `Read` for one, or with no catalogue).
+//     `upgrade_pending` is true only when `status` is `"proposed"` and the list
+//     is, as a set, a past proposed list (`isUpgradableToolPolicy`, the
+//     upgrade's own condition): the file the kernel's upgrade rewrites at its
+//     next top-level read of Wright's settings, so the owner has nothing to
+//     edit. False for any other file. `null` when the file is absent or is not
+//     a readable settings object, never a 503.
 // A missing piece is a refusal, never a throw: `503 {"error":"settings_unavailable","reason":...}`
 // with reason `no_status_view` (the request carries no `StatusView`),
 // `no_auth_provider` or `no_loomwright_reader`.
@@ -42,7 +47,7 @@ import { readAuthChoice, writeAuthChoice } from "../auth/choice.js";
 import { WRITE_ARG } from "../auth/keychain.js";
 import { readProviderMetadata } from "../auth/metadata.js";
 import { isWholeApiKey } from "../auth/token-shape.js";
-import { proposedToolsMissing, readWrightToolPolicy } from "../agents/past-tool-lists.js";
+import { isUpgradableToolPolicy, proposedToolsMissing, readWrightToolPolicy } from "../agents/past-tool-lists.js";
 import { KERNEL_TOOL_PREFIX, TOOL_JOBS, catalogueTool } from "../features/catalogue.js";
 import { chooseNotifier } from "../notifications/notifier.js";
 import type { NotifierChoice } from "../notifications/notifier.js";
@@ -119,7 +124,7 @@ export interface MissingProposedTool {
 }
 
 /** `GET /settings`' `wright_tools`: read only, never creating or upgrading the file. Built field by field. */
-function wrightTools(req: ContributedRouteRequest): { status: string | null; missing: MissingProposedTool[] } | null {
+function wrightTools(req: ContributedRouteRequest): { status: string | null; missing: MissingProposedTool[]; upgrade_pending: boolean } | null {
   const policy = readWrightToolPolicy(req.store.dataDir);
   if (policy === null) return null;
   const catalogue = req.catalogue;
@@ -127,7 +132,7 @@ function wrightTools(req: ContributedRouteRequest): { status: string | null; mis
     const tool = catalogue === undefined || !name.startsWith(KERNEL_TOOL_PREFIX) ? undefined : catalogueTool(catalogue, name.slice(KERNEL_TOOL_PREFIX.length));
     return { name, job: tool === undefined ? null : TOOL_JOBS[tool.job], purpose: tool === undefined ? null : tool.purpose };
   });
-  return { status: policy.status, missing };
+  return { status: policy.status, missing, upgrade_pending: isUpgradableToolPolicy(policy) };
 }
 
 function pendingProvider(req: ContributedRouteRequest, inUse: string): string | null {

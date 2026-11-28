@@ -31,10 +31,19 @@ describe("wrightToolsOf: the contract's shape, field by field, every string iner
     expect(wrightToolsOf({ status: "owner", missing: [{ ...STATUS_TOOL, token: "sk-ant-x" }, { job: "x" }, { name: "" }, "Read", READ_TOOL], extra: 1 })).toEqual({
       status: "owner",
       missing: [STATUS_TOOL, READ_TOOL],
+      upgradePending: false,
     });
-    expect(wrightToolsOf({ status: null, missing: [] })).toEqual({ status: null, missing: [] });
+    expect(wrightToolsOf({ status: null, missing: [] })).toEqual({ status: null, missing: [], upgradePending: false });
     // A blank status reads as unset, never an empty "Tool policy: ".
-    expect(wrightToolsOf({ status: " ", missing: [] })).toEqual({ status: null, missing: [] });
+    expect(wrightToolsOf({ status: " ", missing: [] })).toEqual({ status: null, missing: [], upgradePending: false });
+  });
+
+  it("upgrade_pending is true only for a literal true; absent, null or malformed reads false and never fails the parse", () => {
+    expect(wrightToolsOf({ status: "proposed", missing: [STATUS_TOOL], upgrade_pending: true })?.upgradePending).toBe(true);
+    for (const raw of [undefined, null, false, "true", 1, {}, []]) {
+      const view = wrightToolsOf({ status: "proposed", missing: [STATUS_TOOL], ...(raw === undefined ? {} : { upgrade_pending: raw }) });
+      expect(view, JSON.stringify(raw)).toEqual({ status: "proposed", missing: [STATUS_TOOL], upgradePending: false });
+    }
   });
 
   it("is null for absent, null and every malformed shape", () => {
@@ -47,6 +56,7 @@ describe("wrightToolsOf: the contract's shape, field by field, every string iner
     expect(wrightToolsOf({ status: "own‮er", missing: [{ name: "a\nb", job: 7, purpose: "p\u0007" }] })).toEqual({
       status: "own\\u202eer",
       missing: [{ name: "a\\nb", job: null, purpose: "p\\x07" }],
+      upgradePending: false,
     });
   });
 
@@ -59,9 +69,15 @@ describe("wrightToolsOf: the contract's shape, field by field, every string iner
     expect(toolPolicyStatusText("proposed")).toBe("Tool policy: proposed by the kernel");
     expect(toolPolicyStatusText("owner")).toBe("Tool policy: owner");
     expect(toolPolicyStatusText(null)).toBe("Tool policy: not set");
-    expect(wrightToolsSummary({ status: "proposed", missing: [] })).toBe("Wright's tool list has every tool the kernel proposes.");
-    expect(wrightToolsSummary({ status: "owner", missing: [STATUS_TOOL] })).toMatch(/^Wright's tool list lacks 1 tool the kernel proposes\./);
-    expect(wrightToolsSummary({ status: "owner", missing: [STATUS_TOOL, READ_TOOL] })).toMatch(/^Wright's tool list lacks 2 tools the kernel proposes\./);
+    expect(wrightToolsSummary({ status: "proposed", missing: [], upgradePending: false })).toBe("Wright's tool list has every tool the kernel proposes.");
+    // Not pending: only what it lacks, never a claim that the kernel updates it.
+    expect(wrightToolsSummary({ status: "owner", missing: [STATUS_TOOL], upgradePending: false })).toBe("Wright's tool list lacks 1 tool the kernel proposes.");
+    expect(wrightToolsSummary({ status: "proposed", missing: [STATUS_TOOL, READ_TOOL], upgradePending: false })).toBe("Wright's tool list lacks 2 tools the kernel proposes.");
+    // Pending: the kernel adds them itself.
+    expect(wrightToolsSummary({ status: "proposed", missing: [STATUS_TOOL], upgradePending: true })).toBe(
+      "Wright's tool list lacks 1 tool the kernel proposes. Nobody changed the list the kernel proposed, so the kernel adds it itself the next time it reads Wright's settings, such as at Wright's next message.",
+    );
+    expect(wrightToolsSummary({ status: "proposed", missing: [STATUS_TOOL, READ_TOOL], upgradePending: true })).toMatch(/, so the kernel adds them itself the next time /);
   });
 });
 
@@ -84,7 +100,7 @@ describe("the Wright's tools block", () => {
     const block = screen.getByRole("region", { name: "Wright's tools" });
     expect(block.getAttribute("data-testid")).toBe(IDS.wrightTools);
     expect(within(block).getByTestId(IDS.wrightToolsStatus).textContent).toBe("Tool policy: owner");
-    expect(within(block).getByTestId(IDS.wrightToolsSummary).textContent).toMatch(/^Wright's tool list lacks 3 tools the kernel proposes\./);
+    expect(within(block).getByTestId(IDS.wrightToolsSummary).textContent).toBe("Wright's tool list lacks 3 tools the kernel proposes.");
     expect(within(block).getByTestId(IDS.wrightToolsListHead).textContent).toBe(MISSING_TOOLS_HEADING);
     const items = within(block).getAllByTestId(IDS.wrightToolsItem);
     expect(items.map((li) => li.querySelector("b")?.textContent)).toEqual([STATUS_TOOL.purpose, LESSON_TOOL.purpose, "Read"]);
@@ -97,6 +113,30 @@ describe("the Wright's tools block", () => {
     const file = within(block).getByTestId(IDS.wrightToolsFile);
     expect(file.textContent).toContain(WRIGHT_SETTINGS_FILE);
     expect(block.querySelectorAll("a, button")).toHaveLength(0);
+  });
+
+  it("with the upgrade pending: the summary says the kernel adds them itself, and no file to edit is named", async () => {
+    await mount(withTools({ status: "proposed", missing: [STATUS_TOOL, READ_TOOL], upgrade_pending: true }));
+    const block = screen.getByTestId(IDS.wrightTools);
+    expect(within(block).getByTestId(IDS.wrightToolsStatus).textContent).toBe("Tool policy: proposed by the kernel");
+    expect(within(block).getByTestId(IDS.wrightToolsSummary).textContent).toBe(
+      "Wright's tool list lacks 2 tools the kernel proposes. Nobody changed the list the kernel proposed, so the kernel adds them itself the next time it reads Wright's settings, such as at Wright's next message.",
+    );
+    expect(within(block).getAllByTestId(IDS.wrightToolsItem)).toHaveLength(2);
+    expect(within(block).queryByTestId(IDS.wrightToolsFile)).toBeNull();
+    expect(block.textContent).not.toContain(WRIGHT_SETTINGS_FILE);
+    expect(block.textContent).not.toContain("Studio doesn't change the list");
+  });
+
+  it.each([
+    ["false", false],
+    ["absent (an older kernel)", undefined],
+    ["malformed", "yes"],
+  ])("a proposed status with upgrade_pending %s: the file to edit is named, and the summary claims no kernel update", async (_what, pending) => {
+    await mount(withTools({ status: "proposed", missing: [STATUS_TOOL], ...(pending === undefined ? {} : { upgrade_pending: pending }) }));
+    const block = screen.getByTestId(IDS.wrightTools);
+    expect(within(block).getByTestId(IDS.wrightToolsSummary).textContent).toBe("Wright's tool list lacks 1 tool the kernel proposes.");
+    expect(within(block).getByTestId(IDS.wrightToolsFile).textContent).toContain(WRIGHT_SETTINGS_FILE);
   });
 
   it("sits between the Kernel section and This app", async () => {

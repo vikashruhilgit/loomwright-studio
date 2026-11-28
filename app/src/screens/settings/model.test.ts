@@ -70,10 +70,13 @@ describe("parseSettings: the contract's known fields, nothing else", () => {
 
   it("wa-c: reads wright_tools field by field; a malformed one is null and the rest of the reply still reads", () => {
     const missing = [{ name: "kernel_studio_status", job: "Manage the crew", purpose: "Reads what is in Studio now.", extra: "x" }, { name: "Read", job: null, purpose: null }];
-    expect(parseSettings(body({ wright_tools: { status: "proposed", missing } }))?.wrightTools).toEqual({
+    expect(parseSettings(body({ wright_tools: { status: "proposed", missing, upgrade_pending: true } }))?.wrightTools).toEqual({
       status: "proposed",
       missing: [{ name: "kernel_studio_status", job: "Manage the crew", purpose: "Reads what is in Studio now." }, { name: "Read", job: null, purpose: null }],
+      upgradePending: true,
     });
+    // An older kernel sends no upgrade_pending: read as false, the rest still reads.
+    expect(parseSettings(body({ wright_tools: { status: "proposed", missing } }))?.wrightTools?.upgradePending).toBe(false);
     expect(parseSettings(body({ wright_tools: null }))?.wrightTools).toBeNull();
     for (const bad of ["junk", 7, [], { status: 7, missing: [] }, { status: "owner" }, { status: "owner", missing: "Read" }]) {
       const reply = viewReply({ kind: "ok", status: 200, body: body({ wright_tools: bad }) as never });
