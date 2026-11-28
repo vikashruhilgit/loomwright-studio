@@ -1,6 +1,7 @@
 # wa-b — An unedited old role.md becomes the persona file; an edited one is flagged
 
-## Status: ready
+## Status: done
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/318
 
 **As the** owner who installed Studio before wa-a,
 **I want** a `role.md` that is still an untouched copy of an old template to be replaced by the new persona file, and a `role.md` I edited to be left alone and flagged,
@@ -64,3 +65,9 @@ app/src/screens/memory/MemoryScreen.test.tsx
 
 The owner routed these wa-a follow-ups to this item on 2026-11-28 (review findings the drain dismissed as known limits). This item's plan covers them, or says why it cannot:
 - A crew member's charter role.md still carries its own untrusted-text and memory sections, which now repeat what crewGuide says. Recorded in docs/architecture/brain.md "Known limits" by wa-a (PR #316); crew charter prose was left unchanged there on purpose.
+
+<!-- loomwright:requirement-closeout -->
+## Status: done
+- **Completed:** 2026-11-28T12:43:14Z
+- **Brief:** .supervisor/jobs/done/2026-11-28-wa-b-unedited-old-role-md-persona.md
+- **PR:** https://github.com/vikashruhilgit/loomwright-studio/pull/318
