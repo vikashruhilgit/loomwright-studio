@@ -78,7 +78,7 @@
 //
 // The `studio` CLI loads this module through `./index.ts`, so it imports only
 // types, zod, `node:*`, the feature seam and its tool catalogue, `../loop/internal.js`,
-// `../brain/settings.js`, `../approvals/store.js` (a constant),
+// `../brain/settings.js`, `../approvals/store.js` (a constant), `../approvals/used-key.js`,
 // `../sessions/policy.js` (`NEVER_CATEGORIES`) and this
 // feature's own modules (`./charter-readiness.js` included, with its CLI-safe
 // imports `../automate/checkout.js`, `../features/job-needs.js` and `../protected-paths.js`): never the Agent SDK,
@@ -89,6 +89,7 @@ import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import { MAX_APPROVAL_DISPLAY } from "../approvals/store.js";
 import type { AppliedApproval, ApprovalApplyOutcome, OwnerGrant } from "../approvals/store.js";
+import { IDEMPOTENCY_KEY_USED, IDEMPOTENCY_KEY_USED_MESSAGE, idempotencyKeyUsed } from "../approvals/used-key.js";
 import { MAX_SETTINGS_BYTES } from "../brain/settings.js";
 import { CONNECTOR_LABELS, andList, jobDisplayLines } from "../features/catalogue.js";
 import type { ToolCatalogue } from "../features/catalogue.js";
@@ -200,16 +201,11 @@ function leadRefusal(agent: string | null | undefined): Refused | undefined {
 /**
  * `idempotency_key_used` when this session already has an approval whose
  * rail payload is for `fullName` with this key (a new key asks the owner
- * again; a reused one would make two approvals of one request).
+ * again; a reused one would make two approvals of one request). The rule is
+ * shared with `kernel_memory_propose` (`../approvals/used-key.ts`).
  */
 function usedKeyRefusal(ctx: ContributedToolContext, fullName: string, key: string): Refused | undefined {
-  const used = ctx.store
-    .prepare<[number, string, string], number>(
-      "SELECT 1 FROM approvals WHERE requesting_session = ? AND json_extract(payload_json, '$.tool') = ? AND json_extract(payload_json, '$.input.idempotency_key') = ? LIMIT 1",
-    )
-    .pluck()
-    .get(ctx.sessionId, fullName, key);
-  return used === undefined ? undefined : refused("idempotency_key_used", "this idempotency_key was already used for a request in this session; use a new key to ask the owner again");
+  return idempotencyKeyUsed(ctx.store, ctx.sessionId, fullName, key) ? refused(IDEMPOTENCY_KEY_USED, IDEMPOTENCY_KEY_USED_MESSAGE) : undefined;
 }
 
 /** The calling session's agent (null for none). */

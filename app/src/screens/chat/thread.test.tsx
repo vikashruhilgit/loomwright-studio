@@ -4,6 +4,7 @@
 // `#/chat?playbook=<id>` route that scrolls to a playbook's card.
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MEMORY_ALWAYS_REFUSED, MEMORY_PROPOSAL_ACTION } from "../approvals/MemoryProposalCard";
 import { MERGE_ALWAYS_REFUSED, MERGE_APPROVAL_ACTION } from "../approvals/subject";
 import { ALWAYS_INELIGIBLE } from "./cards";
 import { playbookCardHash, playbookFromHash } from "./model";
@@ -178,6 +179,28 @@ describe("thread", () => {
     });
     await waitFor(() => expect(k.posted("POST /approvals/:id/approve")).toHaveLength(1));
     expect(k.posted("POST /approvals/:id/approve")[0]).toMatchObject({ params: { id: 8 }, body: { decision: "always" } });
+  });
+
+  it("a memory proposal from a playbook session offers no Always, and Shift+A sends nothing (wa-f)", async () => {
+    const memory = approval(7, {
+      action: MEMORY_PROPOSAL_ACTION,
+      playbook: { id: 3, slug: "pr-review", version: 1 },
+      display: "Add an entry to memory/wright/lessons.md (approval 7)",
+      payload: { tool: `mcp__kernel__${MEMORY_PROPOSAL_ACTION}`, input: { file: "lessons", entry: "Run the tests first.", evidence: "seen twice", idempotency_key: "k1" } },
+    });
+    const k = kit({ threads: { wright: thread([], { pending_approvals: [memory] }) } });
+    const view = await renderChat(k);
+    await screen.findByText("Add an entry to memory/wright/lessons.md (approval 7)");
+    const card = view.container.querySelector('[data-approval="7"]') as HTMLElement;
+    expect(within(card).queryByRole("button", { name: /^Always/ })).toBeNull();
+    expect(within(card).getByRole("button", { name: /^Allow once/ })).toBeTruthy();
+    expect(within(card).getByRole("button", { name: /^Deny/ })).toBeTruthy();
+    // The playbook is set, so only the memory guard stops ⇧A: nothing is sent, and the card says why.
+    await act(async () => {
+      fireEvent.keyDown(within(card).getByRole("group"), { key: "A", shiftKey: true });
+    });
+    expect(within(card).getByRole("alert").textContent).toBe(MEMORY_ALWAYS_REFUSED);
+    expect(k.posted("POST /approvals/:id/approve")).toHaveLength(0);
   });
 
   it("HTML and javascript: links render inert", async () => {

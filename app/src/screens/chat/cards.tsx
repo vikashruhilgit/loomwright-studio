@@ -11,6 +11,7 @@ import { EventCard } from "../../components/EventCard/EventCard";
 import { POLICY_FIELDS, PolicyEditor, modePolicyRow, policyRows, provenance } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import type { PolicyField } from "../../components/PlaybookPolicy/PlaybookPolicy";
 import type { ResourceName } from "../../store/resources";
+import { MEMORY_ALWAYS_REFUSED, isMemoryProposal } from "../approvals/MemoryProposalCard";
 import { MERGE_ALWAYS_REFUSED, approvalLink, approvalSourceText, isMergeApproval } from "../approvals/subject";
 import { Refusal, approvalChanges, useCardAction } from "./cardActions";
 import { focusLost, navigate, rehashIfCurrent, triggerSchedule, triggerState, when, write } from "./model";
@@ -41,6 +42,7 @@ export function ApprovalCard({ api, approval, agent, playbooks }: ApprovalCardPr
   const params = { id: approval.id };
   const link = approvalLink(approval, playbooks);
   const merge = isMergeApproval(approval);
+  const memory = isMemoryProposal(approval);
   const decide = (decision: "once" | "always"): void =>
     act(decision, async () => {
       const outcome = await write(api, "/approvals/:id/approve", params, { decision }, changes);
@@ -59,11 +61,15 @@ export function ApprovalCard({ api, approval, agent, playbooks }: ApprovalCardPr
           reason: approvalSourceText(approval),
         }}
         onAllowOnce={() => decide("once")}
-        // A merge is asked every time, as on the Approvals screen: no Always button, and ⇧A sends nothing.
-        offerAlways={!merge}
+        // A merge or a memory proposal is asked every time, as on the Approvals screen: no Always button, and ⇧A sends nothing.
+        offerAlways={!merge && !memory}
         onAlways={() => {
           if (merge) {
             setRefusal(MERGE_ALWAYS_REFUSED);
+            return;
+          }
+          if (memory) {
+            setRefusal(MEMORY_ALWAYS_REFUSED);
             return;
           }
           // The app sees only this part of the kernel's `alwaysRefusal`; the kernel's 409 covers the rest.

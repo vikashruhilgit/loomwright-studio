@@ -263,6 +263,36 @@ describe("AC3: a deny reaches the agent as today; a revised proposal withdraws t
   });
 });
 
+describe("a reused idempotency_key is refused before the hold (the charter tools' rule)", () => {
+  it("a retry with the key of an approved proposal holds nothing and appends nothing; a new key is held; another session's same key is held", async () => {
+    const h = await boot();
+    const s = await h.session("wright");
+    const path = memoryPath("wright", "lessons");
+    const before = readFileSync(path, "utf8");
+    // The first call with a key is held.
+    expect((await s.propose()).permissionDecisionReason).toMatch(/held as approval 1/);
+    h.decide(1);
+    const once = readFileSync(path, "utf8");
+    expect(once).not.toBe(before);
+    const retried = await s.propose();
+    expect(retried.permissionDecision).toBe("deny");
+    expect(retried.permissionDecisionReason).toBe(
+      "kernel_memory_propose: idempotency_key_used: this idempotency_key was already used for a request in this session; use a new key to ask the owner again (nothing was held for the owner)",
+    );
+    expect(h.approvalCount()).toBe(1);
+    expect(readFileSync(path, "utf8")).toBe(once);
+    expect(h.memoryEvents()).toHaveLength(1);
+    // A pending key is refused too; a new key asks the owner again.
+    expect((await s.propose(proposal({ idempotency_key: "k2" }))).permissionDecisionReason).toMatch(/held as approval 2/);
+    expect((await s.propose(proposal({ entry: "Revised.", idempotency_key: "k2" }))).permissionDecisionReason).toMatch(/^kernel_memory_propose: idempotency_key_used: /);
+    expect(getApproval(h.store, 2)).toMatchObject({ status: "pending" });
+    // Per session: another session's call with the same key is held.
+    const other = await h.session("wright");
+    expect((await other.propose()).permissionDecisionReason).toMatch(/held as approval 3/);
+    expect(MEMORY_PROPOSE_REFUSALS).toContain("idempotency_key_used");
+  });
+});
+
 // ---- Refused before the hold ---------------------------------------------------------------
 
 describe("AC6 and AC7: refused before any approval is written", () => {

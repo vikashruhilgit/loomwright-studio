@@ -15,6 +15,9 @@
 //
 // - `beforeHold` (narrow only; reads the store and the file): the agent is the
 //   session's, never the tool input, and must be Wright or a valid crew id;
+//   an `idempotency_key` an earlier approval of this session used for this
+//   tool is refused (`idempotency_key_used`, the charter tools' rule), so a
+//   retried call never asks twice and a second Allow once never appends twice;
 //   `file` must be exactly one of `MEMORY_PROPOSAL_FILES` (an agent proposes
 //   only to its own three files: never `role.md`, another agent's folder,
 //   `shared/` or a path); the entry and the evidence must be plain text; the
@@ -43,14 +46,15 @@
 // data (invariant 3): stored and shown, never followed.
 //
 // The `studio` CLI loads this module through `./index.ts`, so it imports only
-// `node:*`, zod, the feature seam, `../agents/types.js`, `../gui/memory-paths.js`
-// (the event kind), `../loop/internal.js`, `../tools/handoff.js` and its
+// `node:*`, zod, the feature seam, `../agents/types.js`, `../approvals/used-key.js`
+// (the shared idempotency-key rule), `../gui/memory-paths.js` (the event kind), `../loop/internal.js`, `../tools/handoff.js` and its
 // siblings: none of them loads the session manager or the SDK.
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { AppliedApproval, ApprovalApplyOutcome } from "../approvals/store.js";
+import { IDEMPOTENCY_KEY_USED, IDEMPOTENCY_KEY_USED_MESSAGE, idempotencyKeyUsed } from "../approvals/used-key.js";
 import { isValidAgentId } from "../agents/types.js";
 import { defineTool } from "../features/contribution.js";
 import type { ContributedToolContext } from "../features/contribution.js";
@@ -63,6 +67,8 @@ import { MAX_MEMORY_FILE_CHARS } from "./context.js";
 import { codedError, lstatOrUndefined, memoryDir } from "./memory.js";
 
 export const MEMORY_PROPOSE_TOOL_NAME = "kernel_memory_propose";
+/** The tool's full SDK name: what the gate holds, and what a rail payload's `tool` holds. */
+const MEMORY_PROPOSE_FULL_NAME = `mcp__kernel__${MEMORY_PROPOSE_TOOL_NAME}`;
 
 /** The only files an agent proposes to, in its own folder: `memory/<agent>/<file>.md`. Closed. */
 export const MEMORY_PROPOSAL_FILES = Object.freeze(["lessons", "preferences", "people"] as const);
@@ -79,6 +85,7 @@ export const MAX_MEMORY_EVIDENCE_CHARS = 2_000;
  */
 export const MEMORY_PROPOSE_REFUSALS = Object.freeze([
   "not_an_agent",
+  IDEMPOTENCY_KEY_USED,
   "not_own_file",
   "invalid_input",
   "too_large",
@@ -241,6 +248,7 @@ function proposeBeforeHold(a: ProposeArgs, ctx: ContributedToolContext): HeldToo
   const agent = ctx.sessions.getSession(ctx.sessionId)?.agent ?? null;
   const caller = agentRefusal(agent);
   if (caller !== undefined || agent === null) return holdRefusal(caller ?? refused("not_an_agent", "a session with no agent called it"));
+  if (idempotencyKeyUsed(ctx.store, ctx.sessionId, MEMORY_PROPOSE_FULL_NAME, a.idempotency_key)) return holdRefusal(refused(IDEMPOTENCY_KEY_USED, IDEMPOTENCY_KEY_USED_MESSAGE));
   const own = fileRefusal(a.file);
   if (own !== undefined) return holdRefusal(own);
   const text = textRefusal(a.entry, a.evidence);
