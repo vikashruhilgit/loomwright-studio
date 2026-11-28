@@ -5,7 +5,8 @@
 // What lives here: the test ids; the feed kinds that make the screen read again; the line
 // diff (`lineDiff`, the Changes inspector's hunks, which no other module computes) and the
 // carry-over of the owner's added lines onto the text on disk (`carryOver`, the mockup's
-// `mergeOnDisk`); the tree as rows and its keyboard order; and the size, time and version text.
+// `mergeOnDisk`); the tree as rows and its keyboard order; the size, time and version text; and
+// the note for a file the kernel marks `old_manual` (its text and when it shows).
 //
 // Every string from the kernel (a file name, a path, a file's text, a refusal's code) is
 // untrusted data (invariant 3): a name or a code passes through `printable` before it is
@@ -57,6 +58,7 @@ export const MEMORY_TEST_IDS = {
   onTop: "memory-on-top",
   backToEditing: "memory-back-to-editing",
   live: "memory-live",
+  oldManual: "memory-old-manual",
 } as const;
 
 /** The feed kinds that make the screen read the tree again: an owner's write, and a session ending (when agents write their lessons). */
@@ -358,6 +360,17 @@ export function helpText(path: string): string {
   if (name === "role.md") return "The charter the agent reads. The settings the kernel enforces are not here: they live in config/agents/<id>.json, which Team owns.";
   return "Plain markdown. Only files under memory/ can be edited here.";
 }
+
+/**
+ * Whether the open file's entry carries the kernel's `old_manual` mark (wa-b: Wright's `role.md`, edited by the
+ * owner, that still holds the old manual's rule sections). Only a literal `true` counts: the entry is kernel data.
+ */
+export function hasOldManual(entry: MemoryFileEntry | undefined): boolean {
+  return entry?.old_manual === true;
+}
+
+/** The note the file view shows for a file with the `old_manual` mark. */
+export const OLD_MANUAL_TEXT = "The Studio guide now comes from the kernel, so the old rule sections in this file can be removed.";
 
 // ---- reading an answer -------------------------------------------------------------------------------------
 
