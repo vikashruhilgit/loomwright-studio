@@ -1,20 +1,24 @@
 // The one prompt an agent's session starts (or resumes) with, built fresh for
-// each message: role.md, then preferences, people and lessons, the Loomwright
-// manifest summary, the current local time with its IANA zone, then the
-// message. Wright's are `memory/wright/*`. A crew member's are `memory/<id>/*`,
-// then every `memory/shared/*.md` (regular files, in name order), each headed
-// "Shared notes" and not wrapped (the owner's notes); Wright's context has no
-// shared notes. Bounded: each memory file is cut at `MAX_MEMORY_FILE_CHARS`,
-// the message at `MAX_MESSAGE_CHARS`, and the whole context at
-// `MAX_CONTEXT_CHARS`; every cut is stated in the context itself.
+// each message: role.md, then the kernel's Studio guide (`./guide.ts`: the
+// rules, the glossary and the session's tool list; Wright's guide, or the crew
+// guide right after a crew member's charter), then preferences, people and
+// lessons, the Loomwright manifest summary, the current local time with its
+// IANA zone, then the message. Wright's are `memory/wright/*`. A crew member's
+// are `memory/<id>/*`, then every `memory/shared/*.md` (regular files, in name
+// order), each headed "Shared notes" and not wrapped (the owner's notes);
+// Wright's context has no shared notes. Bounded: each memory file is cut at
+// `MAX_MEMORY_FILE_CHARS`, the message at `MAX_MESSAGE_CHARS`, and the whole
+// context at `MAX_CONTEXT_CHARS`; every cut is stated in the context itself.
+// The guide is kernel text, never read from a file and never cut: its length
+// is taken out of the fill budget before any memory section is placed.
 //
 // A message that continues a thread or carries thread references
 // (`./threads.ts`) adds history sections before the message: each already
 // wrapped as data (`<untrusted-data source="thread:<id>">`) and bounded by the
 // thread module, so they are kept whole like the message (a history past its
 // bound is refused there, never cut here). A resumed thread's prompt
-// (`resumed`) leaves out the memory and Loomwright sections, which are in
-// the conversation it resumes, and says so. With neither, the context is
+// (`resumed`) leaves out the memory, guide and Loomwright sections, which are
+// in the conversation it resumes, and says so. With neither, the context is
 // exactly what it was before threads existed.
 //
 // Untrusted input is data, never instructions (invariant 3): only a message
@@ -28,15 +32,19 @@
 // Never throws for a missing or unreadable memory file or shared folder, or a
 // Loomwright that is absent or broken (one "Loomwright isn't available" line
 // instead). Imports only `node:*`, its siblings, the Loomwright adapter's pure
-// modules, the triggers feature's time formatter and `../agents/charter-files.js`
-// (the crew memory file list; SDK-free): the `studio` CLI loads this module.
+// modules, the triggers feature's time formatter, `../agents/charter-files.js`
+// (the crew memory file list; SDK-free) and, type only, `../features/catalogue.js`
+// (the CLI-safe catalogue: its graph is SDK-free; `./guide.ts` imports it at
+// runtime): the `studio` CLI loads this module.
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { CREW_MEMORY_FILES } from "../agents/charter-files.js";
+import type { ToolCatalogue } from "../features/catalogue.js";
 import { readLoomwrightContract } from "../loomwright/contract.js";
 import { loomwrightManifestSummary } from "../loomwright/capabilities.js";
 import type { LoomwrightAdapterStatus } from "../loomwright/active-install.js";
 import { formatZoned } from "../triggers/cron.js";
+import { GUIDE_HEADING, studioGuide } from "./guide.js";
 import { MEMORY_FILES, cutChars, memoryDir, readMemoryFile } from "./memory.js";
 
 /** Each memory file's limit in the context, in characters. */
@@ -45,11 +53,16 @@ export const MAX_MEMORY_FILE_CHARS = 8_000;
 export const MAX_MESSAGE_CHARS = 8_000;
 /** The Loomwright manifest summary's limit, in characters. */
 export const MAX_MANIFEST_CHARS = 4_000;
-/** The whole context's limit, in characters. */
-export const MAX_CONTEXT_CHARS = 32_000;
+/**
+ * The whole context's limit, in characters. Room for the larger guide limit,
+ * the message, the thread history (with its wrappers), the four memory files,
+ * the manifest summary, the note reserve and the headings
+ * (`kernel/test/brain-guide.test.ts` pins the sum).
+ */
+export const MAX_CONTEXT_CHARS = 82_000;
 
 /** Kept free for the truncation notes when the whole-context limit cuts the memory sections. */
-const NOTE_RESERVE = 1_000;
+export const NOTE_RESERVE = 1_000;
 
 /** The Loomwright part of the context: the manifest summary, or why there is none. */
 export type LoomwrightSummary = { readonly ok: true; readonly summary: string } | { readonly ok: false; readonly reason: string };
@@ -112,13 +125,17 @@ export interface ContextInput {
   readonly timeZone: string;
   /** Thread history (a replay, references), in order, placed before the message and never cut. Absent: none. */
   readonly history?: readonly ContextHistory[];
-  /** A resumed thread: no memory or Loomwright sections (the resumed conversation has them), one line saying so. */
+  /** A resumed thread: no memory, guide or Loomwright sections (the resumed conversation has them), one line saying so. */
   readonly resumed?: boolean;
+  /** The kernel's tool catalogue, for the guide's tool list. Absent: the guide says the list is unavailable. */
+  readonly catalogue?: ToolCatalogue;
+  /** The session's `policy.allowedTools`: the guide lists the catalogue tools it allows. Absent: none. */
+  readonly allowedTools?: readonly string[];
 }
 
-/** The line a resumed thread's prompt starts with, in place of the memory and Loomwright sections. */
+/** The line a resumed thread's prompt starts with, in place of the memory, guide and Loomwright sections. */
 export const RESUMED_THREAD_LINE =
-  "This message continues the conversation above. Your role, your memory files and the Loomwright summary are in that conversation's first message; they are not repeated here.";
+  "This message continues the conversation above. Your role, the Studio guide, your memory files and the Loomwright summary are in that conversation's first message; they are not repeated here.";
 
 /** The text around wrapped data from `source`: a line saying it is data, then the opening tag; and the closing tag. */
 function untrustedFrame(source: string): { readonly open: string; readonly close: string } {
@@ -217,26 +234,41 @@ function memorySections(dataDir: string, agent: string): Section[] {
   return [...CREW_MEMORY_FILES.map((f) => memorySection(dataDir, `${agent}/${f}`, (name) => name)), ...sharedSections(dataDir)];
 }
 
+/** The guide as a context section: kernel text, never wrapped. */
+function guideSection(agent: string, input: ContextInput): Section {
+  return {
+    heading: GUIDE_HEADING,
+    body: studioGuide(agent, { ...(input.catalogue === undefined ? {} : { catalogue: input.catalogue }), ...(input.allowedTools === undefined ? {} : { allowedTools: input.allowedTools }) }),
+    name: "the Studio guide",
+  };
+}
+
 /**
  * The prompt for one message (see the module comment). At most
  * `MAX_CONTEXT_CHARS` characters: the time and message sections are always
- * kept whole (the message already cut to `MAX_MESSAGE_CHARS`); the memory
+ * kept whole (the message already cut to `MAX_MESSAGE_CHARS`), and so is the
+ * guide (its rendered length is taken out of the budget first); the memory
  * (and, for a crew member, shared notes) and Loomwright sections fill the
  * rest in order, and the first one that does not fit is cut (the ones after
- * it dropped), each with a note naming it.
+ * it dropped), each with a note naming it. The guide is rendered right after
+ * `role.md` (the first memory section). A resumed thread has no guide.
  */
 export function buildContext(input: ContextInput): string {
+  const agent = input.agent ?? "wright";
   const loomwright: Section = input.loomwright.ok
     ? { heading: "Loomwright", body: defuseWrapperTags(input.loomwright.summary), name: "the Loomwright summary", untrusted: "loomwright" }
     : { heading: "Loomwright", body: `Loomwright isn't available: ${oneLine(input.loomwright.reason)}`, name: "the Loomwright line" };
-  const fill: Section[] =
-    input.resumed === true ? [{ heading: "Thread", body: RESUMED_THREAD_LINE, name: "the thread line" }] : [...memorySections(input.dataDir, input.agent ?? "wright"), loomwright];
+  const resumed = input.resumed === true;
+  const fill: Section[] = resumed ? [{ heading: "Thread", body: RESUMED_THREAD_LINE, name: "the thread line" }] : [...memorySections(input.dataDir, agent), loomwright];
+  // Kept whole like the time and the message: never in the fill list, so never cut.
+  const guide = resumed ? "" : render(guideSection(agent, input));
   const time: Section = { heading: "Now", body: localTimeLine(input.now, input.timeZone), name: "the time" };
   const history: Section[] = (input.history ?? []).map((h) => ({ heading: h.heading, body: h.body, name: h.heading }));
   const message = messageSection(input.source, input.text);
 
   const tail = [time, ...history, message].map(render).join("\n");
-  const budget = MAX_CONTEXT_CHARS - tail.length - NOTE_RESERVE;
+  // The guide's length (and its separator) comes out of the budget before any memory section is placed.
+  const budget = MAX_CONTEXT_CHARS - tail.length - NOTE_RESERVE - (guide === "" ? 0 : guide.length + 1);
   const head: string[] = [];
   const notes: string[] = [];
   let used = 0;
@@ -261,6 +293,8 @@ export function buildContext(input: ContextInput): string {
       notes.push(cutNote(section.name, section.body.length, false, `context limit ${MAX_CONTEXT_CHARS}`));
     }
   }
+  // The guide right after role.md (the first fill section), or first when even role.md was dropped.
+  if (guide !== "") head.splice(head.length === 0 ? 0 : 1, 0, guide);
   const noteText = notes.length === 0 ? "" : `${notes.join("\n")}\n`;
   return [head.join("\n"), noteText, tail].filter((p) => p !== "").join("\n");
 }

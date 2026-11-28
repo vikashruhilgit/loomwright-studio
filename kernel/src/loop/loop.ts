@@ -6,6 +6,7 @@ import type { EventRef } from "./internal.js";
 import { nextPendingRow, toQueuedEvent } from "./queue.js";
 import type { QueueRow } from "./queue.js";
 import { WorkStepFailedError, WorkStepInterruptedError, getWorkStep, runStep, runStepAsync } from "./steps.js";
+import type { ToolCatalogue } from "../features/catalogue.js";
 import type { GitHubClient } from "../integrations/types.js";
 import { isEventKind } from "./types.js";
 import type {
@@ -84,6 +85,7 @@ export class EventLoop {
   readonly #sessions: EventSessions | undefined;
   readonly #loomwright: LoomwrightInstallSettings | undefined;
   readonly #github: GitHubClient | undefined;
+  readonly #catalogue: ToolCatalogue | undefined;
   readonly #now: () => Date;
   readonly #schedule: (fn: () => void, ms: number) => CancelTimer;
   readonly #tickMs: number;
@@ -102,6 +104,7 @@ export class EventLoop {
     this.#sessions = options.sessions;
     this.#loomwright = options.loomwright === undefined ? undefined : Object.freeze({ ...options.loomwright });
     this.#github = options.github;
+    this.#catalogue = options.catalogue;
     this.#now = deps.now ?? (() => new Date());
     this.#schedule = deps.schedule ?? defaultSchedule;
     const tickMs = deps.tickMs ?? DEFAULT_TICK_MS;
@@ -227,6 +230,7 @@ export class EventLoop {
       store,
       sessions: this.#sessions,
       ...(this.#github === undefined ? {} : { github: this.#github }),
+      ...(this.#catalogue === undefined ? {} : { catalogue: this.#catalogue }),
       runStep: (name, fn, opts) => runStep(store, prefix + name, fn, { now, ...opts }),
       runStepAsync: (name, fn, opts) => {
         const key = prefix + name;
