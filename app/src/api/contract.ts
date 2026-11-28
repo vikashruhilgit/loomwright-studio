@@ -1342,6 +1342,12 @@ export interface MemoryFileEntry {
   /** Bytes. */
   readonly size: number;
   readonly modified: IsoTime;
+  /**
+   * Only on `wright/role.md`, and only when true (wa-b): the file is not the current role template but still carries
+   * a heading of the old manual, so it is a copy the owner edited, which the kernel never replaces. The Studio guide
+   * now comes from the kernel, so those sections can go. Absent on every other entry.
+   */
+  readonly old_manual?: true;
 }
 
 /** One agent's files (Wright's or a crew member's: `memory/<agent>/`). */

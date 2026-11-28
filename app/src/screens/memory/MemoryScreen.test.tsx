@@ -435,6 +435,37 @@ describe("the tree", () => {
     await screen.findByTestId(IDS.contents);
     expect(screen.queryByTestId(IDS.fileError)).toBeNull();
   });
+
+  it("wa-b: a file whose entry carries old_manual shows one plain note that the old rule sections can go; no other file does", async () => {
+    const NOTE = "The Studio guide now comes from the kernel, so the old rule sections in this file can be removed.";
+    const kernel = createKernel();
+    // The kernel marks only Wright's role.md; a value other than a literal `true` is no mark.
+    const marks: Readonly<Record<string, unknown>> = { "wright/role.md": true, "wright/lessons.md": "true", [PATH]: 1, "mason/role.md": false };
+    kernel.tree = () => {
+      const tree = treeOf(kernel.files);
+      const mark = (e: MemoryFileEntry): MemoryFileEntry => (marks[e.path] === undefined ? e : ({ ...e, old_manual: marks[e.path] } as unknown as MemoryFileEntry));
+      return ok({ agents: tree.agents.map((a) => ({ ...a, files: a.files.map(mark) })), shared: tree.shared.map(mark) });
+    };
+    await mount(kernel);
+    // The overview, before any file is open, shows no note.
+    expect(screen.queryByTestId(IDS.oldManual)).toBeNull();
+
+    await openFile("wright/role.md");
+    const notes = screen.getAllByTestId(IDS.oldManual);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.tagName).toBe("P");
+    expect(notes[0]?.textContent).toBe(NOTE);
+    expect(notes[0]?.children).toHaveLength(0);
+    // The file's own text is still shown as written, under the note.
+    expect(screen.getByTestId(IDS.contents).textContent).toBe(kernel.files.get("wright/role.md"));
+
+    for (const path of ["wright/lessons.md", PATH, "mason/role.md", "shared/README.md"]) {
+      await openFile(path);
+      expect(screen.getByTestId(IDS.fileView).getAttribute("data-path"), path).toBe(path);
+      expect(screen.queryByTestId(IDS.oldManual), path).toBeNull();
+    }
+    expect(document.body.textContent).not.toContain(NOTE);
+  });
 });
 
 // ---- AC7: edit and save ----------------------------------------------------------------------------------------------

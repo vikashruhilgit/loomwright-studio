@@ -241,6 +241,31 @@ describe("the sentences", () => {
     expect(auditSentence("made_up_kind", undefined, refs())).toBe("made_up_kind · no description yet");
   });
 
+  it("wa-b: the role upgrade's kinds come from ROLE_UPGRADE_AUDIT_KINDS, and each reads as one sentence naming the file", () => {
+    const kinds = kernelKinds();
+    for (const kind of ["wright_role_upgraded", "wright_role_upgrade_failed"]) expect([...(kinds.get(kind) ?? [])], kind).toContain("brain/past-templates.ts");
+
+    const backup = "wright/role.bak-20261128T101500123Z-a1b2c3d4.md";
+    expect(auditSentence("wright_role_upgraded", { file: "wright/role.md", old_hash: "8819eec9acb3aed46042567dc20a595b3e303f162b07bf692a22197c357d4345", backup }, refs())).toBe(
+      "The kernel replaced wright/role.md with the current role template. The old file was a copy of a past template that nobody changed; a backup of it was kept (role.bak-20261128T101500123Z-a1b2c3d4.md).",
+    );
+    expect(auditSentence("wright_role_upgraded", {}, refs())).toBe(
+      "The kernel replaced Wright's role file with the current role template. The old file was a copy of a past template that nobody changed; a backup of it was kept.",
+    );
+
+    expect(auditSentence("wright_role_upgrade_failed", { file: "wright/role.md", step: "backup", code: "EACCES" }, refs())).toBe(
+      "The kernel could not update wright/role.md: writing the backup failed (EACCES). The file was left as it was.",
+    );
+    for (const [step, said] of [["write", "writing the new file failed"], ["rename", "replacing the file failed"], ["record", "recording the change failed"], ["fsync_dir", "the fsync dir step failed"], ["constructor", "the constructor step failed"]]) {
+      expect(auditSentence("wright_role_upgrade_failed", { file: "wright/role.md", step }, refs())).toBe(`The kernel could not update wright/role.md: ${said as string}. The file was left as it was.`);
+    }
+    expect(auditSentence("wright_role_upgrade_failed", {}, refs())).toBe("The kernel could not update Wright's role file: a step failed. The file was left as it was.");
+    // A payload's text is data: markup stays literal, a control character is written out.
+    expect(auditSentence("wright_role_upgrade_failed", { file: "<b>x</b>", step: "write", code: "E\u001bX" }, refs())).toBe(
+      "The kernel could not update <b>x</b>: writing the new file failed (E\\x1bX). The file was left as it was.",
+    );
+  });
+
   it("a kind that is an Object.prototype name is unknown, not a function call", () => {
     for (const kind of ["constructor", "toString", "__proto__", "hasOwnProperty"]) expect(auditSentence(kind, {}, refs())).toBe(`${kind} · no description yet`);
   });

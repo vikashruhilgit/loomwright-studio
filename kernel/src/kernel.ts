@@ -22,6 +22,7 @@ import type { AuthControl, AuthProviderSource, RestartOutcome } from "./auth/cho
 import type { KeychainDeleter, KeychainReader, KeychainWriter } from "./auth/keychain.js";
 import { SUBSCRIPTION_TOKEN_ID, availableProviderIds, selectAuthProvider } from "./auth/registry.js";
 import type { AuthProvider, AuthProviderDeps, BaseEnv } from "./auth/types.js";
+import { registerRoleUpgradeAudit } from "./brain/past-templates.js";
 import { Budget } from "./budget/index.js";
 import type { AgentLimitsLookup } from "./budget/index.js";
 import { recordSessionOutput } from "./console/output.js";
@@ -426,6 +427,13 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     transaction: (fn) => store.transaction(fn),
     record: (kind, payload) => appendEvent(store, kind, NO_REF, payload, now().toISOString()),
   });
+  // wa-b: `ensureMemoryFiles` here may replace an unedited past Wright `role.md`, audited over this store (none without it),
+  // and only at a top-level call (never inside an open transaction).
+  const unregisterRoleUpgradeAudit = registerRoleUpgradeAudit(dataDir, {
+    inTransaction: () => store.inTransaction,
+    transaction: (fn) => store.transaction(fn),
+    record: (kind, payload) => appendEvent(store, kind, NO_REF, payload, now().toISOString()),
+  });
   let sessions: SessionManager | undefined;
   let loop: EventLoop | undefined;
   let api: ApiServer | undefined;
@@ -448,6 +456,7 @@ export async function startKernel(options: KernelOptions = {}, deps: KernelDeps 
     await step(() => removeApiInfoIfOurs(apiInfoPath, pid));
     // Before the store closes, so no sink outlives its store.
     await step(() => unregisterProposedToolsAudit());
+    await step(() => unregisterRoleUpgradeAudit());
     await step(() => store.close());
     if (failures.length > 0) throw failures[0];
   };

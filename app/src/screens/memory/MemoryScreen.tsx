@@ -25,6 +25,8 @@
 //   shows no request text.
 // - The count line goes to the title bar through `held.ts` (`index.tsx`'s `Subtitle`); paths under the home
 //   folder read `~/…`.
+// - A file whose tree entry carries the kernel's `old_manual` mark (wa-b: Wright's edited `role.md` that still holds
+//   the old manual) shows one plain note above its view; its text and the check are `model.ts`'s.
 // - The keys: J / K and the arrows move between files, Enter opens one, Esc leaves a file view
 //   (focus on that file's button) or an unchanged editor. ⌘K: `memory.open:<path>` and `memory.edit`.
 //
@@ -43,12 +45,14 @@ import { useMemoryCommands } from "./commands";
 import { heldDataDir, heldTree, holdDataDir, holdTree, setMemorySubtitle } from "./held";
 import {
   MEMORY_TEST_IDS as IDS,
+  OLD_MANUAL_TEXT,
   contentToSend,
   countText,
   draftOnTop,
   entryOf,
   fileCount,
   fileOrder,
+  hasOldManual,
   isConflictBody,
   isDirty,
   isFileBody,
@@ -466,20 +470,27 @@ export function MemoryScreen({ api, registry = commandRegistry }: MemoryScreenPr
           {openPath === null ? (
             <MemoryOverview tree={tree} dataDir={dataDir} home={home} roster={roster} />
           ) : (
-            <FileView
-              key={openPath}
-              path={openPath}
-              dataDir={dataDir}
-              home={home}
-              entry={entryOf(tree, openPath)}
-              file={file}
-              readError={fileError}
-              offline={offline}
-              now={now}
-              editRef={editRef}
-              onEdit={startEdit}
-              onRetry={() => void refetchFile(openPath)}
-            />
+            <>
+              {hasOldManual(entryOf(tree, openPath)) ? (
+                <p className="memory-stale" data-testid={IDS.oldManual}>
+                  {OLD_MANUAL_TEXT}
+                </p>
+              ) : null}
+              <FileView
+                key={openPath}
+                path={openPath}
+                dataDir={dataDir}
+                home={home}
+                entry={entryOf(tree, openPath)}
+                file={file}
+                readError={fileError}
+                offline={offline}
+                now={now}
+                editRef={editRef}
+                onEdit={startEdit}
+                onRetry={() => void refetchFile(openPath)}
+              />
+            </>
           )}
         </div>
       </div>

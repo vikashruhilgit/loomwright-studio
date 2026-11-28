@@ -10,13 +10,24 @@
 // symbolic link there: every thread-summary write and read refuses a link at
 // `memory/<agent>`, at `threads/` and at the file itself
 // (`symlink_refused`), so the kernel never writes or reads through one
-// (invariant 3). Reads are bounded: a huge file never loads whole into memory. Imports only `node:*`, its siblings and
+// (invariant 3). Reads are bounded: a huge file never loads whole into memory.
+//
+// The one kernel rewrite of a memory file (wa-b): Wright's `role.md`, when its
+// bytes are exactly a `ROLE_TEMPLATE` the kernel once shipped (its sha256 is
+// in `PAST_ROLE_TEMPLATE_HASHES`, `./past-templates.ts`), is replaced with the
+// current template by `ensureMemoryFiles`, with a backup and one audit event,
+// and only while a kernel's audit sink is registered for the data dir. Any
+// other text, a link and every crew member's `role.md` are never written.
+//
+// Imports only `node:*`, its siblings and
 // `../tools/handoff.ts` (itself `node:*` only): the `studio` CLI loads this
 // module.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { UNASSIGNED_AGENT_DIR } from "../tools/handoff.js";
+import { MAX_ROLE_UPGRADE_BYTES, PAST_ROLE_TEMPLATE_HASHES, roleUpgradeRegistration } from "./past-templates.js";
+import type { RoleUpgradeAuditKind, RoleUpgradeAuditSink } from "./past-templates.js";
 import { LESSONS_TEMPLATE, PEOPLE_TEMPLATE, PREFERENCES_TEMPLATE, ROLE_TEMPLATE, SHARED_README_TEMPLATE } from "./templates.js";
 
 /** `memory/playbooks/`: the playbook mirrors' folder (`../playbooks/mirror.ts`). */
@@ -65,7 +76,10 @@ function hasCode(err: unknown, code: string): boolean {
  * Create every memory file that is absent, from its template. Exclusive
  * create (`wx`): a file that exists, whatever its content, is left as it is.
  * Returns the paths (relative to `memory/`) it created. Any other write error
- * (a read-only disk, a directory where a file should be) is thrown.
+ * (a read-only disk, a directory where a file should be) is thrown. Then it
+ * replaces Wright's `role.md` when it is an unedited past template
+ * (`upgradeWrightRole`), which never throws and is never in the returned
+ * paths.
  */
 export function ensureMemoryFiles(dataDir: string): string[] {
   const root = memoryDir(dataDir);
@@ -80,7 +94,180 @@ export function ensureMemoryFiles(dataDir: string): string[] {
       if (!hasCode(err, "EEXIST")) throw err;
     }
   }
+  upgradeWrightRole(dataDir);
   return created;
+}
+
+// ---- wa-b: an unedited past `role.md` becomes the current template --------------------
+
+/** Wright's `role.md`, relative to `memory/`: the one file the upgrade may write. */
+const WRIGHT_ROLE = "wright/role.md";
+
+/**
+ * Wright's `role.md` bytes, read only when it is safe to replace: `memory/wright`
+ * is a real directory and `role.md` a regular file with one link, no larger
+ * than `MAX_ROLE_UPGRADE_BYTES`. Both are checked with `lstat`, so a symbolic
+ * link at either is refused (`symlink_refused`) before anything opens it, and
+ * the file is opened with `O_NOFOLLOW | O_NONBLOCK` (a link planted after the
+ * check fails the open; a FIFO never blocks) and checked again with `fstat`.
+ * Anything else throws.
+ */
+function readWrightRoleForUpgrade(dataDir: string): Buffer {
+  const dir = wrightMemoryDir(dataDir);
+  const dirStat = lstatOrUndefined(dir);
+  if (dirStat === undefined) throw codedError("ENOENT", `${dir} does not exist`);
+  if (dirStat.isSymbolicLink()) throw codedError("symlink_refused", `${dir} is a symbolic link`);
+  if (!dirStat.isDirectory()) throw codedError("not_a_directory", `${dir} is not a directory`);
+  const path = join(dir, "role.md");
+  const st = lstatOrUndefined(path);
+  if (st === undefined) throw codedError("ENOENT", `${path} does not exist`);
+  if (st.isSymbolicLink()) throw codedError("symlink_refused", `${path} is a symbolic link`);
+  // O_NOFOLLOW: a link planted at `role.md` after the check fails the open (ELOOP) instead of being followed.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) throw codedError("not_a_file", `${path} is not a regular file`);
+    if (opened.nlink > 1) throw codedError("hard_link_refused", `${path} has more than one link`);
+    // One byte past the bound: a file that grew past it is refused, never read whole.
+    const buf = Buffer.alloc(MAX_ROLE_UPGRADE_BYTES + 1);
+    let size = 0;
+    while (size < buf.length) {
+      const n = readSync(fd, buf, size, buf.length - size, null);
+      if (n === 0) break;
+      size += n;
+    }
+    if (size > MAX_ROLE_UPGRADE_BYTES) throw codedError("too_large", `${path} is over ${MAX_ROLE_UPGRADE_BYTES} bytes`);
+    return Buffer.from(buf.subarray(0, size));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The steps an upgrade can fail at, as the `wright_role_upgrade_failed` event's `step` names them. */
+type RoleUpgradeStep = "backup" | "write" | "rename" | "record";
+
+/** An upgrade step that failed, with the error's code (`ENOSPC`, `EACCES`; `error` when it has none). */
+class RoleStepError extends Error {
+  constructor(
+    readonly step: RoleUpgradeStep,
+    readonly code: string,
+  ) {
+    super(`${step}: ${code}`);
+  }
+}
+
+/** Thrown inside the transaction when `role.md` changed (or went, or became a link) since it was read: the owner's edit wins. */
+class RoleChangedError extends Error {}
+
+function codeOf(err: unknown): string {
+  const code = typeof err === "object" && err !== null ? (err as { code?: unknown }).code : undefined;
+  return typeof code === "string" && code !== "" ? code.slice(0, 64) : "error";
+}
+
+/** `fn`, with a throw turned into the failure of `step`. */
+function atStep<T>(step: RoleUpgradeStep, fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    throw new RoleStepError(step, codeOf(err));
+  }
+}
+
+function removeQuietly(path: string): void {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Already renamed or gone.
+  }
+}
+
+/** `record` through the sink, swallowing a sink that throws (the message must still run). */
+function recordQuietly(sink: RoleUpgradeAuditSink, kind: RoleUpgradeAuditKind, payload: Record<string, unknown>): void {
+  try {
+    sink.record(kind, payload);
+  } catch {
+    // A sink that throws is swallowed.
+  }
+}
+
+/**
+ * The upgrade, run by `ensureMemoryFiles` after its create loop, for
+ * `wright/role.md` only (a crew member's `role.md` is its approved charter and
+ * is never looked at here). It runs only under a registration
+ * (`roleUpgradeRegistration`: a sink registered for the data dir and no store
+ * transaction open), and only when the file passes `readWrightRoleForUpgrade`
+ * and its bytes' sha256 is in `PAST_ROLE_TEMPLATE_HASHES` and has not already
+ * failed under this registration. Then: the old bytes go to
+ * `role.bak-<UTC stamp>-<random hex>.md` beside it (exclusive create, mode
+ * 0600), `ROLE_TEMPLATE` to a temporary sibling, and inside the sink's
+ * transaction `role.md` is re-read (changed since the first read: no rename,
+ * no event, the backup stays), `wright_role_upgraded` is appended and the
+ * rename runs last. A failed step before the rename leaves `role.md` byte for
+ * byte, removes the temporary file and the backup, remembers the bytes'
+ * sha256 and records `wright_role_upgrade_failed {file, step, code}`. Never
+ * throws.
+ */
+function upgradeWrightRole(dataDir: string): void {
+  const registration = roleUpgradeRegistration(dataDir);
+  if (registration === undefined) return;
+  const { sink, failed } = registration;
+  let base: Buffer;
+  try {
+    base = readWrightRoleForUpgrade(dataDir);
+  } catch {
+    // Absent, a link, not a regular file, too large or unreadable: never a candidate, nothing recorded.
+    return;
+  }
+  const digest = createHash("sha256").update(base).digest("hex");
+  if (!PAST_ROLE_TEMPLATE_HASHES.includes(digest)) return;
+  if (failed.has(digest)) return;
+  const dir = wrightMemoryDir(dataDir);
+  const file = join(dir, "role.md");
+  const backupName = `role.bak-${new Date().toISOString().replace(/[-:.]/g, "")}-${randomBytes(4).toString("hex")}.md`;
+  const backup = join(dir, backupName);
+  const temp = join(dir, `.role.md.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+  const upgraded = { file: WRIGHT_ROLE, old_hash: digest, backup: `wright/${backupName}` };
+  let backedUp = false;
+  let renamed = false;
+  try {
+    atStep("backup", () => writeFileSync(backup, base, { flag: "wx", mode: 0o600 }));
+    backedUp = true;
+    try {
+      atStep("write", () => writeFileSync(temp, ROLE_TEMPLATE, { flag: "wx", mode: 0o600 }));
+      sink.transaction(() => {
+        // Re-read just before the rename: an owner's edit since the first read wins.
+        let now: Buffer;
+        try {
+          now = readWrightRoleForUpgrade(dataDir);
+        } catch {
+          throw new RoleChangedError();
+        }
+        if (!now.equals(base)) throw new RoleChangedError();
+        sink.record("wright_role_upgraded", upgraded);
+        atStep("rename", () => renameSync(temp, file));
+        renamed = true;
+      });
+    } catch (err) {
+      removeQuietly(temp);
+      if (err instanceof RoleStepError || err instanceof RoleChangedError) throw err;
+      // The sink's record or its COMMIT threw.
+      throw new RoleStepError("record", codeOf(err));
+    }
+  } catch (err) {
+    // The owner's edit is not a failure: no event, the backup stays, and the next call leaves the edited file alone.
+    if (err instanceof RoleChangedError) return;
+    if (renamed) {
+      // The rename ran but the COMMIT did not: `role.md` holds the new template, so the event is recorded on its own.
+      recordQuietly(sink, "wright_role_upgraded", upgraded);
+      return;
+    }
+    // Before the rename: `role.md` still holds the old bytes, so their backup is redundant.
+    if (backedUp) removeQuietly(backup);
+    // Remembered before recording, so a sink that throws is not retried on every message either.
+    failed.add(digest);
+    const failure = err instanceof RoleStepError ? err : new RoleStepError("record", codeOf(err));
+    recordQuietly(sink, "wright_role_upgrade_failed", { file: WRIGHT_ROLE, step: failure.step, code: failure.code });
+  }
 }
 
 /** A memory file as read for the context: its text, cut to the limit. */

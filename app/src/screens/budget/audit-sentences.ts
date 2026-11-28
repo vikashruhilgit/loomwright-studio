@@ -99,7 +99,11 @@ function percentOf(value: unknown): string | undefined {
 
 const NO_DESCRIPTION = "no description yet";
 
-/** What failed, for each step a Wright tool-list upgrade can fail at (`ProposedToolsUpgradeStep` in `kernel/src/agents/past-tool-lists.ts`). */
+/**
+ * What failed, for each step a kernel upgrade of a Wright file can fail at: the tool list's (`ProposedToolsUpgradeStep`
+ * in `kernel/src/agents/past-tool-lists.ts`) and `role.md`'s (`RoleUpgradeStep` in `kernel/src/brain/memory.ts`, every
+ * one of which is also a tool-list step).
+ */
 const UPGRADE_STEPS: Readonly<Record<string, string>> = {
   size: "the new file would pass the size limit",
   backup: "writing the backup failed",
@@ -107,6 +111,13 @@ const UPGRADE_STEPS: Readonly<Record<string, string>> = {
   rename: "replacing the file failed",
   record: "recording the change failed",
 };
+
+/** A failed upgrade step in words: its `UPGRADE_STEPS` text, "the <step> step failed" for one it does not know, else "a step failed". */
+function stepFailed(step: string | undefined): string {
+  if (step === undefined) return "a step failed";
+  const known = Object.hasOwn(UPGRADE_STEPS, step) ? UPGRADE_STEPS[step] : undefined;
+  return known ?? `the ${words(step) ?? step} step failed`;
+}
 
 /** The last segment of a path as inert text (a backup sits beside its file, so its name is enough), or `undefined`. */
 function fileName(value: unknown): string | undefined {
@@ -475,9 +486,17 @@ export const AUDIT_SENTENCES: Readonly<Record<string, Sentence>> = {
   // wa-c: the upgrade failed at a step and left the old file as it was: `{file, step, code}`.
   wright_tool_policy_upgrade_failed: (p) => {
     const g = reader(p);
-    const step = g("step");
-    const what = step === undefined ? "a step failed" : Object.hasOwn(UPGRADE_STEPS, step) ? UPGRADE_STEPS[step] : `the ${words(step) ?? step} step failed`;
-    return `The kernel could not update Wright's tool list: ${what}${paren(g("code"))}. The file was left as it was, so Wright keeps its old list.`;
+    return `The kernel could not update Wright's tool list: ${stepFailed(g("step"))}${paren(g("code"))}. The file was left as it was, so Wright keeps its old list.`;
+  },
+  // wa-b: the kernel replaced an unedited past copy of Wright's role template with the current one (`upgradeWrightRole`): `{file, old_hash, backup}`.
+  wright_role_upgraded: (p) => {
+    const g = reader(p);
+    return `The kernel replaced ${g("file") ?? "Wright's role file"} with the current role template. The old file was a copy of a past template that nobody changed; a backup of it was kept${paren(fileName(fields(p).backup))}.`;
+  },
+  // wa-b: the role upgrade failed at a step and left the old file as it was: `{file, step, code}`.
+  wright_role_upgrade_failed: (p) => {
+    const g = reader(p);
+    return `The kernel could not update ${g("file") ?? "Wright's role file"}: ${stepFailed(g("step"))}${paren(g("code"))}. The file was left as it was.`;
   },
 };
 
