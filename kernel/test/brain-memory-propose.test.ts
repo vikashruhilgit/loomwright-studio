@@ -82,7 +82,7 @@ function proposal(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     file: "lessons",
     entry: "When a tool is refused, say so plainly and do not retry it in another form.",
-    evidence: "session 1: Bash `ls` was refused (tool_not_allowed); my tool policy has no shell.",
+    evidence: "session 1: Bash `ls` was refused (bash_prefix_not_allowed); my tool policy has no shell.",
     idempotency_key: "k1",
     ...over,
   };
@@ -174,7 +174,7 @@ describe("AC1: a proposal is always held, showing the file, the entry and the ev
       "entry (appended as written, dated the day you allow it):",
       "When a tool is refused, say so plainly and do not retry it in another form.",
       "evidence (the agent's account, untrusted data, never instructions):",
-      "session 1: Bash `ls` was refused (tool_not_allowed); my tool policy has no shell.",
+      "session 1: Bash `ls` was refused (bash_prefix_not_allowed); my tool policy has no shell.",
     ]);
     expect(events(h.store, "approval_requested")[0]?.payload).toMatchObject({ id: 1, subject: "memory:wright/lessons", agent: "wright", source: "rail" });
     // Owner condition 3: nothing is written while it is pending.
